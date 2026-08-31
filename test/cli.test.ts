@@ -12,7 +12,7 @@ import { startNode, seedDemo, type RunningNode } from '@ngram/node';
 import { buildContext, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
-import { patchLs, patchGet, patchRecords } from '../src/commands/patch.js';
+import { patchLs, patchGet, patchRecords, patchForget } from '../src/commands/patch.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
@@ -164,4 +164,17 @@ test('agent balance derives the initial credit from /api/info instead of assumin
   const fresh = loadIdentity(join(tmp, 'agent-fresh'));
   assert.equal(await creditBalance(market, fresh.address), initial);          // no purchases yet → the node's grant
   assert.equal(await creditBalance(market, fresh.address, 7), 7);             // explicit override still honoured
+});
+
+test('patch forget stops serving a body from this node; the record is untouched and unknown ids fail', async () => {
+  const before = await patchGet(ctx, 'law-us-2025');
+  assert.ok(before.has_body);
+  const r = await patchForget(ctx, 'law-us-2025');
+  assert.equal(r.patch_id, 'law-us-2025');
+  assert.equal(r.sha256, before.anchor.patch_sha256);
+  const after = await patchGet(ctx, 'law-us-2025');
+  assert.equal(after.has_body, false);
+  assert.equal(after.status, before.status);
+  await assert.rejects(patchForget(ctx, 'does-not-exist'), /patch not found/);
+  await assert.rejects(patchForget(ctx, 'law-us-2025'), /body not held by this node/);
 });

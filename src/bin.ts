@@ -172,6 +172,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
+  .command('forget <id>', 'Stop serving the knowledge file from this node (deletes the local body; the public record stays)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchForget(ctx, a.id)))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 
 // ---------------------------------------------------------------- one-liners (publish / use)
