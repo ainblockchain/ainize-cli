@@ -9,14 +9,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig, saveConfig, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, type RunningNode } from '@ngram/node';
-import { buildContext, readState } from '../src/context.js';
+import { buildContext, progName, readState } from '../src/context.js';
+import { chatOnce, chatPatches, renderChat, assistantTurn, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords } from '../src/commands/patch.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
 import { keysShow, configShow } from '../src/commands/init.js';
-import { runAgent, creditBalance, pickPatch, fetchCatalog } from '../../agent/src/agent.js';
+import { runAgent, creditBalance, fetchInitialCredit, pickPatch, fetchCatalog } from '../../agent/src/agent.js';
 import { loadIdentity } from '../../agent/src/identity.js';
 
 const freePort = () => new Promise<number>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); }); });
@@ -48,6 +49,13 @@ before(async () => {
   ctx = buildContext({ home, node: `http://127.0.0.1:${port}`, quiet: true });
 });
 after(async () => { await node?.stop(); rmSync(tmp, { recursive: true, force: true }); });
+
+test('program name follows argv[1]: ainize (product name) or the historical ngram', () => {
+  assert.equal(progName('/usr/local/bin/ainize'), 'ainize');
+  assert.equal(progName('/usr/local/bin/ngram'), 'ngram');
+  assert.equal(progName('/repo/packages/cli/dist/bin.js'), 'ainize');   // `node dist/bin.js` → product name
+  assert.equal(progName(undefined), 'ainize');
+});
 
 test('config/keys commands read the node config', () => {
   const k = keysShow(ctx);
@@ -123,4 +131,37 @@ test('agent: picks a patch, pays with local-credit over 402, downloads and verif
   const again = await runAgent({ market, patch: 'law-kr-2026', question: 'synthetic', expect: 'never', prompt: 'x', api: 'http://127.0.0.1:1', repo: join(tmp, 'no-repo'), home: agentHome }, () => undefined);
   assert.ok(again.success);   // a fresh nonce → a second (separate) purchase succeeds
   assert.equal((await node.ledger.settlements('law-kr-2026')).length, 2);
+});
+
+test('chat --list reports testable patches and the runtime state; chat refuses without a runtime', async () => {
+  const d = await chatPatches(ctx);
+  assert.equal(d.runtime.available, false);                       // test node points its runtime at a dead port
+  assert.ok(Array.isArray(d.items));
+  assert.ok(d.items.some((e) => e.anchor.id === 'law-kr-2026'));  // body is held on the seller node → testable
+  assert.ok(d.items.every((e) => e.status !== 'DRAFT'));
+  await assert.rejects(chatOnce(ctx, 'law-kr-2026', [{ role: 'user', content: '한국법 개정' }]), /runtime|unavailable|unreachable/i);
+  await assert.rejects(chatOnce(ctx, 'law-kr-2026', [{ role: 'user', content: '   ' }]), /empty/);
+});
+
+test('renderChat prints both answers, latency / load time and the 정답 marker', () => {
+  const r: ChatResponse = {
+    patch_id: 'pixelplus-087600', mode: 'compare', model: 'Qwen3.8-Flash-Next', was_applied: false, applied_ms: 812, benchmark_hit: true, remaining_quota: 19,
+    base: { content: '005930', latency_ms: 140, model: 'Qwen3.8-Flash-Next' },
+    patched: { content: '087600', latency_ms: 151, model: 'Qwen3.8-Flash-Next', reasoning: 'look up the ticker' },
+  };
+  const out = renderChat(r, { thinking: true });
+  for (const needle of ['before (base model)', '005930', '140 ms', 'after (pixelplus-087600 loaded)', '087600', '151 ms', 'loaded in 812 ms', '정답 ✓', 'look up the ticker', 'left this hour: 19']) assert.ok(out.includes(needle), needle);
+  assert.equal(assistantTurn(r), '087600');
+  const miss = renderChat({ ...r, benchmark_hit: false, base: null, applied_ms: null, was_applied: true, remaining_quota: null }, {});
+  assert.ok(miss.includes('오답 ✗') && miss.includes('already loaded') && !miss.includes('before (base model)') && !miss.includes('left this hour'));
+  assert.ok(renderChat({ ...r, benchmark_hit: null }).includes('no benchmark sample'));
+});
+
+test('agent balance derives the initial credit from /api/info instead of assuming 100', async () => {
+  const market = `http://127.0.0.1:${port}`;
+  const initial = await fetchInitialCredit(market);
+  assert.equal(initial, Number(node.cfg.market.initialCredit));
+  const fresh = loadIdentity(join(tmp, 'agent-fresh'));
+  assert.equal(await creditBalance(market, fresh.address), initial);          // no purchases yet → the node's grant
+  assert.equal(await creditBalance(market, fresh.address, 7), 7);             // explicit override still honoured
 });

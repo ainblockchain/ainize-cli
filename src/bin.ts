@@ -50,7 +50,14 @@ const fail = (y: Y): Y => y.fail((msg, err) => {
 
 const cli: Y = yargs(hideBin(process.argv))
   .scriptName(PROG)
-  .usage(`$0 <command> [options]\n\nAinize — ainize your knowledge (AI + -ize: make it usable by AI).\nOperate an Ainize knowledge-marketplace node: publish knowledge patches, have independent nodes verify them,\ntest them live (\`$0 chat\`), trade them with automatic payment (x402) and load them into a running model without restart.${PROG === 'ainize' ? '' : '\n(`ngram` is the historical name of this binary; `ainize` is the same program.)'}`)
+  .usage([
+    '$0 <command> [options]', '',
+    'Ainize — ainize your knowledge (AI + -ize: make it usable by AI).',
+    'Run an Ainize knowledge-marketplace node: publish knowledge patches, let independent nodes',
+    'verify them, test them live (`$0 chat`), trade them with automatic payment (x402) and load',
+    'them into a running model without restart.',
+    ...(PROG === 'ainize' ? [] : ['(`ngram` is the historical name of this binary; `ainize` is the same program.)']),
+  ].join('\n'))
   .option('home', { type: 'string', describe: 'node home directory (NGRAM_HOME)', global: true })
   .option('node', { type: 'string', describe: 'node API URL (default: http://localhost:<config port>)', global: true })
   .option('json', { type: 'boolean', describe: 'machine-readable JSON output', global: true, default: false })
@@ -166,6 +173,26 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
+
+// ---------------------------------------------------------------- one-liners (publish / use)
+cli.command('publish <file>', 'One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale)', (y: Y) => fail(y)
+  .positional('file', { type: 'string', demandOption: true, describe: 'path to the learned knowledge (.npz: addrs/before/after)' })
+  .option('name', { type: 'string', demandOption: true, describe: 'human name of the knowledge' })
+  .option('model', { type: 'string', demandOption: true, describe: 'target model id_M (e.g. Qwen3.8-Flash-Next)' })
+  .option('benchmark', { type: 'string', demandOption: true, describe: 'bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}' })
+  .option('price', { type: 'string', describe: 'price in the node currency (AIN or node credit)' })
+  .option('id', { type: 'string' }).option('description', { type: 'string' }).option('parents', { type: 'string', describe: 'comma list of source knowledge ids (원작자 수익 분배)' })
+  .option('branch', { type: 'string' }).option('topic', { type: 'string' }).option('license', { type: 'string' })
+  .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
+  .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' })
+  .example('$0 publish ./my-knowledge.npz --name "한국 상장사 종목코드" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', ''),
+run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, { ...a, announce: a.announce !== false })));
+
+cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
+  .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })
+  .option('apply', { type: 'boolean', default: true, describe: 'load into the serving model after download (--no-apply to only download)' })
+  .example('$0 use krx-all-2761', ''),
+run((ctx, a: G & { id: string; apply: boolean }) => patch.patchUse(ctx, a.id, { apply: a.apply })));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (정답 check)', (y: Y) => fail(y)

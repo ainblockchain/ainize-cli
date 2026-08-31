@@ -94,6 +94,8 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
 export interface PublishArgs {
   file: string; name: string; model: string; benchmark: string; id?: string; price?: string; description?: string; parents?: string; branch?: string;
   topic?: string; license?: string; billing?: 'per_download' | 'per_apply_hour' | 'per_hit'; announce?: boolean;
+  /** hidden from public catalogs (e2e/test publishing on a shared chain) */
+  test?: boolean;
 }
 
 export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ anchor: PatchAnchor; announced: boolean }> {
@@ -110,12 +112,12 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   const client = new NodeClient(ctx);
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: a.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
-    branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file,
+    branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
   });
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
   let announced = false;
   if (a.announce) { await patchAnnounce(ctx, r.anchor.id); announced = true; }
-  else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ngram patch announce ${r.anchor.id}`));
+  else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ainize patch announce ${r.anchor.id}`));
   if (ctx.json) emit(ctx, { anchor: r.anchor, announced }, () => '');
   return { anchor: r.anchor, announced };
 }
@@ -186,4 +188,25 @@ export async function patchRecords(ctx: CliContext, id: string): Promise<LedgerR
 export async function patchRm(ctx: CliContext, id: string): Promise<void> {
   await new NodeClient(ctx).delete(`/api/patches/${encodeURIComponent(id)}`);
   ok(ctx, `draft ${id} deleted`);
+}
+
+
+/**
+ * `ainize use <id>` — the one-line consumer path: check it is verified, pay automatically (x402), download,
+ * verify the body hash and load it into this node's model. Falls back gracefully when the runtime is off.
+ */
+export async function patchUse(ctx: CliContext, id: string, opts: { apply?: boolean } = {}): Promise<PurchaseResult | { already: true }> {
+  const client = new NodeClient(ctx);
+  const detail = await client.get<PatchDetail & { purchased: boolean; has_body: boolean; owned: boolean; applied: boolean }>(`/api/patches/${encodeURIComponent(id)}`);
+  const apply = opts.apply !== false;
+  if (detail.status !== 'LISTED') throw new CliError(`${id} is ${detail.status}, not verified yet (검증 완료가 아닙니다) — try \`ainize patch get ${id}\``);
+  if (detail.has_body && (detail.purchased || detail.owned)) {
+    ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
+    if (apply) { await patchApply(ctx, id); }
+    if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "질문"`));
+    return { already: true };
+  }
+  const r = await patchBuy(ctx, id, apply);
+  if (!ctx.json) ok(ctx, c.dim(apply ? `loaded into the model — try: ainize chat ${id} "질문"` : `downloaded — load with: ainize patch apply ${id}`));
+  return r;
 }
