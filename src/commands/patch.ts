@@ -199,7 +199,9 @@ export async function patchUse(ctx: CliContext, id: string, opts: { apply?: bool
   const client = new NodeClient(ctx);
   const detail = await client.get<PatchDetail & { purchased: boolean; has_body: boolean; owned: boolean; applied: boolean }>(`/api/patches/${encodeURIComponent(id)}`);
   const apply = opts.apply !== false;
-  if (detail.status !== 'LISTED') throw new CliError(`${id} is ${detail.status}, not verified yet (검증 완료가 아닙니다) — try \`ainize patch get ${id}\``);
+  // SUPERSEDED knowledge stays valid (point-in-time versions); it just has a newer version on the same subject.
+  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (검증 ${detail.passed}/${detail.quorum}) — not verified yet; try \`ainize patch get ${id}\``);
+  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (최신 버전 있음)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
     if (apply) { await patchApply(ctx, id); }
