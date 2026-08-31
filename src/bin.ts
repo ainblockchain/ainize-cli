@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * `ngram` — operate a knowledge-patch marketplace node (successor of ainize-cli).
+ * `ainize` (alias `ngram`) — operate an Ainize knowledge-marketplace node.
+ *
+ * Ainize = AI + -ize, "make it usable by AI". The 2019 `ainize` CLI ainized GitHub repos into running AI
+ * services; this one ainizes *knowledge*: publish verified knowledge patches, test them live against the model
+ * (`chat`), trade them with automatic payment and load them into a running model in seconds.
  */
 import './quiet.js';
 import yargs, { type Argv, type ArgumentsCamelCase } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import chalk from 'chalk';
-import { CliError, buildContext, type CliContext } from './context.js';
+import { CliError, PROG, buildContext, type CliContext } from './context.js';
 import * as init from './commands/init.js';
 import * as node from './commands/node.js';
 import * as auth from './commands/auth.js';
@@ -16,6 +20,7 @@ import * as ledger from './commands/ledger.js';
 import * as branch from './commands/branch.js';
 import * as drive from './commands/drive.js';
 import * as chain from './commands/chain.js';
+import * as chat from './commands/chat.js';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -44,8 +49,8 @@ const fail = (y: Y): Y => y.fail((msg, err) => {
 });
 
 const cli: Y = yargs(hideBin(process.argv))
-  .scriptName('ngram')
-  .usage('$0 <command> [options]\n\nOperate a P2P knowledge-patch marketplace node: publish, verify, trade (x402) and apply n-gram memory patches.')
+  .scriptName(PROG)
+  .usage(`$0 <command> [options]\n\nAinize — ainize your knowledge (AI + -ize: make it usable by AI).\nOperate an Ainize knowledge-marketplace node: publish knowledge patches, have independent nodes verify them,\ntest them live (\`$0 chat\`), trade them with automatic payment (x402) and load them into a running model without restart.${PROG === 'ainize' ? '' : '\n(`ngram` is the historical name of this binary; `ainize` is the same program.)'}`)
   .option('home', { type: 'string', describe: 'node home directory (NGRAM_HOME)', global: true })
   .option('node', { type: 'string', describe: 'node API URL (default: http://localhost:<config port>)', global: true })
   .option('json', { type: 'boolean', describe: 'machine-readable JSON output', global: true, default: false })
@@ -54,7 +59,7 @@ const cli: Y = yargs(hideBin(process.argv))
   .showHelpOnFail(false, 'Specify --help for available options.')
   .strict()
   .wrap(Math.min(110, process.stdout.columns || 100))
-  .demandCommand(1, 'Specify a command. Try `ngram --help`.');
+  .demandCommand(1, `Specify a command. Try \`${PROG} --help\`.`);
 
 // ---------------------------------------------------------------- init / config / keys
 cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) => fail(y)
@@ -71,7 +76,7 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .option('public-url', { type: 'string', describe: 'URL peers can reach this node at' })
   .option('force', { type: 'boolean', describe: 'overwrite existing config', default: false })
   .example('$0 init --name alice --port 3402', 'local ledger node')
-  .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `ngram chain up`)'),
+  .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `$0 chain up`)'),
 run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string }) =>
   init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'] })));
 
@@ -161,6 +166,30 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
+
+// ---------------------------------------------------------------- chat (live test)
+cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (정답 check)', (y: Y) => fail(y)
+  .positional('patchId', { type: 'string', describe: 'patch to test (see --list)' })
+  .positional('prompt', { type: 'string', array: true, describe: 'question; omit for an interactive session (/quit to exit)' })
+  .option('list', { alias: 'l', type: 'boolean', default: false, describe: 'list patches testable on this node and the runtime state' })
+  .option('mode', { alias: 'm', choices: ['base', 'patched', 'compare'] as const, default: 'compare', describe: 'base = model only, patched = with the patch loaded, compare = both' })
+  .option('thinking', { type: 'boolean', default: false, describe: 'let the model think first and show its reasoning' })
+  .option('max-tokens', { type: 'number', default: 200, describe: 'answer length limit (1–1024)' })
+  .option('system', { type: 'string', describe: 'system prompt prepended to the conversation' })
+  .example('$0 chat --list', 'what can be tested here')
+  .example('$0 chat pixelplus-087600 "종목코드 픽셀플러스"', 'before/after in one shot')
+  .example('$0 chat krx-all-2761 --mode patched', 'interactive session with the patch loaded'),
+run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; mode: chat.ChatMode; thinking: boolean; 'max-tokens': number; system?: string }) => {
+  if (a.list || !a.patchId) {
+    if (!a.list && !a.patchId) throw new CliError(`patch id required — \`${PROG} chat --list\` shows what this node can test`);
+    return chat.chatPatches(ctx);
+  }
+  const opts: chat.ChatArgs = { mode: a.mode, thinking: a.thinking, maxTokens: a['max-tokens'], system: a.system };
+  const prompt = (a.prompt ?? []).join(' ').trim();
+  if (prompt) return chat.chat(ctx, a.patchId, prompt, opts);
+  await chat.chatRepl(ctx, a.patchId, opts);
+  process.exit(0);
+}, true));
 
 // ---------------------------------------------------------------- ledger
 cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)

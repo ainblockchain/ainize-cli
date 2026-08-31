@@ -1,7 +1,7 @@
 /**
  * Thin HTTP client for a marketplace node's API (mirrors ainize-cli's axios calls, on global fetch).
  */
-import { CliError, type CliContext } from './context.js';
+import { CliError, PROG, type CliContext } from './context.js';
 
 export interface RequestOptions { method?: string; body?: unknown; headers?: Record<string, string>; timeoutMs?: number; raw?: boolean; auth?: boolean; }
 
@@ -25,7 +25,7 @@ export class NodeClient {
       });
     } catch (e) {
       const msg = (e as Error).message;
-      throw new CliError(`cannot reach node at ${this.ctx.nodeUrl} (${msg}). Is it running? Try \`ngram start\` or pass --node <url>.`, 2);
+      throw new CliError(`cannot reach node at ${this.ctx.nodeUrl} (${msg}). Is it running? Try \`${PROG} start\` or pass --node <url>.`, 2);
     }
     if (opts.raw) return res as unknown as T;
     const text = await res.text();
@@ -35,7 +35,7 @@ export class NodeClient {
       const err = (data as { error?: string; issues?: { path?: (string | number)[]; message: string }[] } | null);
       let msg = err?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
       if (err?.issues?.length) msg += ': ' + err.issues.map((i) => `${(i.path ?? []).join('.')} ${i.message}`.trim()).join('; ');
-      if (res.status === 401) msg += ' — run `ngram login` first';
+      if (res.status === 401) msg += ` — run \`${PROG} login\` first`;
       throw new CliError(msg, res.status === 401 ? 3 : 1);
     }
     return data as T;

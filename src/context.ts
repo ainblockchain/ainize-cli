@@ -3,10 +3,23 @@
  * the stored operator bearer token (cli.json) and output flags.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DEFAULT_HOME, loadConfig, type NodeConfig } from '@ngram/core';
 
 export interface CliState { token?: string; nodeUrl?: string; }
+
+/**
+ * Name the binary was invoked as. The package installs two bins pointing at the same entry — `ainize` (the
+ * product name: AI + -ize, "ainize your knowledge", like the 2019 `ainize` CLI that ainized GitHub repos) and
+ * `ngram` (the historical name) — so help text and hints use whichever the user typed.
+ */
+export const PROG_NAMES = ['ainize', 'ngram'] as const;
+export type ProgName = (typeof PROG_NAMES)[number];
+export function progName(argv1: string | undefined = process.argv[1]): ProgName {
+  const base = basename(argv1 ?? '').replace(/\.(c|m)?js$/, '');
+  return (PROG_NAMES as readonly string[]).includes(base) ? (base as ProgName) : 'ainize';
+}
+export const PROG: ProgName = progName();
 
 export interface CliContext {
   home: string;

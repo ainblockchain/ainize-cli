@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "ainize": "./dist/bin.js",
     "ngram": "./dist/bin.js"
   },
   "scripts": {
@@ -25,5 +26,5 @@
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13"
   },
-  "description": "ngram \u2014 operate a P2P knowledge-patch marketplace node (successor of ainize-cli)"
+  "description": "ainize — Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)"
 }
