@@ -14,7 +14,7 @@ import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords, patchPublish, patchImport, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
-import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, teachAuthHeader, loadTeacherKey } from '../src/commands/teach.js';
+import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey } from '../src/commands/teach.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
@@ -272,9 +272,13 @@ test('teach status: target parsing, node policy, lesson status with / without th
   assert.match(renderTeachStatus(pol), /accepting lessons/); assert.match(renderTeachStatus(pol), /publish.*auto/);
 
   // a lesson taught by that key (offline stub: prompt does not contain the answer → will_train)
-  const hdr = { 'x-ngram-auth': teachAuthHeader(key), 'content-type': 'application/json' };
+  // request-bound v2 header (node + method + path + body hash, single-use) — the legacy teachAuthHeader() form still verifies once per route
   const facts = [{ prompt: 'What is the capital of Freedonia?', answer: 'Fredville' }];
-  const created = await (await fetch(`${nodeUrl}/api/teach/jobs`, { method: 'POST', headers: hdr, body: JSON.stringify({ patch_ids: [], builds_on_context: false, facts, contributor: { name: 'CLI Teacher' } }) })).json() as { job: { id: string; status: string }; error?: string };
+  const postBody = JSON.stringify({ patch_ids: [], builds_on_context: false, facts, contributor: { name: 'CLI Teacher' } });
+  const hdr = { 'x-ngram-auth': signedTeachHeader(key, node.market.address, 'POST', '/api/teach/jobs', postBody), 'content-type': 'application/json' };
+  const created = await (await fetch(`${nodeUrl}/api/teach/jobs`, { method: 'POST', headers: hdr, body: postBody })).json() as { job: { id: string; status: string }; error?: string };
+  const legacy = await fetch(`${nodeUrl}/api/teach/jobs`, { headers: { 'x-ngram-auth': teachAuthHeader(key) } });
+  assert.equal(legacy.status, 200, 'legacy header still accepted');
   assert.ok(created.job?.id, `job not created: ${created.error}`);
   const jobId = created.job.id;
   const ready = await waitFor(() => teachStatus(ctx, jobId, { key: id.privateKey }), (r) => r.kind === 'job' && ['READY', 'NEEDS_MORE', 'FAILED'].includes(r.job.status), 60_000);

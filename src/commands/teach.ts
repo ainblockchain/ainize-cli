@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { identityFromPrivateKey, signMessage } from '@ngram/core';
+import { teachAuthHeaderFor } from '@ngram/node';
 import { NodeClient } from '../client.js';
 import { CliError, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, shortAddr, shortHash, table } from '../output.js';
@@ -52,9 +53,28 @@ export function loadTeacherKey(o: KeyOpts = {}): TeacherKey | null {
   return parseTeacherKey(raw);
 }
 
-/** `x-ngram-auth: <address>:<ts>:<sig over "teach:<ts>">` — what every visitor teach route verifies (node `verifyAuthHeader`). */
+/**
+ * Legacy `x-ngram-auth: <address>:<ts>:<sig over "teach:<ts>">`. Still accepted by nodes (single-use per route) but not
+ * bound to node / method / path / body — prefer `signedTeachHeader` (v2), which is what every command here sends.
+ * @deprecated use signedTeachHeader
+ */
 export function teachAuthHeader(key: TeacherKey, purpose = 'teach', ts = Date.now()): string {
   return `${key.address}:${ts}:${signMessage(`${purpose}:${ts}`, key.privateKey)}`;
+}
+
+/**
+ * Request-bound v2 header (node `teach-auth.ts`): sig over "teach:<nodeAddress>:<METHOD>:<path+query>:<ts>[:<sha256(body)>]".
+ * `body` must be the exact JSON string that is sent. Single-use: build one per request.
+ */
+export function signedTeachHeader(key: TeacherKey, nodeAddress: string, method: string, path: string, body?: string): string {
+  return teachAuthHeaderFor(key, { node: nodeAddress, method, path, body: body ?? null });
+}
+
+/** The node's identity address (what the v2 signature is bound to) — `GET /api/auth/me` is public. */
+export async function nodeAddressOf(client: NodeClient): Promise<string> {
+  const me = await client.get<{ address: string }>('/api/auth/me', { auth: false });
+  if (!me?.address) throw new CliError('node did not report its address (/api/auth/me)');
+  return me.address;
 }
 
 // ---------------------------------------------------------------- target parsing
@@ -120,7 +140,8 @@ export async function teachStatus(ctx: CliContext, target: string | undefined, o
   const t = parseTeachTarget(target, ctx.nodeUrl);
   const key = loadTeacherKey(opts);
   const client = new NodeClient({ ...ctx, nodeUrl: t.nodeUrl });
-  const headers = key ? { 'x-ngram-auth': teachAuthHeader(key) } : undefined;
+  const nodeAddress = key ? await nodeAddressOf(client) : null;
+  const signed = (path: string) => (key && nodeAddress ? { 'x-ngram-auth': signedTeachHeader(key, nodeAddress, 'GET', path) } : undefined);
   let out: TeachStatusResult;
   if (t.kind === 'node') {
     const raw = await client.get<{ node?: { name?: string }; name?: string; accepts_contributions?: boolean; contributor_share?: number; model?: string | null }>('/api/info', { auth: false });
@@ -128,10 +149,11 @@ export async function teachStatus(ctx: CliContext, target: string | undefined, o
     const policy = await client.get<TeachPolicy>('/api/teach/policy', { auth: false });
     out = { kind: 'node', node: t.nodeUrl, info, policy };
     if (key && policy.enabled) {
-      try { out.mine = (await client.get<{ items: TeachJobView[] }>('/api/teach/jobs', { headers, auth: false })).items; } catch { /* banned / disabled — the policy line already says so */ }
+      try { out.mine = (await client.get<{ items: TeachJobView[] }>('/api/teach/jobs', { headers: signed('/api/teach/jobs'), auth: false })).items; } catch { /* banned / disabled — the policy line already says so */ }
     }
   } else if (t.kind === 'job') {
-    const r = await client.get<{ job: TeachJobView }>(`/api/teach/jobs/${encodeURIComponent(t.id)}`, { headers, auth: false });
+    const path = `/api/teach/jobs/${encodeURIComponent(t.id)}`;
+    const r = await client.get<{ job: TeachJobView }>(path, { headers: signed(path), auth: false });
     out = { kind: 'job', node: t.nodeUrl, job: r.job, owner: Array.isArray(r.job.facts) };
   } else {
     const profile = await client.get<TeacherProfile>(`/api/teacher/${t.address}`, { auth: false });
