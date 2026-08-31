@@ -143,17 +143,17 @@ test('chat --list reports testable patches and the runtime state; chat refuses w
   await assert.rejects(chatOnce(ctx, 'law-kr-2026', [{ role: 'user', content: '   ' }]), /empty/);
 });
 
-test('renderChat prints both answers, latency / load time and the 정답 marker', () => {
+test('renderChat prints both answers, latency / load time and the correct-answer marker', () => {
   const r: ChatResponse = {
     patch_id: 'pixelplus-087600', mode: 'compare', model: 'Qwen3.8-Flash-Next', was_applied: false, applied_ms: 812, benchmark_hit: true, remaining_quota: 19,
     base: { content: '005930', latency_ms: 140, model: 'Qwen3.8-Flash-Next' },
     patched: { content: '087600', latency_ms: 151, model: 'Qwen3.8-Flash-Next', reasoning: 'look up the ticker' },
   };
   const out = renderChat(r, { thinking: true });
-  for (const needle of ['before (base model)', '005930', '140 ms', 'after (pixelplus-087600 loaded)', '087600', '151 ms', 'loaded in 812 ms', '정답 ✓', 'look up the ticker', 'left this hour: 19']) assert.ok(out.includes(needle), needle);
+  for (const needle of ['before (base model)', '005930', '140 ms', 'after (pixelplus-087600 loaded)', '087600', '151 ms', 'loaded in 812 ms', 'correct ✓', 'look up the ticker', 'left this hour: 19']) assert.ok(out.includes(needle), needle);
   assert.equal(assistantTurn(r), '087600');
   const miss = renderChat({ ...r, benchmark_hit: false, base: null, applied_ms: null, was_applied: true, remaining_quota: null }, {});
-  assert.ok(miss.includes('오답 ✗') && miss.includes('already loaded') && !miss.includes('before (base model)') && !miss.includes('left this hour'));
+  assert.ok(miss.includes('wrong ✗') && miss.includes('already loaded') && !miss.includes('before (base model)') && !miss.includes('left this hour'));
   assert.ok(renderChat({ ...r, benchmark_hit: null }).includes('no benchmark sample'));
 });
 
