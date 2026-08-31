@@ -182,6 +182,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
+  .command('forget <id>', 'Stop serving the knowledge file from this node (deletes the local body; the public record stays)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchForget(ctx, a.id)))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 
 // ---------------------------------------------------------------- one-liners (publish / use)
@@ -286,8 +287,8 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
   .command('stop', 'Stop the aindrive agent', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'stop')))
   .command('sync', 'Rewrite the drive mirror from the current market state', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'sync')))
   .command('login', 'One-time browser pairing of the drive folder (interactive)', (yy: Y) => yy.option('server', { type: 'string', describe: `aindrive server (default ${drive.DEFAULT_AINDRIVE_SERVER})` })
-    .option('name', { type: 'string', describe: 'drive name' }).option('no-open', { type: 'boolean', default: false }),
-  run(async (ctx, a: G & { server?: string; name?: string; 'no-open': boolean }) => { const code = await drive.driveLogin(ctx, { server: a.server, name: a.name, noOpen: a['no-open'] }); process.exit(code); }, true))
+    .option('name', { type: 'string', describe: 'drive name' }).option('open', { type: 'boolean', default: true, describe: 'open the browser for the pairing login (--no-open prints the link only)' }),
+  run(async (ctx, a: G & { server?: string; name?: string; open: boolean }) => { const code = await drive.driveLogin(ctx, { server: a.server, name: a.name, noOpen: !a.open }); process.exit(code); }, true))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 
 // ---------------------------------------------------------------- chain

@@ -221,6 +221,16 @@ export async function patchRm(ctx: CliContext, id: string): Promise<void> {
   ok(ctx, `draft ${id} deleted`);
 }
 
+export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: string[] }
+
+/** `ainize patch forget <id>` — stop serving the knowledge file from this node (the public record is untouched). */
+export async function patchForget(ctx: CliContext, id: string): Promise<ForgetResult> {
+  const r = await new NodeClient(ctx).post<ForgetResult>(`/api/patches/${encodeURIComponent(id)}/forget`);
+  emit(ctx, r, (x) => c.ok('✓ ') + `forgot ${c.id(x.patch_id)} body ${c.dim(shortHash(x.sha256, 12))} — ${x.deleted_file ? 'file deleted' : 'file left in place'}, no longer served from this node`
+    + (x.also_affects.length ? `\n${c.warn('! ')}same body as ${x.also_affects.join(', ')} — those are no longer served from here either` : ''));
+  return r;
+}
+
 
 /**
  * `ainize use <id>` — the one-line consumer path: check it is verified, pay automatically (x402), download,

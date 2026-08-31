@@ -13,7 +13,7 @@ import { startNode, seedDemo, type RunningNode } from '@ngram/node';
 import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
-import { patchLs, patchGet, patchRecords, patchPublish, patchImport, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
+import { patchLs, patchGet, patchRecords, patchPublish, patchImport, patchForget, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
 import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey } from '../src/commands/teach.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
@@ -351,4 +351,17 @@ test('patch import: downloaded lesson (.npz + recipe.json) becomes a private DRA
   await assert.rejects(patchImport(ctx, { file, recipe: recipePath }), /already exists/);
   const again = await patchImport(ctx, { file, recipe: recipePath, id: 'taught-freedonia-copy' });
   assert.equal(again.anchor.id, 'taught-freedonia-copy');
+});
+
+test('patch forget stops serving a body from this node; the record is untouched and unknown ids fail', async () => {
+  const before = await patchGet(ctx, 'law-us-2025');
+  assert.ok(before.has_body);
+  const r = await patchForget(ctx, 'law-us-2025');
+  assert.equal(r.patch_id, 'law-us-2025');
+  assert.equal(r.sha256, before.anchor.patch_sha256);
+  const after = await patchGet(ctx, 'law-us-2025');
+  assert.equal(after.has_body, false);
+  assert.equal(after.status, before.status);
+  await assert.rejects(patchForget(ctx, 'does-not-exist'), /patch not found/);
+  await assert.rejects(patchForget(ctx, 'law-us-2025'), /body not held by this node/);
 });
