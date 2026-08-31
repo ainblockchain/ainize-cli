@@ -200,15 +200,15 @@ export async function patchUse(ctx: CliContext, id: string, opts: { apply?: bool
   const detail = await client.get<PatchDetail & { purchased: boolean; has_body: boolean; owned: boolean; applied: boolean }>(`/api/patches/${encodeURIComponent(id)}`);
   const apply = opts.apply !== false;
   // SUPERSEDED knowledge stays valid (point-in-time versions); it just has a newer version on the same subject.
-  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (검증 ${detail.passed}/${detail.quorum}) — not verified yet; try \`ainize patch get ${id}\``);
-  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (최신 버전 있음)`));
+  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet; try \`ainize patch get ${id}\``);
+  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
     if (apply) { await patchApply(ctx, id); }
-    if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "질문"`));
+    if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "your question"`));
     return { already: true };
   }
   const r = await patchBuy(ctx, id, apply);
-  if (!ctx.json) ok(ctx, c.dim(apply ? `loaded into the model — try: ainize chat ${id} "질문"` : `downloaded — load with: ainize patch apply ${id}`));
+  if (!ctx.json) ok(ctx, c.dim(apply ? `loaded into the model — try: ainize chat ${id} "your question"` : `downloaded — load with: ainize patch apply ${id}`));
   return r;
 }

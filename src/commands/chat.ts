@@ -1,9 +1,9 @@
 /**
  * `ainize chat` — live-test a knowledge patch (ChatMode): ask the serving model the same question *before*
- * and *after* the patch is loaded, and see whether the answer became the benchmark's expected one (정답).
+ * and *after* the patch is loaded, and see whether the answer became the benchmark's expected one.
  *
  *   ainize chat --list                                   patches whose bodies are on this node → testable
- *   ainize chat pixelplus-087600 "종목코드 픽셀플러스"      one-shot compare (base vs patched)
+ *   ainize chat pixelplus-087600 "Pixelplus ticker code? Digits only."   one-shot compare (base vs patched)
  *   ainize chat pixelplus-087600                         interactive REPL (transcript kept, /quit to exit)
  */
 import { createInterface } from 'node:readline';
@@ -62,7 +62,7 @@ export async function chatOnce(ctx: CliContext, patchId: string, messages: ChatM
   return new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
 }
 
-const marker = (hit: boolean | null | undefined): string => (hit === true ? c.ok('정답 ✓ (benchmark)') : hit === false ? c.err('오답 ✗ (benchmark)') : c.dim('(no benchmark sample for this question)'));
+const marker = (hit: boolean | null | undefined): string => (hit === true ? c.ok('correct ✓ (benchmark)') : hit === false ? c.err('wrong ✗ (benchmark)') : c.dim('(no benchmark sample for this question)'));
 
 function answerBlock(label: string, ans: ChatAnswer | null, extra: string[], showThinking: boolean): string {
   if (!ans) return '';
@@ -73,7 +73,7 @@ function answerBlock(label: string, ans: ChatAnswer | null, extra: string[], sho
   return lines.join('\n');
 }
 
-/** Pretty-print a chat response: both answers, latency / applied ms and the 정답 marker. */
+/** Pretty-print a chat response: both answers, latency / applied ms and the correct-answer marker. */
 export function renderChat(r: ChatResponse, a: ChatArgs = {}): string {
   const showThinking = !!a.thinking;
   const out: string[] = [];

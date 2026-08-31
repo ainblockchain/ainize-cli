@@ -181,11 +181,11 @@ cli.command('publish <file>', 'One line to sell knowledge: register a .npz + ben
   .option('model', { type: 'string', demandOption: true, describe: 'target model id_M (e.g. Qwen3.8-Flash-Next)' })
   .option('benchmark', { type: 'string', demandOption: true, describe: 'bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}' })
   .option('price', { type: 'string', describe: 'price in the node currency (AIN or node credit)' })
-  .option('id', { type: 'string' }).option('description', { type: 'string' }).option('parents', { type: 'string', describe: 'comma list of source knowledge ids (원작자 수익 분배)' })
+  .option('id', { type: 'string' }).option('description', { type: 'string' }).option('parents', { type: 'string', describe: 'comma list of source knowledge ids (creators get a revenue share)' })
   .option('branch', { type: 'string' }).option('topic', { type: 'string' }).option('license', { type: 'string' })
   .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' })
-  .example('$0 publish ./my-knowledge.npz --name "한국 상장사 종목코드" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', ''),
+  .example('$0 publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', ''),
 run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, { ...a, announce: a.announce !== false })));
 
 cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
@@ -195,7 +195,7 @@ cli.command('use <id>', 'One line to use knowledge: check it is verified → pay
 run((ctx, a: G & { id: string; apply: boolean }) => patch.patchUse(ctx, a.id, { apply: a.apply })));
 
 // ---------------------------------------------------------------- chat (live test)
-cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (정답 check)', (y: Y) => fail(y)
+cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
   .positional('patchId', { type: 'string', describe: 'patch to test (see --list)' })
   .positional('prompt', { type: 'string', array: true, describe: 'question; omit for an interactive session (/quit to exit)' })
   .option('list', { alias: 'l', type: 'boolean', default: false, describe: 'list patches testable on this node and the runtime state' })
@@ -204,7 +204,7 @@ cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model
   .option('max-tokens', { type: 'number', default: 200, describe: 'answer length limit (1–1024)' })
   .option('system', { type: 'string', describe: 'system prompt prepended to the conversation' })
   .example('$0 chat --list', 'what can be tested here')
-  .example('$0 chat pixelplus-087600 "종목코드 픽셀플러스"', 'before/after in one shot')
+  .example('$0 chat pixelplus-087600 "Pixelplus ticker code? Digits only."', 'before/after in one shot')
   .example('$0 chat krx-all-2761 --mode patched', 'interactive session with the patch loaded'),
 run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; mode: chat.ChatMode; thinking: boolean; 'max-tokens': number; system?: string }) => {
   if (a.list || !a.patchId) {
