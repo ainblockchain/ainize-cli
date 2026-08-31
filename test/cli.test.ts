@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { defaultConfig, saveConfig, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, type RunningNode } from '@ngram/node';
 import { buildContext, progName, readState } from '../src/context.js';
-import { chatOnce, chatPatches, renderChat, assistantTurn, type ChatResponse } from '../src/commands/chat.js';
+import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords } from '../src/commands/patch.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
@@ -141,6 +141,9 @@ test('chat --list reports testable patches and the runtime state; chat refuses w
   assert.ok(d.items.every((e) => e.status !== 'DRAFT'));
   await assert.rejects(chatOnce(ctx, 'law-kr-2026', [{ role: 'user', content: '한국법 개정' }]), /runtime|unavailable|unreachable/i);
   await assert.rejects(chatOnce(ctx, 'law-kr-2026', [{ role: 'user', content: '   ' }]), /empty/);
+  await assert.rejects(chatOnce(ctx, 'law-kr-2026,law-kr-2025', [{ role: 'user', content: '한국법 개정' }]), /runtime|unavailable|unreachable/i);   // patch_ids path reaches the node
+  assert.deepEqual(d.applied, []);
+  assert.ok(Array.isArray(d.overlaps));
 });
 
 test('renderChat prints both answers, latency / load time and the correct-answer marker', () => {
@@ -155,6 +158,22 @@ test('renderChat prints both answers, latency / load time and the correct-answer
   const miss = renderChat({ ...r, benchmark_hit: false, base: null, applied_ms: null, was_applied: true, remaining_quota: null }, {});
   assert.ok(miss.includes('wrong ✗') && miss.includes('already loaded') && !miss.includes('before (base model)') && !miss.includes('left this hour'));
   assert.ok(renderChat({ ...r, benchmark_hit: null }).includes('no benchmark sample'));
+});
+
+test('multi-knowledge: parsePatchIds accepts a,b / repeats / caps at 3; renderChat shows load order and per-knowledge markers', () => {
+  assert.deepEqual(parsePatchIds('krx-all-2761,pixelplus-087600'), ['krx-all-2761', 'pixelplus-087600']);
+  assert.deepEqual(parsePatchIds(['a', 'a,b', ' c ']), ['a', 'b', 'c']);
+  assert.throws(() => parsePatchIds('a,b,c,d'), /at most 3/);
+  assert.throws(() => parsePatchIds(''), /patch id required/);
+  const r: ChatResponse = {
+    patch_id: 'krx-all-2761', patch_ids: ['krx-all-2761', 'pixelplus-087600'], mode: 'compare', model: 'Qwen3.8-Flash-Next', was_applied: false, applied_ms: 1500, benchmark_hit: true, remaining_quota: 18,
+    applied: [{ patch_id: 'krx-all-2761', applied_ms: 1200, was_applied: false }, { patch_id: 'pixelplus-087600', applied_ms: 300, was_applied: false }],
+    benchmark_hits: { 'krx-all-2761': true, 'pixelplus-087600': null },
+    base: { content: '005930', latency_ms: 140, model: 'Qwen3.8-Flash-Next' },
+    patched: { content: '087600', latency_ms: 151, model: 'Qwen3.8-Flash-Next' },
+  };
+  const out = renderChat(r);
+  for (const needle of ['after (2 knowledges loaded)', '1. krx-all-2761 (loaded in 1200 ms)', '2. pixelplus-087600 (loaded in 300 ms)', 'krx-all-2761', 'correct ✓', 'no benchmark sample']) assert.ok(out.includes(needle), needle);
 });
 
 test('agent balance derives the initial credit from /api/info instead of assuming 100', async () => {

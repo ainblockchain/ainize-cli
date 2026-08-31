@@ -196,25 +196,30 @@ run((ctx, a: G & { id: string; apply: boolean }) => patch.patchUse(ctx, a.id, { 
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
-  .positional('patchId', { type: 'string', describe: 'patch to test (see --list)' })
+  .positional('patchId', { type: 'string', describe: 'patch to test (see --list); `a,b` loads several together' })
   .positional('prompt', { type: 'string', array: true, describe: 'question; omit for an interactive session (/quit to exit)' })
   .option('list', { alias: 'l', type: 'boolean', default: false, describe: 'list patches testable on this node and the runtime state' })
+  .option('patch', { alias: 'p', type: 'string', describe: 'knowledge to load together, comma-separated (up to 3, in load order; the last wins where they overlap)' })
   .option('mode', { alias: 'm', choices: ['base', 'patched', 'compare'] as const, default: 'compare', describe: 'base = model only, patched = with the patch loaded, compare = both' })
   .option('thinking', { type: 'boolean', default: false, describe: 'let the model think first and show its reasoning' })
   .option('max-tokens', { type: 'number', default: 200, describe: 'answer length limit (1–1024)' })
   .option('system', { type: 'string', describe: 'system prompt prepended to the conversation' })
   .example('$0 chat --list', 'what can be tested here')
   .example('$0 chat pixelplus-087600 "Pixelplus ticker code? Digits only."', 'before/after in one shot')
-  .example('$0 chat krx-all-2761 --mode patched', 'interactive session with the patch loaded'),
-run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; mode: chat.ChatMode; thinking: boolean; 'max-tokens': number; system?: string }) => {
-  if (a.list || !a.patchId) {
-    if (!a.list && !a.patchId) throw new CliError(`patch id required — \`${PROG} chat --list\` shows what this node can test`);
+  .example('$0 chat krx-all-2761 --mode patched', 'interactive session with the patch loaded')
+  .example('$0 chat --patch krx-all-2761,pixelplus-087600 "픽셀플러스 종목코드 알려줘. 숫자만."', 'two knowledges loaded together (up to 3)'),
+run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; patch?: string; mode: chat.ChatMode; thinking: boolean; 'max-tokens': number; system?: string }) => {
+  // `--patch a,b` (or a comma-separated positional) selects the knowledge; with --patch the positional is part of the question.
+  const ids = a.patch ? chat.parsePatchIds(a.patch) : a.patchId ? chat.parsePatchIds(a.patchId) : [];
+  const promptParts = a.patch && a.patchId ? [a.patchId, ...(a.prompt ?? [])] : (a.prompt ?? []);
+  if (a.list || ids.length === 0) {
+    if (!a.list && ids.length === 0) throw new CliError(`patch id required — \`${PROG} chat --list\` shows what this node can test`);
     return chat.chatPatches(ctx);
   }
   const opts: chat.ChatArgs = { mode: a.mode, thinking: a.thinking, maxTokens: a['max-tokens'], system: a.system };
-  const prompt = (a.prompt ?? []).join(' ').trim();
-  if (prompt) return chat.chat(ctx, a.patchId, prompt, opts);
-  await chat.chatRepl(ctx, a.patchId, opts);
+  const prompt = promptParts.join(' ').trim();
+  if (prompt) return chat.chat(ctx, ids, prompt, opts);
+  await chat.chatRepl(ctx, ids, opts);
   process.exit(0);
 }, true));
 

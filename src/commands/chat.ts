@@ -5,6 +5,7 @@
  *   ainize chat --list                                   patches whose bodies are on this node → testable
  *   ainize chat pixelplus-087600 "Pixelplus ticker code? Digits only."   one-shot compare (base vs patched)
  *   ainize chat pixelplus-087600                         interactive REPL (transcript kept, /quit to exit)
+ *   ainize chat --patch krx-all-2761,pixelplus-087600 "…"  load up to 3 knowledges together (list order; the last wins on overlap)
  */
 import { createInterface } from 'node:readline';
 import type { CatalogEntry, RuntimeStatus } from '@ngram/core';
@@ -17,18 +18,42 @@ export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: s
 export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string }
 
 export interface ChatAnswer { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
+export interface ChatApplied { patch_id: string; applied_ms: number | null; was_applied: boolean }
 export interface ChatResponse {
   patch_id: string;
+  /** every knowledge loaded for this answer, in load order (nodes before teach mode omit it) */
+  patch_ids?: string[];
   mode: ChatMode | string;
   base: ChatAnswer | null;
   patched: ChatAnswer | null;
+  /** sum over all loaded knowledges */
   applied_ms: number | null;
   was_applied: boolean;
   model: string | null;
+  /** OR over benchmark_hits */
   benchmark_hit?: boolean | null;
+  applied?: ChatApplied[];
+  benchmark_hits?: Record<string, boolean | null>;
   remaining_quota: number | null;
 }
-export interface ChatPatchesResponse { items: CatalogEntry[]; runtime: RuntimeStatus; lock: { owner: string; label: string; since: number } | null }
+export interface ChatPatchesResponse {
+  items: CatalogEntry[]; runtime: RuntimeStatus; lock: { owner: string; label: string; since: number } | null;
+  /** knowledge the operator keeps loaded for everyone (part of every "before" answer) */
+  applied?: string[];
+  overlaps?: { a: string; b: string; rows: number }[];
+}
+
+/** Up to 3 knowledges per live test (server limit). */
+export const MAX_CHAT_PATCHES = 3;
+
+/** `a,b,c` / repeated values → unique trimmed ids (1..3). */
+export function parsePatchIds(input: string | string[] | undefined): string[] {
+  const raw = Array.isArray(input) ? input : input ? [input] : [];
+  const ids = [...new Set(raw.flatMap((s) => String(s).split(/[,\s+]+/)).map((s) => s.trim()).filter(Boolean))];
+  if (ids.length === 0) throw new CliError(`patch id required — \`${PROG} chat --list\` shows what this node can test`);
+  if (ids.length > MAX_CHAT_PATCHES) throw new CliError(`at most ${MAX_CHAT_PATCHES} knowledges can be loaded together (got ${ids.length})`);
+  return ids;
+}
 
 const CHAT_TIMEOUT_MS = 15 * 60_000;   // apply + two generations on a busy runtime
 
@@ -41,7 +66,9 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       ? `${c.ok('runtime ready')}  model ${c.bold(rt.model ?? '?')}  ${rt.hook ? 'live-apply hook on' : c.warn('no live-apply hook')}${rt.applied.length ? `  applied: ${rt.applied.join(', ')}` : ''}`
       : c.warn(`runtime unavailable${rt.error ? ` — ${rt.error}` : ''}`) + c.dim('  (chat needs a serving node; pass --node <url> of one)');
     const lock = x.lock ? c.dim(`runtime busy: ${x.lock.label} by ${x.lock.owner} since ${new Date(x.lock.since).toLocaleTimeString()}`) : '';
-    return [head, lock, table(x.items, [
+    const pinned = x.applied?.length ? c.warn(`always loaded on this node (part of every "before" answer): ${x.applied.join(', ')}`) : '';
+    const overlaps = x.overlaps?.length ? c.dim('overlapping memory entries: ' + x.overlaps.map((o) => `${o.a} ∩ ${o.b} = ${o.rows.toLocaleString('en-US')}`).join('; ')) : '';
+    return [head, lock, pinned, overlaps, table(x.items, [
       { key: 'id', title: 'ID', get: (e) => c.id(e.anchor.id) },
       { key: 'name', title: 'NAME', get: (e) => e.anchor.name },
       { key: 'model', title: 'MODEL', get: (e) => e.anchor.model.id_M },
@@ -50,15 +77,17 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       { key: 'att', title: 'VERIFIED', get: (e) => { const s = `${e.passed}/${e.quorum}`; return e.quorum_ok ? c.ok(s + ' ✓') : c.warn(s); }, align: 'right' },
       { key: 'sample', title: 'TRY', get: (e) => { const s = e.anchor.benchmark.samples?.[0]; return s ? `${JSON.stringify(s.prompt.trim())} → ${s.expect}` : c.dim('-'); } },
     ], 'no testable patch on this node — its body must be held here (seller node, or `' + PROG + ' patch buy <id>` first)'),
-    x.items.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session`) : ''].filter(Boolean).join('\n');
+    x.items.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`) : ''].filter(Boolean).join('\n');
   });
   return d;
 }
 
-/** One request → POST /api/chat. */
-export async function chatOnce(ctx: CliContext, patchId: string, messages: ChatMessage[], a: ChatArgs = {}): Promise<ChatResponse> {
+/** One request → POST /api/chat. One id sends `patch_id` (works on every node); several send `patch_ids` (teach-mode nodes). */
+export async function chatOnce(ctx: CliContext, patchIds: string | string[], messages: ChatMessage[], a: ChatArgs = {}): Promise<ChatResponse> {
   if (!messages.some((m) => m.role === 'user' && m.content.trim())) throw new CliError('prompt is empty');
-  const body = { patch_id: patchId, mode: a.mode ?? 'compare', messages, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
+  const ids = parsePatchIds(patchIds);
+  const target = ids.length === 1 ? { patch_id: ids[0] } : { patch_ids: ids };
+  const body = { ...target, mode: a.mode ?? 'compare', messages, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
   return new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
 }
 
@@ -78,10 +107,18 @@ export function renderChat(r: ChatResponse, a: ChatArgs = {}): string {
   const showThinking = !!a.thinking;
   const out: string[] = [];
   out.push(answerBlock('before (base model)', r.base, [], showThinking));
-  const patchedExtra = [r.applied_ms !== null ? `loaded in ${r.applied_ms} ms` : r.was_applied ? 'already loaded' : ''].filter(Boolean);
-  out.push(answerBlock(`after (${r.patch_id} loaded)`, r.patched, patchedExtra, showThinking));
+  const ids = r.patch_ids?.length ? r.patch_ids : [r.patch_id];
+  const perPatch = r.applied?.length ? r.applied : [{ patch_id: r.patch_id, applied_ms: r.applied_ms, was_applied: r.was_applied }];
+  const loadNote = (x: ChatApplied) => (x.applied_ms !== null ? `loaded in ${x.applied_ms} ms` : x.was_applied ? 'already loaded' : '');
+  const patchedExtra = ids.length === 1
+    ? [loadNote(perPatch[0])].filter(Boolean)
+    : [perPatch.map((x, i) => `${i + 1}. ${x.patch_id}${loadNote(x) ? ` (${loadNote(x)})` : ''}`).join(' → ')];
+  out.push(answerBlock(`after (${ids.length === 1 ? ids[0] : `${ids.length} knowledges`} loaded)`, r.patched, patchedExtra, showThinking));
   const foot: string[] = [];
-  if (r.patched) foot.push(marker(r.benchmark_hit));
+  if (r.patched) {
+    if (ids.length > 1 && r.benchmark_hits) foot.push(...ids.map((id) => `${c.id(id)}: ${marker(r.benchmark_hits?.[id])}`));
+    else foot.push(marker(r.benchmark_hit));
+  }
   if (r.model) foot.push(c.dim(`model ${r.model}`));
   if (r.remaining_quota !== null && r.remaining_quota !== undefined) foot.push(c.dim(`free live tests left this hour: ${r.remaining_quota}`));
   out.push(foot.join('  '));
@@ -92,9 +129,9 @@ export function initialMessages(a: ChatArgs): ChatMessage[] {
   return a.system ? [{ role: 'system', content: a.system }] : [];
 }
 
-/** One-shot: `ainize chat <patchId> <prompt>` */
-export async function chat(ctx: CliContext, patchId: string, prompt: string, a: ChatArgs = {}): Promise<ChatResponse> {
-  const r = await chatOnce(ctx, patchId, [...initialMessages(a), { role: 'user', content: prompt }], a);
+/** One-shot: `ainize chat <patchId>[,<id2>] <prompt>` */
+export async function chat(ctx: CliContext, patchIds: string | string[], prompt: string, a: ChatArgs = {}): Promise<ChatResponse> {
+  const r = await chatOnce(ctx, patchIds, [...initialMessages(a), { role: 'user', content: prompt }], a);
   emit(ctx, r, (x) => renderChat(x, a));
   return r;
 }
@@ -110,14 +147,15 @@ export interface ReplState { transcript: ChatMessage[]; turns: number; mode: Cha
  * Interactive REPL: reads lines from stdin, keeps the transcript (system + user + the model's answer with the
  * patch loaded), `/quit` to exit. Slash commands: /mode base|patched|compare, /reset, /help.
  */
-export async function chatRepl(ctx: CliContext, patchId: string, a: ChatArgs = {}, io: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {}): Promise<ReplState> {
+export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: ChatArgs = {}, io: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {}): Promise<ReplState> {
+  const ids = parsePatchIds(patchIds);
   const state: ReplState = { transcript: initialMessages(a), turns: 0, mode: a.mode ?? 'compare' };
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const tty = !!(input as NodeJS.ReadStream).isTTY;
   const rl = createInterface({ input, output: tty ? output : undefined, prompt: c.bold('you> '), terminal: tty });
   const say = (s: string) => { if (!ctx.quiet && !ctx.json) output.write(s + '\n'); };
-  say(c.dim(`live test of ${c.id(patchId)} · mode ${state.mode} · /quit to exit, /help for commands`));
+  say(c.dim(`live test of ${ids.map((x) => c.id(x)).join(' + ')} · mode ${state.mode} · /quit to exit, /help for commands`));
 
   const handle = async (line: string): Promise<boolean> => {
     const text = line.trim();
@@ -139,7 +177,7 @@ export async function chatRepl(ctx: CliContext, patchId: string, a: ChatArgs = {
     }
     const messages = [...state.transcript, { role: 'user' as const, content: text }];
     try {
-      const r = await chatOnce(ctx, patchId, messages, { ...a, mode: state.mode });
+      const r = await chatOnce(ctx, ids, messages, { ...a, mode: state.mode });
       state.turns++;
       const reply = assistantTurn(r);
       state.transcript = [...messages, ...(reply ? [{ role: 'assistant' as const, content: reply }] : [])].slice(-24);
