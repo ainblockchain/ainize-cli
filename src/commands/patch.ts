@@ -1,9 +1,10 @@
 /**
  * `ngram patch …` — publish, inspect, verify, buy and apply knowledge patches.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import type { CatalogEntry, LedgerRecord, PatchAnchor } from '@ngram/core';
+import { basename, resolve } from 'node:path';
+import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } from '../output.js';
@@ -96,6 +97,33 @@ export interface PublishArgs {
   topic?: string; license?: string; billing?: 'per_download' | 'per_apply_hour' | 'per_hit'; announce?: boolean;
   /** hidden from public catalogs (e2e/test publishing on a shared chain) */
   test?: boolean;
+  /** data providers credited on the record: `addr:name:share` (name optional: `addr:share`), up to 4, Σ share ≤ 1 */
+  contributor?: string[];
+}
+
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * `--contributor 0xabc…:Alice:0.7` → Contributor (role data_provider, proof declared — the operator vouches for the address;
+ * a *signed* proof only comes from the browser teach flow). `0xabc…:0.7` omits the name; `0xabc…:Alice:0` is credit-only.
+ */
+export function parseContributors(list: string[] | undefined): Contributor[] | undefined {
+  if (!list?.length) return undefined;
+  const out: Contributor[] = [];
+  for (const raw of list) {
+    const parts = raw.split(':').map((x) => x.trim());
+    if (parts.length < 2) throw new CliError(`--contributor must be addr:name:share or addr:share (got "${raw}")`);
+    const address = parts[0]; const shareStr = parts[parts.length - 1]; const name = parts.slice(1, -1).join(':').trim();
+    if (!ADDR_RE.test(address)) throw new CliError(`--contributor: "${address}" is not an AIN address (0x + 40 hex)`);
+    const share = Number(shareStr.endsWith('%') ? Number(shareStr.slice(0, -1)) / 100 : shareStr);
+    if (!Number.isFinite(share) || share < 0 || share > 1) throw new CliError(`--contributor: share must be 0..1 (or 0%..100%), got "${shareStr}"`);
+    if (name.length > 40) throw new CliError('--contributor: name must be at most 40 characters');
+    out.push({ address, share, role: 'data_provider', proof: 'declared', ...(name ? { name } : {}) });
+  }
+  if (out.length > 4) throw new CliError('at most 4 contributors per patch');
+  const sum = out.reduce((a, x) => a + x.share, 0);
+  if (sum > 1 + 1e-9) throw new CliError(`contributor shares add up to ${sum} (> 1)`);
+  return out;
 }
 
 export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ anchor: PatchAnchor; announced: boolean }> {
@@ -109,12 +137,15 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   if (!b.schema) throw new CliError('benchmark.schema is required (e.g. "krx-ticker-codes")');
   if (!b.queries) b.queries = 0;
   if (!b.format) b.format = ['template'];
+  const contributors = parseContributors(a.contributor);
   const client = new NodeClient(ctx);
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: a.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
+    contributors: contributors ? JSON.stringify(contributors) : undefined,
   });
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
+  if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
   let announced = false;
   if (a.announce) { await patchAnnounce(ctx, r.anchor.id); announced = true; }
   else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ainize patch announce ${r.anchor.id}`));
@@ -212,3 +243,93 @@ export async function patchUse(ctx: CliContext, id: string, opts: { apply?: bool
   if (!ctx.json) ok(ctx, c.dim(apply ? `loaded into the model — try: ainize chat ${id} "your question"` : `downloaded — load with: ainize patch apply ${id}`));
   return r;
 }
+
+// ---------------------------------------------------------------- `ainize patch import` (spec §10 Option B / §6.4)
+/** `recipe.json` as served by `GET /api/teach/jobs/:id/recipe` (trainer recipe + node-side `lesson` block + `benchmark`); every field optional. */
+export interface LessonRecipe {
+  model_id?: string;
+  model?: { id_M?: string; [k: string]: unknown };
+  facts?: { prompt: string; answer: string; alt_prompt?: string }[];
+  benchmark_samples?: { prompt: string; expect: string }[];
+  benchmark?: Partial<BenchmarkSpec> & { schema?: string };
+  lesson?: {
+    job_id?: string; draft_id?: string | null; name?: string; model_id?: string; sha256?: string; rows?: number; filename?: string;
+    facts?: { prompt: string; answer: string; alt_prompt?: string }[]; contributor?: { address: string; name?: string };
+    context_patch_ids?: string[]; builds_on_context?: boolean; node?: { address?: string; name?: string; url?: string };
+  };
+  [k: string]: unknown;
+}
+
+export interface ImportArgs { file: string; recipe: string; id?: string; name?: string; model?: string; price?: string; license?: string; description?: string; }
+export interface ImportResult { anchor: PatchAnchor; sha256: string; sha_matches: boolean | null; model_matches: boolean | null; first_prompt: string | null }
+
+const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+
+/** What the draft is built from — pure, so the unit test can pin the mapping without a node. */
+export function draftFromRecipe(file: string, r: LessonRecipe, a: Partial<ImportArgs> = {}): { id: string; name: string; model_id: string | undefined; benchmark: BenchmarkSpec; description: string; contributors?: Contributor[]; parents: string[]; first_prompt: string | null } {
+  const lesson = r.lesson ?? {};
+  const facts = lesson.facts ?? r.facts ?? [];
+  const first = facts[0]?.prompt ?? null;
+  const base = basename(file).replace(/\.npz$/i, '').replace(/^lesson-/, '');
+  const id = a.id ?? (lesson.draft_id ? lesson.draft_id : `taught-${slugify(base) || 'lesson'}`);
+  const name = a.name ?? (lesson.name?.trim() || (first ? `Lesson: ${first.slice(0, 60)}` : `Lesson ${base}`));
+  const model_id = a.model ?? r.model_id ?? lesson.model_id ?? (typeof r.model?.id_M === 'string' ? r.model.id_M : undefined);
+  const samples = (r.benchmark?.samples ?? r.benchmark_samples ?? facts.map((f) => ({ prompt: `Q: ${f.prompt}\nA: `, expect: f.answer })));
+  const seen = new Set<string>();
+  const uniq = samples.filter((x) => { const k = `${x.prompt}\u0000${x.expect}`; if (seen.has(k) || !x.prompt) return false; seen.add(k); return true; });
+  const benchmark: BenchmarkSpec = {
+    schema: r.benchmark?.schema ?? `taught/${slugify(base) || 'lesson'}`, queries: r.benchmark?.queries ?? uniq.length,
+    format: r.benchmark?.format ?? ['template', 'chat'], collateral_bound_nat: r.benchmark?.collateral_bound_nat ?? 0.08, samples: uniq,
+  };
+  const src = lesson.node?.url ? ` Imported from ${lesson.node.name ? `${lesson.node.name} (${lesson.node.url})` : lesson.node.url}${lesson.job_id ? `, lesson ${lesson.job_id}` : ''}.` : '';
+  const description = a.description ?? `Taught lesson: ${facts.map((f) => `${f.prompt} → ${f.answer}`).join(' · ').slice(0, 400)}.${src}`.trim();
+  const contributors = lesson.contributor && ADDR_RE.test(lesson.contributor.address)
+    ? [{ address: lesson.contributor.address, share: 0, role: 'data_provider' as const, proof: 'declared' as const, ...(lesson.contributor.name ? { name: lesson.contributor.name.slice(0, 40) } : {}) }]
+    : undefined;
+  return { id, name, model_id, benchmark, description, contributors, parents: lesson.builds_on_context ? (lesson.context_patch_ids ?? []) : [], first_prompt: first };
+}
+
+/**
+ * Import a downloaded lesson (`lesson-<slug>.npz` + `recipe.json`) as a PRIVATE draft on this node: the file stays where it is
+ * (`keepInPlace`), the benchmark comes from the recipe, nothing is announced and no ledger record is written.
+ * The data provider is kept on the draft as credit only (share 0) and the origin is `teach`, so a later `patch announce`
+ * still shows "Taught by …" — raise the share with `PATCH /api/patches/:id` / the web form before announcing if you want to pay them.
+ */
+export async function patchImport(ctx: CliContext, a: ImportArgs): Promise<ImportResult> {
+  const file = resolve(a.file);
+  if (!existsSync(file)) throw new CliError(`file not found: ${file}`);
+  if (!file.endsWith('.npz')) throw new CliError('a lesson body is a .npz (addrs/before/after arrays)');
+  const recipePath = resolve(a.recipe);
+  if (!existsSync(recipePath)) throw new CliError(`recipe not found: ${recipePath} (download recipe.json next to the lesson file)`);
+  let recipe: LessonRecipe;
+  try { recipe = JSON.parse(readFileSync(recipePath, 'utf8')) as LessonRecipe; } catch { throw new CliError(`${recipePath} is not valid JSON`); }
+  const d = draftFromRecipe(file, recipe, a);
+  if (!d.model_id) throw new CliError('the recipe names no model — pass --model <id_M> (must be the exact model this node serves)');
+  const sha256 = createHash('sha256').update(readFileSync(file)).digest('hex');
+  const expect = recipe.lesson?.sha256;
+  const sha_matches = expect ? expect.toLowerCase() === sha256 : null;
+  if (sha_matches === false) throw new CliError(`sha256 mismatch: file is ${sha256}, recipe.json expects ${expect} — download the lesson again`);
+  const client = new NodeClient(ctx);
+  let model_matches: boolean | null = null;
+  try { const info = await client.get<{ model?: string | null }>('/api/info', { auth: false }); model_matches = info.model ? info.model === d.model_id : null; } catch { /* reported by the POST below */ }
+  if (model_matches === false) warnLine(ctx, `this node serves a different model than the lesson was trained on (node: see /api/info, lesson: ${d.model_id}) — the lesson will not fire`);
+  const parents: string[] = [];
+  for (const pid of d.parents) { try { await client.get(`/api/patches/${encodeURIComponent(pid)}`, { auth: false }); parents.push(pid); } catch { warnLine(ctx, `parent knowledge ${pid} is not on this node — imported without that lineage link (load it first for the same behaviour)`); } }
+  const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
+    id: d.id, name: d.name, model_id: d.model_id, benchmark: JSON.stringify(d.benchmark), description: d.description, price: a.price, license: a.license,
+    parents: parents.join(',') || undefined, path: file, contributors: d.contributors ? JSON.stringify(d.contributors) : undefined,
+  });
+  let anchor = r.anchor;
+  try { anchor = (await client.patch<{ anchor: PatchAnchor }>(`/api/patches/${encodeURIComponent(anchor.id)}`, { origin: 'teach' })).anchor; } catch { /* older node without origin — the draft is still usable */ }
+  const out: ImportResult = { anchor, sha256, sha_matches, model_matches, first_prompt: d.first_prompt };
+  emit(ctx, out, (x) => [
+    c.ok('✓ ') + `imported ${c.id(x.anchor.id)} as a private draft  (${x.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(x.sha256, 16)}${x.sha_matches ? c.ok(' matches recipe') : ''})`,
+    c.dim(`  no ledger record was written; the file stays at ${file}`),
+    c.dim(`  load it:   ainize patch apply ${x.anchor.id}`),
+    c.dim(`  try it:    ainize chat ${x.anchor.id} ${JSON.stringify(x.first_prompt ?? 'your question')}`),
+    c.dim(`  unload:    ainize patch remove ${x.anchor.id}`),
+  ].join('\n'));
+  return out;
+}
+
+function warnLine(ctx: CliContext, msg: string) { if (!ctx.quiet && !ctx.json) process.stderr.write(c.warn('warning: ') + msg + '\n'); }

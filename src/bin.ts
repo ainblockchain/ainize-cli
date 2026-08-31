@@ -21,6 +21,7 @@ import * as branch from './commands/branch.js';
 import * as drive from './commands/drive.js';
 import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
+import * as teach from './commands/teach.js';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -157,9 +158,18 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('parents', { type: 'string', describe: 'comma list of parent patch ids (lineage/royalty)' }).option('branch', { type: 'string' })
     .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx)' }).option('license', { type: 'string' })
     .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const })
+    .option('contributor', { type: 'string', array: true, describe: 'data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)' })
     .option('announce', { type: 'boolean', default: false, describe: 'announce to the network immediately' })
     .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce', ''),
   run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, a)))
+  .command('import <file>', 'Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record', (yy: Y) => yy
+    .positional('file', { type: 'string', demandOption: true, describe: 'lesson-<slug>.npz on the node machine (stays in place)' })
+    .option('recipe', { type: 'string', demandOption: true, describe: 'recipe.json downloaded with the lesson (benchmark, model, facts)' })
+    .option('id', { type: 'string', describe: 'draft id (default: the lesson\'s draft id, taught-<slug>)' }).option('name', { type: 'string' })
+    .option('model', { type: 'string', describe: 'target model id_M when the recipe names none' }).option('price', { type: 'string' }).option('license', { type: 'string' })
+    .option('description', { type: 'string' })
+    .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', 'then: $0 patch apply taught-pixelplus-1a2b3c'),
+  run((ctx, a: G & patch.ImportArgs) => patch.patchImport(ctx, a)))
   .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchAnnounce(ctx, a.id)))
   .command('verify <id>', 'Run this node\'s verifier on a patch and publish an attestation', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchVerify(ctx, a.id)))
   .command('challenge <id>', 'Open a re-verification challenge', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }).option('reason', { type: 'string', demandOption: true }),
@@ -185,8 +195,22 @@ cli.command('publish <file>', 'One line to sell knowledge: register a .npz + ben
   .option('branch', { type: 'string' }).option('topic', { type: 'string' }).option('license', { type: 'string' })
   .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' })
-  .example('$0 publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', ''),
+  .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
+  .example('$0 publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', '')
+  .example('$0 publish ./lesson.npz --name "…" --model … --benchmark ./bench.json --contributor 0xAbC…:Alice:0.7', 'Alice (data provider) gets 70 % of your share of every sale'),
 run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, { ...a, announce: a.announce !== false })));
+
+// ---------------------------------------------------------------- teach (visitor-taught lessons)
+cli.command('teach', 'Teach mode: lessons visitors taught the model (the teaching itself happens in the browser: <node>/chat?teach=1)', (y: Y) => fail(y)
+  .command('status [target]', 'Teaching policy of a node, the status of a lesson, or a data provider\'s lessons and earnings', (yy: Y) => yy
+    .positional('target', { type: 'string', describe: 'node URL · lesson URL (…/chat?lesson=<id>) or job id · teacher page (…/teacher/<address>) or 0x address; default: this node' })
+    .option('key', { type: 'string', describe: 'teaching key (64-hex) — or NGRAM_TEACH_KEY; shows the full lesson body for your own lessons' })
+    .option('key-file', { type: 'string', describe: 'the key backup JSON downloaded from the browser (ainize-teaching-key-….json)' })
+    .example('$0 teach status http://localhost:3402', 'is this node accepting lessons? publish mode, trainer, queue')
+    .example('$0 teach status "http://localhost:3402/chat?lesson=8f0c…" --key-file ainize-teaching-key-1a2b3c4d.json', 'your lesson: progress, checks, before/after')
+    .example('$0 teach status http://localhost:3402/teacher/0xAbC…', 'a data provider\'s lessons and earnings'),
+  run((ctx, a: G & { target?: string; key?: string; 'key-file'?: string }) => teach.teachStatus(ctx, a.target, { key: a.key, keyFile: a['key-file'] })))
+  .demandCommand(1, 'Subcommand is required (status).'), () => undefined);
 
 cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
   .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })

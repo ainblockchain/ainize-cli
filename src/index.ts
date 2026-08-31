@@ -11,3 +11,4 @@ export * from './commands/branch.js';
 export * from './commands/drive.js';
 export * from './commands/chain.js';
 export * from './commands/chat.js';
+export * from './commands/teach.js';

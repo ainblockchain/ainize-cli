@@ -3,16 +3,18 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultConfig, saveConfig, type NodeConfig } from '@ngram/core';
+import { createIdentity, defaultConfig, saveConfig, teachConfig, writeNpz, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, type RunningNode } from '@ngram/node';
-import { buildContext, progName, readState } from '../src/context.js';
+import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
-import { patchLs, patchGet, patchRecords } from '../src/commands/patch.js';
+import { patchLs, patchGet, patchRecords, patchPublish, patchImport, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
+import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, teachAuthHeader, loadTeacherKey } from '../src/commands/teach.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
@@ -42,6 +44,8 @@ before(async () => {
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
   cfg.verifier = { quorum: 1, stake: '5', allowSelfAttest: true, intervalMs: 300 };
   cfg.gossipIntervalMs = 60_000;
+  // teach mode on, stub trainer, offline stub (no model server in this test) — for `ainize teach status` / `patch import`
+  cfg.teach = { ...teachConfig(cfg), enabled: true, publish: 'auto', backend: 'stub', stubOffline: true, jobsPerKeyPerDay: 10, jobsPerIpPerDay: 50 };
   saveConfig(cfg, home);
   node = await startNode(cfg, { home, quiet: true, serveWeb: false });
   await seedDemo(node.market, { real: false, synthetic: true });
@@ -211,4 +215,136 @@ test('wallet shows pending royalty payouts; payouts ls / retry drive the node en
     assert.equal((await wallet(ctx)).payouts?.pending, 0);
     await assert.rejects(payoutRetry(ctx, row.id));   // 409 already paid
   } finally { node.market.payouts.wallet = null; }
+});
+
+// ---------------------------------------------------------------- PR-8: CLI parity for teach mode
+/** 1-row knowledge file in the trainer's layout (addrs int64, before/after float32 [1, D]). */
+function tinyNpz(path: string, addr: bigint, D = 160): void {
+  const a = Buffer.alloc(8); a.writeBigInt64LE(addr);
+  const before = Buffer.alloc(4 * D); const after = Buffer.alloc(4 * D); for (let i = 0; i < D; i++) after.writeFloatLE(0.02, 4 * i);
+  writeNpz(path, [{ name: 'addrs', descr: '<i8', shape: [1], body: a }, { name: 'before', descr: '<f4', shape: [1, D], body: before }, { name: 'after', descr: '<f4', shape: [1, D], body: after }]);
+}
+
+test('publish --contributor addr:name:share parses and lands on the draft anchor (declared proof)', async () => {
+  const alice = '0x1111111111111111111111111111111111111111';
+  assert.equal(parseContributors(undefined), undefined);
+  assert.deepEqual(parseContributors([`${alice}:Alice Kim:0.7`]), [{ address: alice, share: 0.7, role: 'data_provider', proof: 'declared', name: 'Alice Kim' }]);
+  assert.deepEqual(parseContributors([`${alice}:0.5`]), [{ address: alice, share: 0.5, role: 'data_provider', proof: 'declared' }]);
+  assert.equal(parseContributors([`${alice}:a:b:c:25%`])![0].name, 'a:b:c');          // name may contain colons; share accepts a percentage
+  assert.equal(parseContributors([`${alice}:a:b:c:25%`])![0].share, 0.25);
+  assert.throws(() => parseContributors(['nope:0.5']), CliError);
+  assert.throws(() => parseContributors([`${alice}:x:1.5`]), CliError);
+  assert.throws(() => parseContributors([`${alice}:x:0.6`, `0x2222222222222222222222222222222222222222:y:0.6`]), CliError);   // Σ > 1
+  const file = join(tmp, 'contrib.npz'); tinyNpz(file, 77n);
+  const bench = join(tmp, 'bench.json'); writeFileSync(bench, JSON.stringify({ schema: 'cli-contrib', queries: 1, format: ['template'], samples: [{ prompt: 'Q: c?\nA: ', expect: 'd' }] }));
+  const r = await patchPublish(ctx, { file, name: 'contrib test', model: 'Qwen3.8-Flash-Next', benchmark: bench, id: 'cli-contrib', announce: false, contributor: [`${alice}:Alice:0.7`, '0x2222222222222222222222222222222222222222:0'] });
+  assert.equal(r.announced, false);
+  assert.deepEqual(r.anchor.contributors, [{ address: alice, share: 0.7, role: 'data_provider', proof: 'declared', name: 'Alice' }, { address: '0x2222222222222222222222222222222222222222', share: 0, role: 'data_provider', proof: 'declared' }]);
+  assert.equal((await patchGet(ctx, 'cli-contrib')).status, 'DRAFT');
+});
+
+test('teach status: target parsing, node policy, lesson status with / without the teaching key, teacher page', async () => {
+  const nodeUrl = `http://127.0.0.1:${port}`;
+  assert.deepEqual(parseTeachTarget(undefined, nodeUrl), { kind: 'node', nodeUrl });
+  assert.deepEqual(parseTeachTarget('http://h:1/chat?teach=1', nodeUrl), { kind: 'node', nodeUrl: 'http://h:1' });
+  assert.deepEqual(parseTeachTarget('http://h:1/chat?lesson=8F0C1B2A-0000-4000-8000-000000000001', nodeUrl), { kind: 'job', nodeUrl: 'http://h:1', id: '8f0c1b2a-0000-4000-8000-000000000001' });
+  assert.deepEqual(parseTeachTarget('http://h:1/api/teach/jobs/8f0c1b2a-0000-4000-8000-000000000001/', nodeUrl), { kind: 'job', nodeUrl: 'http://h:1', id: '8f0c1b2a-0000-4000-8000-000000000001' });
+  assert.deepEqual(parseTeachTarget('8f0c1b2a-0000-4000-8000-000000000001', nodeUrl), { kind: 'job', nodeUrl, id: '8f0c1b2a-0000-4000-8000-000000000001' });
+  assert.deepEqual(parseTeachTarget('http://h:1/teacher/0x1111111111111111111111111111111111111111', nodeUrl), { kind: 'teacher', nodeUrl: 'http://h:1', address: '0x1111111111111111111111111111111111111111' });
+  assert.deepEqual(parseTeachTarget('0x1111111111111111111111111111111111111111', nodeUrl), { kind: 'teacher', nodeUrl, address: '0x1111111111111111111111111111111111111111' });
+  assert.throws(() => parseTeachTarget('::not a url::', nodeUrl), CliError);
+
+  // teaching key: bare hex or the browser backup JSON; the header verifies on the node (same format as the web app)
+  const id = createIdentity();
+  const backup = join(tmp, 'ainize-teaching-key.json');
+  writeFileSync(backup, JSON.stringify({ kind: 'ainize-teaching-key', version: 1, privateKey: id.privateKey, address: id.address, name: 'CLI Teacher', created_at: Date.now() }));
+  const key = loadTeacherKey({ keyFile: backup })!;
+  assert.equal(key.address, id.address); assert.equal(key.name, 'CLI Teacher');
+  assert.equal(parseTeacherKey(`0x${id.privateKey}`).address, id.address);
+  assert.equal(loadTeacherKey({}), null);
+  assert.throws(() => parseTeacherKey('{"privateKey":"xyz"}'), CliError);
+
+  // node view (policy)
+  const pol = await teachStatus(ctx, undefined);
+  assert.equal(pol.kind, 'node');
+  if (pol.kind !== 'node') return;
+  assert.equal(pol.policy.enabled, true); assert.equal(pol.policy.backend, 'stub'); assert.equal(pol.policy.publish, 'auto');
+  assert.match(renderTeachStatus(pol), /accepting lessons/); assert.match(renderTeachStatus(pol), /publish.*auto/);
+
+  // a lesson taught by that key (offline stub: prompt does not contain the answer → will_train)
+  const hdr = { 'x-ngram-auth': teachAuthHeader(key), 'content-type': 'application/json' };
+  const facts = [{ prompt: 'What is the capital of Freedonia?', answer: 'Fredville' }];
+  const created = await (await fetch(`${nodeUrl}/api/teach/jobs`, { method: 'POST', headers: hdr, body: JSON.stringify({ patch_ids: [], builds_on_context: false, facts, contributor: { name: 'CLI Teacher' } }) })).json() as { job: { id: string; status: string }; error?: string };
+  assert.ok(created.job?.id, `job not created: ${created.error}`);
+  const jobId = created.job.id;
+  const ready = await waitFor(() => teachStatus(ctx, jobId, { key: id.privateKey }), (r) => r.kind === 'job' && ['READY', 'NEEDS_MORE', 'FAILED'].includes(r.job.status), 60_000);
+  assert.equal(ready.kind, 'job');
+  if (ready.kind !== 'job') return;
+  assert.equal(ready.job.status, 'READY', ready.job.error);
+  assert.equal(ready.owner, true);
+  assert.equal(ready.job.facts?.[0].answer, 'Fredville');
+  assert.ok(ready.job.draft_id?.startsWith('taught-'));
+  const full = renderTeachStatus(ready);
+  for (const needle of ['READY', 'Freedonia', 'Fredville', 'checks', 'private draft', ready.job.draft_id!]) assert.ok(full.includes(needle), `missing ${needle}`);
+  // the same lesson from a URL and without the key → status only
+  const anon = await teachStatus(ctx, `${nodeUrl}/chat?lesson=${jobId}`);
+  assert.equal(anon.kind, 'job');
+  if (anon.kind !== 'job') return;
+  assert.equal(anon.owner, false); assert.equal(anon.job.status, 'READY'); assert.equal(anon.job.facts, undefined);
+  assert.match(renderTeachStatus(anon), /status only/);
+  // node view with the key lists the key's lessons
+  const mine = await teachStatus(ctx, nodeUrl, { keyFile: backup });
+  assert.equal(mine.kind, 'node');
+  if (mine.kind === 'node') assert.equal(mine.mine?.some((j) => j.id === jobId), true);
+  // teacher page (no published lesson yet → empty lessons, zero earnings)
+  const prof = await teachStatus(ctx, `${nodeUrl}/teacher/${id.address}`);
+  assert.equal(prof.kind, 'teacher');
+  if (prof.kind === 'teacher') { assert.equal(prof.profile.address.toLowerCase(), id.address.toLowerCase()); assert.equal(prof.profile.earnings.owed, '0'); assert.match(renderTeachStatus(prof), /Data provider/); }
+});
+
+test('patch import: downloaded lesson (.npz + recipe.json) becomes a private DRAFT with the recipe benchmark, origin teach, credit-only contributor', async () => {
+  const dir = join(tmp, 'lesson'); const { mkdirSync } = await import('node:fs'); mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'lesson-freedonia-ab12cd.npz'); tinyNpz(file, 4242n);
+  const sha256 = createHash('sha256').update(readFileSync(file)).digest('hex');
+  const teacher = '0x3333333333333333333333333333333333333333';
+  // shape of GET /api/teach/jobs/:id/recipe: trainer recipe + lesson block + benchmark
+  const recipe: LessonRecipe = {
+    version: 1, trainer: 'stub', facts: [{ prompt: 'What is the capital of Freedonia?', answer: 'Fredville' }],
+    benchmark_samples: [{ prompt: 'Q: What is the capital of Freedonia?\nA: ', expect: 'Fredville' }], model: { id_M: 'Qwen3.8-Flash-Next' }, model_id: 'Qwen3.8-Flash-Next',
+    benchmark: { schema: 'taught/freedonia-ab12cd', queries: 2, format: ['template', 'chat'], collateral_bound_nat: 0.08, samples: [{ prompt: 'Q: What is the capital of Freedonia?\nA: ', expect: 'Fredville' }, { prompt: 'What is the capital of Freedonia?', expect: 'Fredville' }] },
+    lesson: { job_id: '8f0c1b2a-0000-4000-8000-000000000001', draft_id: 'taught-freedonia-ab12cd', name: 'Capital of Freedonia', model_id: 'Qwen3.8-Flash-Next', sha256, rows: 1, filename: 'lesson-freedonia-ab12cd.npz',
+      facts: [{ prompt: 'What is the capital of Freedonia?', answer: 'Fredville' }], contributor: { address: teacher, name: 'Teacher T' }, context_patch_ids: ['law-kr-2026'], builds_on_context: true, node: { name: 'node-t', url: 'http://localhost:3412' } },
+  };
+  const recipePath = join(dir, 'recipe.json'); writeFileSync(recipePath, JSON.stringify(recipe));
+
+  // pure mapping (also covers a trainer-only recipe without the lesson block)
+  const d = draftFromRecipe(file, recipe);
+  assert.equal(d.id, 'taught-freedonia-ab12cd'); assert.equal(d.name, 'Capital of Freedonia'); assert.equal(d.model_id, 'Qwen3.8-Flash-Next');
+  assert.equal(d.benchmark.schema, 'taught/freedonia-ab12cd'); assert.equal(d.benchmark.samples?.length, 2); assert.deepEqual(d.parents, ['law-kr-2026']);
+  assert.deepEqual(d.contributors, [{ address: teacher, share: 0, role: 'data_provider', proof: 'declared', name: 'Teacher T' }]);
+  const bare = draftFromRecipe('/x/lesson-plain.npz', { facts: recipe.facts, benchmark_samples: recipe.benchmark_samples, model: { id_M: 'M' } });
+  assert.equal(bare.id, 'taught-plain'); assert.equal(bare.model_id, 'M'); assert.equal(bare.benchmark.schema, 'taught/plain'); assert.equal(bare.benchmark.queries, 1); assert.equal(bare.name, 'Lesson: What is the capital of Freedonia?'); assert.equal(bare.contributors, undefined);
+
+  // wrong file for this recipe → refused before anything reaches the node
+  const other = join(dir, 'lesson-other.npz'); tinyNpz(other, 4243n);
+  await assert.rejects(patchImport(ctx, { file: other, recipe: recipePath }), /sha256 mismatch/);
+  await assert.rejects(patchImport(ctx, { file, recipe: join(dir, 'missing.json') }), /recipe not found/);
+
+  const r = await patchImport(ctx, { file, recipe: recipePath });
+  assert.equal(r.sha_matches, true); assert.equal(r.sha256, sha256); assert.equal(r.first_prompt, 'What is the capital of Freedonia?');
+  assert.equal(r.anchor.id, 'taught-freedonia-ab12cd'); assert.equal(r.anchor.origin, 'teach'); assert.equal(r.anchor.model.id_M, 'Qwen3.8-Flash-Next');
+  assert.deepEqual(r.anchor.parents, ['law-kr-2026']);
+  assert.equal(r.anchor.contributors?.[0].address, teacher); assert.equal(r.anchor.contributors?.[0].share, 0);
+  assert.equal(r.anchor.benchmark.queries, 2); assert.deepEqual(r.anchor.benchmark.format, ['template', 'chat']);
+  const detail = await patchGet(ctx, 'taught-freedonia-ab12cd');
+  assert.equal(detail.status, 'DRAFT'); assert.equal(detail.has_body, true); assert.equal(detail.owned, true);
+  // kept in place: the node registered the file where it is, no copy
+  assert.equal(node.market.store.getDraft('taught-freedonia-ab12cd')?.file_path, file);
+  // no ledger record was written for it
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/patches/taught-freedonia-ab12cd/records`)).ok, true);
+  assert.equal(((await (await fetch(`http://127.0.0.1:${port}/api/patches/taught-freedonia-ab12cd/records`)).json()) as { records: unknown[] }).records.length, 0);
+  // importing twice → the node refuses the duplicate id (use --id to keep both)
+  await assert.rejects(patchImport(ctx, { file, recipe: recipePath }), /already exists/);
+  const again = await patchImport(ctx, { file, recipe: recipePath, id: 'taught-freedonia-copy' });
+  assert.equal(again.anchor.id, 'taught-freedonia-copy');
 });
