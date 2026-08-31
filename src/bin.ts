@@ -120,8 +120,8 @@ cli.command('logs', 'Show node events', (y: Y) => fail(y)
 run((ctx, a: G & { follow: boolean; patch?: string; kind?: string; limit: number }) => node.logs(ctx, a), true));
 cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic branches)', (y: Y) => fail(y)
   .option('real', { type: 'boolean', default: true, describe: 'register real patches from the runtime repo' })
-  .option('synthetic', { type: 'boolean', default: true, describe: 'create synthetic law/KR vs law/US demo patches' })
-  .option('prototype', { type: 'boolean', default: true, describe: 'import the reference prototype ledger' })
+  .option('synthetic', { type: 'boolean', default: false, describe: 'create synthetic law/KR vs law/US demo patches' })
+  .option('prototype', { type: 'boolean', default: false, describe: 'import the reference prototype ledger' })
   .option('announce', { type: 'boolean', default: true }),
 run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a)));
 cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
