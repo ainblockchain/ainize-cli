@@ -251,8 +251,8 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
   .command('stop', 'Stop the aindrive agent', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'stop')))
   .command('sync', 'Rewrite the drive mirror from the current market state', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'sync')))
   .command('login', 'One-time browser pairing of the drive folder (interactive)', (yy: Y) => yy.option('server', { type: 'string', describe: `aindrive server (default ${drive.DEFAULT_AINDRIVE_SERVER})` })
-    .option('name', { type: 'string', describe: 'drive name' }).option('no-open', { type: 'boolean', default: false }),
-  run(async (ctx, a: G & { server?: string; name?: string; 'no-open': boolean }) => { const code = await drive.driveLogin(ctx, { server: a.server, name: a.name, noOpen: a['no-open'] }); process.exit(code); }, true))
+    .option('name', { type: 'string', describe: 'drive name' }).option('open', { type: 'boolean', default: true, describe: 'open the browser for the pairing login (--no-open prints the link only)' }),
+  run(async (ctx, a: G & { server?: string; name?: string; open: boolean }) => { const code = await drive.driveLogin(ctx, { server: a.server, name: a.name, noOpen: !a.open }); process.exit(code); }, true))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 
 // ---------------------------------------------------------------- chain
