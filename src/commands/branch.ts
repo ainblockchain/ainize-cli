@@ -61,13 +61,35 @@ export async function route(ctx: CliContext, pairs: string[]): Promise<{ branch:
   return d;
 }
 
-export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number }[]; royalties: { patch_id: string; amount: string; created_at: number }[]; purchases: number; network: string; }
+/** One royalty transfer this node owes (node `payouts` table): pending → paid (tx_hash) | failed (last_error, retried every 60 s up to 20 times). */
+export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
+export interface PayoutSummary { pending: number; failed: number; paid: number }
+export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number }[]; royalties: { patch_id: string; amount: string; created_at: number }[]; purchases: number; network: string;
+  /** Unpaid royalty transfers (pre-payouts nodes omit the field). */
+  payouts?: PayoutSummary & { items: PayoutRow[] } }
+export interface PayoutsResponse { items: PayoutRow[]; summary: PayoutSummary; max_attempts: number; retry_ms: number; wallet: boolean }
+
+const payoutStatus = (p: PayoutRow, maxAttempts = 20) => p.status === 'paid' ? c.ok('paid') : p.status === 'failed' ? (p.attempts >= maxAttempts ? c.err('failed (gave up)') : c.warn(`failed · retrying`)) : c.warn('pending');
+const payoutTable = (rows: PayoutRow[], maxAttempts = 20) => table(rows, [
+  { key: 'i', title: 'ID', get: (p) => String(p.id), align: 'right' }, { key: 'p', title: 'PATCH', get: (p) => p.patch_id }, { key: 'to', title: 'TO', get: (p) => shortAddr(p.address, 8) },
+  { key: 'a', title: 'AMOUNT', get: (p) => `${p.amount} ${p.currency}`, align: 'right' }, { key: 's', title: 'STATUS', get: (p) => payoutStatus(p, maxAttempts) }, { key: 'n', title: 'TRIES', get: (p) => String(p.attempts), align: 'right' },
+  { key: 't', title: 'AT', get: (p) => fmtTime(p.updated_at) }, { key: 'e', title: 'TX / ERROR', get: (p) => p.tx_hash ? p.tx_hash.slice(0, 14) + '…' : (p.last_error ?? '').slice(0, 48) },
+]);
+
+/** The wallet's payout lines (exported so the test can render a fixture). */
+export function renderPayoutSummary(x: WalletResponse): string[] {
+  if (!x.payouts) return [];
+  const unpaid = x.payouts.items.filter((p) => p.status !== 'paid');
+  const head = x.payouts.pending + x.payouts.failed === 0 ? c.ok('none pending') : `${c.warn(String(x.payouts.pending))} pending · ${(x.payouts.failed ? c.err : c.dim)(String(x.payouts.failed))} failed · ${x.payouts.paid} paid`;
+  return [kv([['royalty payouts owed', head]]), ...(unpaid.length ? ['\n' + c.head('unpaid payouts (retry: ainize payouts retry <id>)') + '\n' + payoutTable(unpaid.slice(0, 10))] : [])];
+}
 
 export async function wallet(ctx: CliContext): Promise<WalletResponse> {
   const d = await new NodeClient(ctx).get<WalletResponse>('/api/me/wallet');
   emit(ctx, d, (x) => [
     kv([['address', x.address], ['ledger', `${x.kind} · ${x.network}`], ['balance', x.balance === null ? c.warn('unknown (chain unreachable)') : `${x.balance} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'}`],
       ['sales', x.sales.length], ['royalties received', x.royalties.length], ['purchases', x.purchases]]),
+    ...renderPayoutSummary(x),
     x.sales.length ? '\n' + c.head('recent sales') + '\n' + table(x.sales.slice(-10), [
       { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => `${s.amount} ${s.currency}`, align: 'right' },
       { key: 'b', title: 'BUYER', get: (s) => shortAddr(s.buyer, 8) }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
@@ -76,5 +98,24 @@ export async function wallet(ctx: CliContext): Promise<WalletResponse> {
       { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => s.amount, align: 'right' }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
     ]) : '',
   ].filter(Boolean).join('\n'));
+  return d;
+}
+
+/** `ainize payouts ls [--status]` — royalty transfers this node owes creators and data providers (AIN ledger). */
+export async function payoutsLs(ctx: CliContext, opts: { status?: string; address?: string; limit?: number } = {}): Promise<PayoutsResponse> {
+  const d = await new NodeClient(ctx).get<PayoutsResponse>(`/api/me/payouts${query({ status: opts.status, address: opts.address, limit: opts.limit })}`);
+  emit(ctx, d, (x) => [
+    kv([['pending', x.summary.pending], ['failed', x.summary.failed], ['paid', x.summary.paid], ['retry', `every ${Math.round(x.retry_ms / 1000)} s, up to ${x.max_attempts} attempts`], ['chain wallet', x.wallet ? 'yes' : c.warn('no (local ledger — rows cannot be paid from this node)')]]),
+    '', payoutTable(x.items, x.max_attempts),
+  ].join('\n'));
+  return d;
+}
+
+/** `ainize payouts retry <id>` — one immediate transfer attempt (allowed after the automatic attempts are exhausted). */
+export async function payoutRetry(ctx: CliContext, id: number): Promise<{ payout: PayoutRow }> {
+  const d = await new NodeClient(ctx).post<{ payout: PayoutRow }>(`/api/me/payouts/${id}/retry`, {});
+  emit(ctx, d, ({ payout: p }) => p.status === 'paid'
+    ? `${c.ok('✓')} payout #${p.id} paid: ${p.amount} ${p.currency} → ${shortAddr(p.address, 8)} (${p.tx_hash})`
+    : `${c.err('✗')} payout #${p.id} still ${p.status} after ${p.attempts} attempt(s): ${p.last_error ?? ''}`);
   return d;
 }

@@ -14,7 +14,7 @@ import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type C
 import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords } from '../src/commands/patch.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
-import { branchLs, route } from '../src/commands/branch.js';
+import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
 import { keysShow, configShow } from '../src/commands/init.js';
 import { runAgent, creditBalance, fetchInitialCredit, pickPatch, fetchCatalog } from '../../agent/src/agent.js';
@@ -183,4 +183,32 @@ test('agent balance derives the initial credit from /api/info instead of assumin
   const fresh = loadIdentity(join(tmp, 'agent-fresh'));
   assert.equal(await creditBalance(market, fresh.address), initial);          // no purchases yet → the node's grant
   assert.equal(await creditBalance(market, fresh.address, 7), 7);             // explicit override still honoured
+});
+
+test('wallet shows pending royalty payouts; payouts ls / retry drive the node endpoints (fake chain wallet)', async () => {
+  // pre-payouts nodes: no field → no lines
+  assert.deepEqual(renderPayoutSummary({ kind: 'local', address: '0x', balance: 1, sales: [], royalties: [], purchases: 0, network: 'local' }), []);
+  const creator = '0x2222222222222222222222222222222222222222';
+  const calls: string[] = [];
+  let failing = true;
+  node.market.payouts.wallet = { async transfer(to: string, value: number) { calls.push(`${to}:${value}`); if (failing) throw new Error('chain down (fake)'); return { tx_hash: '0xtxcli' }; } };
+  try {
+    const [row] = node.market.payouts.enqueue({ patch_id: 'law-kr-2026', seller: node.market.address, buyer: '0x4444444444444444444444444444444444444444', amount: '10', currency: 'AIN', scheme: 'ain-transfer', tx_hash: '0xbuy', royalty: { [node.market.address]: '7', [creator]: '3' }, billing: 'per_download', created_at: Date.now() }, 'cli-settle-hash');
+    const w = await wallet(ctx);
+    assert.equal(w.payouts?.pending, 1);
+    assert.equal(w.payouts?.items[0].id, row.id);
+    const lines = renderPayoutSummary(w as WalletResponse).join('\n');
+    assert.match(lines, /royalty payouts owed/); assert.match(lines, /1.*pending/); assert.match(lines, /law-kr-2026/); assert.match(lines, /ainize payouts retry/);
+    const r1 = await payoutRetry(ctx, row.id);
+    assert.equal(r1.payout.status, 'failed'); assert.equal(r1.payout.last_error, 'chain down (fake)');
+    const failed = await payoutsLs(ctx, { status: 'failed' });
+    assert.equal(failed.items.length, 1); assert.equal(failed.summary.failed, 1); assert.equal(failed.max_attempts, 20); assert.equal(failed.wallet, true);
+    failing = false;
+    const r2 = await payoutRetry(ctx, row.id);
+    assert.equal(r2.payout.status, 'paid'); assert.equal(r2.payout.tx_hash, '0xtxcli'); assert.equal(r2.payout.attempts, 2);
+    assert.deepEqual(calls, [`${creator}:3`, `${creator}:3`]);
+    assert.equal((await payoutsLs(ctx, { status: 'pending' })).items.length, 0);
+    assert.equal((await wallet(ctx)).payouts?.pending, 0);
+    await assert.rejects(payoutRetry(ctx, row.id));   // 409 already paid
+  } finally { node.market.payouts.wallet = null; }
 });

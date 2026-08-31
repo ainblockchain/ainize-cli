@@ -247,7 +247,13 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
-cli.command('wallet', 'Balance, sales and royalties of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
+cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
+cli.command('payouts', 'Royalty transfers this node owes creators and data providers (AIN ledger)', (y: Y) => fail(y)
+  .command(['ls', '$0'], 'List payouts', (yy: Y) => yy.option('status', { type: 'string', choices: ['pending', 'paid', 'failed'] }).option('address', { type: 'string', describe: 'only this recipient' }).option('limit', { type: 'number' })
+    .example('$0 payouts ls --status failed', ''),
+  run((ctx, a: G & { status?: string; address?: string; limit?: number }) => branch.payoutsLs(ctx, a)))
+  .command('retry <id>', 'Retry one failed / pending payout now', (yy: Y) => yy.positional('id', { type: 'number', demandOption: true }), run((ctx, a: G & { id: number }) => branch.payoutRetry(ctx, a.id))),
+  () => undefined);
 
 // ---------------------------------------------------------------- drive
 cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => fail(y)
