@@ -22,6 +22,7 @@ import * as drive from './commands/drive.js';
 import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
+import * as teachData from './commands/teach-dataset.js';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -202,7 +203,15 @@ cli.command('publish <file>', 'One line to sell knowledge: register a .npz + ben
 run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, { ...a, announce: a.announce !== false })));
 
 // ---------------------------------------------------------------- teach (visitor-taught lessons)
-cli.command('teach', 'Teach mode: lessons visitors taught the model (the teaching itself happens in the browser: <node>/chat?teach=1)', (y: Y) => fail(y)
+/**
+ * The teaching key every teach request is signed with. There is no account: the key IS the identity. Without one of
+ * these the CLI keeps its own at `<NGRAM_HOME>/teaching-key.json` and creates it on first use.
+ */
+const keyOpts = (y: Y): Y => y
+  .option('key', { type: 'string', describe: 'teaching key (64-hex) — or NGRAM_TEACH_KEY' })
+  .option('key-file', { type: 'string', describe: 'the key backup JSON from the browser (ainize-teaching-key-….json); default: <home>/teaching-key.json, created on first use' });
+
+cli.command('teach', 'Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (<node>/chat?teach=1)', (y: Y) => fail(y)
   .command('status [target]', 'Teaching policy of a node, the status of a lesson, or a data provider\'s lessons and earnings', (yy: Y) => yy
     .positional('target', { type: 'string', describe: 'node URL · lesson URL (…/chat?lesson=<id>) or job id · teacher page (…/teacher/<address>) or 0x address; default: this node' })
     .option('key', { type: 'string', describe: 'teaching key (64-hex) — or NGRAM_TEACH_KEY; shows the full lesson body for your own lessons' })
@@ -211,7 +220,64 @@ cli.command('teach', 'Teach mode: lessons visitors taught the model (the teachin
     .example('$0 teach status "http://localhost:3402/chat?lesson=8f0c…" --key-file ainize-teaching-key-1a2b3c4d.json', 'your lesson: progress, checks, before/after')
     .example('$0 teach status http://localhost:3402/teacher/0xAbC…', 'a data provider\'s lessons and earnings'),
   run((ctx, a: G & { target?: string; key?: string; 'key-file'?: string }) => teach.teachStatus(ctx, a.target, { key: a.key, keyFile: a['key-file'] })))
-  .demandCommand(1, 'Subcommand is required (status).'), () => undefined);
+
+  // ---- teach mode v2: the file door. One pipeline (dataset → validate → train → check → lesson), two entry points.
+  .command('dataset', 'The questions a lesson is trained from: upload a file, list, inspect, download, delete', (yy: Y) => yy
+    .command(['upload <file>', '$0 <file>'], 'Validate a dataset file and upload it (nothing is trained until you say so)', (z: Y) => keyOpts(z)
+      .positional('file', { type: 'string', demandOption: true, describe: '.jsonl · .json · .csv · .tsv · .txt with one question and its answer per row' })
+      .option('name', { type: 'string', describe: 'name for the dataset (default: the file name)' })
+      .option('format', { choices: ['jsonl', 'json', 'csv', 'tsv', 'txt'] as const, describe: 'override the detected format' })
+      .option('delimiter', { type: 'string', describe: 'csv/tsv separator when it is not detected (e.g. ";" or "\\t")' })
+      .option('header', { type: 'boolean', describe: '--no-header when the first row is already a question' })
+      .option('columns', { type: 'string', describe: 'JSON mapping when the column names are unusual: \'{"prompt":0,"answer":2}\'' })
+      .option('encoding', { type: 'string', describe: 'force an encoding (utf-8, euc-kr, …) when the preview looks like mojibake' })
+      .option('retention', { choices: ['keep', 'delete_after_training'] as const, describe: 'delete_after_training removes the questions from this node as soon as the lesson finishes' })
+      .option('train', { type: 'boolean', default: false, describe: 'queue a lesson from it right away' })
+      .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'with --train: how hard to train' })
+      .option('check', { type: 'boolean', describe: 'with --train: --no-check skips the side-effect check (publishing then stays blocked)' })
+      .option('rows', { type: 'number', describe: 'with --train: train only the first N questions' })
+      .example('$0 teach dataset ./questions.csv', 'validate + upload, print every line that will not train')
+      .example('$0 teach dataset ./qa.jsonl --train --effort thorough', 'upload and teach it in one line')
+      .example('$0 teach dataset ./data.csv --columns \'{"prompt":"질문","answer":"답"}\'', 'unusual column names'),
+    run((ctx, a: G & { file: string; key?: string; 'key-file'?: string; name?: string; format?: string; delimiter?: string; header?: boolean; columns?: string; encoding?: string; retention?: 'keep' | 'delete_after_training'; train: boolean; effort?: teachData.TrainOpts['effort']; check?: boolean; rows?: number }) =>
+      teachData.datasetUpload(ctx, a.file, { key: a.key, keyFile: a['key-file'], name: a.name, format: a.format, delimiter: a.delimiter, header: a.header, columns: a.columns, encoding: a.encoding, retention: a.retention, train: a.train, effort: a.effort, check: a.check, rows: a.rows })))
+    .command('ls', 'My datasets on this node', (z: Y) => keyOpts(z),
+      run((ctx, a: G & { key?: string; 'key-file'?: string }) => teachData.datasetLs(ctx, { key: a.key, keyFile: a['key-file'] })))
+    .command(['get <id>', 'download <id>'], 'One dataset: every source line with the reason it was or was not used; -o writes the questions to a file', (z: Y) => keyOpts(z)
+      .positional('id', { type: 'string', demandOption: true })
+      .option('out', { alias: 'o', type: 'string', describe: 'write the questions to this file (re-uploading it lands on the same dataset)' })
+      .option('format', { choices: ['jsonl', 'csv'] as const, default: 'jsonl', describe: 'download format (the .jsonl bytes are the fingerprint subject)' })
+      .option('rows', { type: 'number', describe: 'how many source lines to print (default 50, max 200)' })
+      .option('offset', { type: 'number', describe: 'start at this source line' })
+      .option('status', { type: 'string', describe: 'only lines with this status: ok|rejected|duplicate|conflict|too_long|empty|blocked|not_parsed|over_cap' })
+      .option('all', { type: 'boolean', default: false, describe: 'print every line, not only the ones that will not train' })
+      .example('$0 teach dataset get 6f2c… -o questions.jsonl', 'exactly what a lesson was trained on'),
+    run((ctx, a: G & { id: string; key?: string; 'key-file'?: string; out?: string; format: 'jsonl' | 'csv'; rows?: number; offset?: number; status?: string; all: boolean }) =>
+      teachData.datasetGet(ctx, a.id, { key: a.key, keyFile: a['key-file'], out: a.out, format: a.format, rows: a.rows, offset: a.offset, status: a.status, all: a.all })))
+    .command('rm <id>', 'Delete a dataset (the lessons trained from it are kept)', (z: Y) => keyOpts(z).positional('id', { type: 'string', demandOption: true }),
+      run((ctx, a: G & { id: string; key?: string; 'key-file'?: string }) => teachData.datasetRm(ctx, a.id, { key: a.key, keyFile: a['key-file'] })))
+    .demandCommand(1, 'Give a dataset file, or a subcommand (ls|get|rm).'), () => undefined)
+
+  .command('train <target>', 'Teach a lesson from a dataset id or a dataset file', (yy: Y) => keyOpts(yy)
+    .positional('target', { type: 'string', demandOption: true, describe: 'dataset id (`$0 teach dataset ls`) or a dataset file, which is uploaded first' })
+    .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'how hard to train (see `$0 teach status <node>`)' })
+    .option('check', { type: 'boolean', describe: '--no-check skips the side-effect check on the live model (publishing then stays blocked until a recheck)' })
+    .option('alt', { type: 'boolean', describe: '--no-alt trains only the wording in the file, not the second phrasing' })
+    .option('rows', { type: 'number', describe: 'train only the first N questions of the dataset' })
+    .option('name', { type: 'string', describe: 'name for the lesson (and for the dataset, when a file is uploaded here)' })
+    .option('patch', { type: 'string', describe: 'knowledge id(s) loaded while teaching, comma-separated — the lesson then builds on them' })
+    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage)' })
+    .example('$0 teach train 6f2c1b2a-…', 'train an uploaded dataset')
+    .example('$0 teach train ./questions.csv --effort quick --wait', 'file → lesson in one line')
+    .example('$0 teach train 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
+  run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; wait: boolean }) =>
+    teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, wait: a.wait })))
+
+  .command('jobs', 'My lessons on this node and the dataset each came from', (yy: Y) => keyOpts(yy)
+    .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),
+  run((ctx, a: G & { key?: string; 'key-file'?: string; dataset?: string }) => teachData.teachJobs(ctx, { key: a.key, keyFile: a['key-file'], dataset: a.dataset })))
+
+  .demandCommand(1, 'Subcommand is required (status|dataset|train|jobs).'), () => undefined);
 
 cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
   .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })

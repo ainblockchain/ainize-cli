@@ -9,10 +9,11 @@
  * the owner's full body (facts, before/after answers, checks); without it the node returns status only.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { identityFromPrivateKey, signMessage } from '@ngram/core';
+import { join } from 'node:path';
+import { identityFromPrivateKey, signMessage, type TeachDatasetRef, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
 import { teachAuthHeaderFor } from '@ngram/node';
 import { NodeClient } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, shortAddr, shortHash, table } from '../output.js';
 
 // ---------------------------------------------------------------- teaching key (same file format as the web "Download key backup")
@@ -40,6 +41,20 @@ export function parseTeacherKey(text: string): TeacherKey {
 }
 
 export interface KeyOpts { key?: string; keyFile?: string }
+
+/** Where the CLI keeps its own teaching key when none was passed — the same JSON the browser downloads as a backup. */
+export const TEACH_KEY_FILE = 'teaching-key.json';
+
+/**
+ * The key to sign with: `--key-file` / `--key` / `NGRAM_TEACH_KEY`, else `<home>/teaching-key.json` when it exists.
+ * Read-only — nothing is created here, so a read-only command never mints an identity (`ensureTeacherKey` does).
+ */
+export function loadTeacherKeyFor(ctx: { home: string }, o: KeyOpts = {}): TeacherKey | null {
+  const explicit = loadTeacherKey(o);
+  if (explicit) return explicit;
+  const p = join(ctx.home, TEACH_KEY_FILE);
+  return existsSync(p) ? parseTeacherKey(readFileSync(p, 'utf8')) : null;
+}
 
 /** Resolve the teaching key from --key / --key-file / NGRAM_TEACH_KEY (a hex key or a path to the backup). Null when none was given. */
 export function loadTeacherKey(o: KeyOpts = {}): TeacherKey | null {
@@ -101,18 +116,31 @@ export function parseTeachTarget(target: string | undefined, defaultNode: string
 // ---------------------------------------------------------------- response shapes (server types: packages/node/src/teach.ts)
 export interface TeachPolicy {
   enabled: boolean; publish: 'review' | 'auto' | 'never'; trainer: 'ready' | 'busy' | 'paused'; paused_reason?: string; backend: 'gradient' | 'stub';
-  queue: { depth: number; max: number; position_eta_s?: number | null };
-  limits: { facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; prompt_max: number; answer_max: number };
-  timing: { p50_s: number | null; p90_s: number | null; samples: number };
+  queue: { depth: number; max: number; position_eta_s?: number | null; queued_rows?: number; queued_rows_max?: number };
+  /** v2 (datasets) fields are optional so the CLI still reads a v1 node. */
+  limits: {
+    facts_per_job: number; jobs_per_key_per_day: number; jobs_per_ip_per_day: number; prompt_max: number; answer_max: number;
+    dataset_max_bytes?: number; dataset_max_rows?: number; dataset_max_source_lines?: number;
+    rows_per_job?: number; rows_per_job_source?: 'default' | 'measured' | 'operator';
+    rows_per_key_per_day?: number; rows_per_ip_per_day?: number; datasets_per_key_per_day?: number; dataset_ttl_days?: number;
+    formats?: string[]; declaration_rows?: number;
+  };
+  timing: { p50_s: number | null; p90_s: number | null; samples: number; backend?: 'gradient' | 'stub'; simulated?: boolean; s_per_row_p50?: number | null };
+  effort?: { id: TeachEffort; max_steps: number; eval_every: number }[];
+  samples?: { kind: string; name: string; rows: number }[];
   shares: { contributor: number; lineage: number }; model: { id_M: string | null }; applied: string[]; draft_ttl_days: number;
+  simulated_checks?: boolean;
 }
 export interface TeachJobView {
   id: string; status: string; position?: number; eta_s?: number | null; blocked?: string | null; name?: string;
   contributor?: { address: string; name?: string }; context_patch_ids?: string[]; builds_on_context?: boolean;
   facts?: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean }[];
-  progress?: { step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number };
-  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string };
+  progress?: { step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; phase?: string; percent?: number; rows_total?: number; rows_touched?: number; eval_sample?: { n: number; of: number }; elapsed_s?: number };
+  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number; sampled?: { checked: number; of: number } }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string; simulated?: boolean; skipped?: true };
   result?: { sha256: string; rows: number; size_bytes: number };
+  /** teach mode v2: what this lesson was trained from. A lesson taught before datasets existed reports `id: null`. */
+  dataset?: TeachDatasetRef;
+  training?: TeachTrainingSpec;
   draft_id?: string; patch_id?: string; publish_status?: string; reject_reason?: string; error?: string; parent_job?: string;
   created_at?: number; updated_at?: number; started_at?: number; finished_at?: number; expires_at?: number;
 }
@@ -138,7 +166,7 @@ const pct = (x: number) => `${Math.round(x * 100)} %`;
 
 export async function teachStatus(ctx: CliContext, target: string | undefined, opts: KeyOpts = {}): Promise<TeachStatusResult> {
   const t = parseTeachTarget(target, ctx.nodeUrl);
-  const key = loadTeacherKey(opts);
+  const key = loadTeacherKeyFor(ctx, opts);
   const client = new NodeClient({ ...ctx, nodeUrl: t.nodeUrl });
   const nodeAddress = key ? await nodeAddressOf(client) : null;
   const signed = (path: string) => (key && nodeAddress ? { 'x-ngram-auth': signedTeachHeader(key, nodeAddress, 'GET', path) } : undefined);
@@ -171,9 +199,15 @@ export function renderTeachStatus(r: TeachStatusResult): string {
       kv([
         ['trainer', `${p.trainer === 'ready' ? c.ok('ready') : p.trainer === 'busy' ? c.warn('busy') : c.err('paused')}${p.paused_reason ? ` — ${p.paused_reason}` : ''} · backend ${p.backend}${p.backend === 'stub' ? c.dim(' (no GPU training on this node)') : ''}`],
         ['publish', p.publish === 'auto' ? 'auto — published lessons are announced at once' : p.publish === 'review' ? 'review — the operator approves each lesson first' : 'never — lessons stay private (try / keep / download only)'],
-        ['queue', `${p.queue.depth} / ${p.queue.max}${p.queue.position_eta_s !== null && p.queue.position_eta_s !== undefined ? ` · next lesson ≈ ${fmtDur(p.queue.position_eta_s)}` : ''}`],
-        ['typical lesson', p.timing.p50_s === null ? c.dim('no measurement yet') : `${fmtDur(p.timing.p50_s)} (p50) · ${fmtDur(p.timing.p90_s)} (p90) · ${p.timing.samples} measured`],
-        ['limits', `${p.limits.facts_per_job} corrections per lesson · ${p.limits.jobs_per_key_per_day} lessons per key and ${p.limits.jobs_per_ip_per_day} per IP a day · prompt ≤ ${p.limits.prompt_max} / answer ≤ ${p.limits.answer_max} chars`],
+        ['queue', `${p.queue.depth} / ${p.queue.max} lessons${p.queue.queued_rows !== undefined ? ` · ${p.queue.queued_rows} / ${p.queue.queued_rows_max} questions waiting` : ''}${p.queue.position_eta_s !== null && p.queue.position_eta_s !== undefined ? ` · next lesson ≈ ${fmtDur(p.queue.position_eta_s)}` : ''}`],
+        ['typical lesson', p.timing.simulated ? c.dim('not timed — this node simulates training (backend stub), so no duration here would be real')
+          : p.timing.p50_s === null ? c.dim(`no measurement yet (${p.timing.samples} of 3 lessons measured)`)
+            : `${fmtDur(p.timing.p50_s)} (p50) · ${fmtDur(p.timing.p90_s)} (p90) · ${p.timing.samples} measured${p.timing.s_per_row_p50 ? ` · ≈ ${p.timing.s_per_row_p50.toFixed(2)} s per question per pass` : ''}`],
+        ['limits', `${p.limits.rows_per_job ?? p.limits.facts_per_job} questions per lesson${p.limits.rows_per_job_source ? c.dim(` (${p.limits.rows_per_job_source})`) : ''} · ${p.limits.jobs_per_key_per_day} lessons per key and ${p.limits.jobs_per_ip_per_day} per IP a day · prompt ≤ ${p.limits.prompt_max} / answer ≤ ${p.limits.answer_max} chars`],
+        ...(p.limits.dataset_max_rows !== undefined
+          ? [['datasets', `up to ${p.limits.dataset_max_rows.toLocaleString('en-US')} questions per file · files ≤ ${fmtBytes(p.limits.dataset_max_bytes)} · ${(p.limits.formats ?? []).join(' ')} · ${p.limits.datasets_per_key_per_day} uploads and ${p.limits.rows_per_key_per_day?.toLocaleString('en-US')} trained questions per key a day · kept ${p.limits.dataset_ttl_days} days`] as [string, unknown]]
+          : []),
+        ...(p.effort?.length ? [['effort', p.effort.map((e) => `${e.id} (${e.max_steps} passes)`).join(' · ')] as [string, unknown]] : []),
         ['data-provider share', `${pct(p.shares.contributor)} of the node's share of each sale (lineage pool ${pct(p.shares.lineage)})`],
         ['model', p.model.id_M ?? c.dim('model server off')], ['always loaded', p.applied.length ? p.applied.join(', ') : c.dim('nothing pinned')],
         ['unsaved lessons kept', `${p.draft_ttl_days} days`],
@@ -186,7 +220,10 @@ export function renderTeachStatus(r: TeachStatusResult): string {
         { key: 't', title: 'UPDATED', get: (j) => fmtTime(j.updated_at) },
       ], 'none yet'));
     }
-    lines.push('', c.dim(`teach in the browser: ${r.node}/chat?teach=1`));
+    lines.push('', c.dim([
+      `teach from a file:  ${PROG} teach dataset ./questions.csv --train      (or ${r.node}/teach/upload)`,
+      `teach in chat:      ${r.node}/chat?teach=1`,
+    ].join('\n')));
     return lines.join('\n');
   }
   if (r.kind === 'job') {
@@ -201,17 +238,35 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     }
     if (j.contributor) pairs.push(['taught by', `${j.contributor.name ?? ''} ${shortAddr(j.contributor.address, 6)}`.trim()]);
     if (j.context_patch_ids?.length) pairs.push(['taught with', `${j.context_patch_ids.join(', ')}${j.builds_on_context ? ' (builds on them)' : ''}`]);
-    if (j.progress) pairs.push(['progress', `step ${j.progress.step}/${j.progress.max_steps} · ${j.progress.hits}/${j.progress.total} sentences right${j.progress.loss !== undefined ? ` · loss ${j.progress.loss.toFixed(3)}` : ''}`]);
+    if (j.dataset) {
+      const d = j.dataset;
+      const what = d.id === null
+        ? `${d.rows} questions kept with the lesson ${c.dim('(taught before datasets existed — one is written on the first download or re-train)')}`
+        : `${d.name ?? d.id} · trained ${d.trained_rows} of ${d.rows} questions${d.revision ? ` · revision ${d.revision}` : ''}${d.sha256 ? ` · ${shortHash(d.sha256, 12)}` : ''}${d.deleted ? c.err(' · deleted by its owner') : ''}`;
+      pairs.push(['dataset', what]);
+      if (d.id && !d.deleted) pairs.push(['  its questions', c.dim(`${PROG} teach dataset get ${d.id} -o questions.jsonl`)]);
+      if (d.sampled) pairs.push(['  checked', `${d.sampled.checked} of ${d.sampled.of} questions were re-asked on the live model (a sample — not the whole dataset)`]);
+    }
+    if (j.training) {
+      const t = j.training;
+      pairs.push(['effort', `${t.effort} · ${t.max_steps} passes, evaluated every ${t.eval_every}${t.use_alt ? ' · another wording trained too' : ''}${t.check_side_effects === false ? c.warn(' · side-effect check OFF') : ''}`]);
+    }
+    if (j.progress) {
+      const g = j.progress;
+      pairs.push(['progress', `${g.phase ? `${g.phase}: ` : ''}step ${g.step}/${g.max_steps} · ${g.hits}/${g.total} sentences right${g.eval_sample ? ` (a sample of ${g.eval_sample.n} of ${g.eval_sample.of} questions)` : ''}${g.loss !== undefined ? ` · loss ${g.loss.toFixed(3)}` : ''}${g.elapsed_s ? ` · ${fmtDur(g.elapsed_s)} so far` : ''}`]);
+    }
     if (j.result) pairs.push(['knowledge file', `${j.result.rows.toLocaleString('en-US')} rows · ${fmtBytes(j.result.size_bytes)} · sha256 ${shortHash(j.result.sha256, 16)}`]);
     if (j.checks) {
       const k = j.checks;
       pairs.push(['checks', !k.executed ? c.warn('not measured (model server was off) — ask the node to check again') : k.ok ? c.ok('passed') : c.err('failed')]);
       if (k.executed) {
-        pairs.push(['  taught', `${k.taught.hits}/${k.taught.total} answers now right${k.heldout ? ` · other phrasings ${k.heldout.hits}/${k.heldout.total}` : ''}`]);
+        pairs.push(['  taught', `${k.taught.hits}/${k.taught.total} trained sentences answer right${k.taught.sampled ? ` (a sample of ${k.taught.sampled.checked} of ${k.taught.sampled.of} questions)` : ''}${k.heldout?.total ? ` · other phrasings ${k.heldout.hits}/${k.heldout.total}` : ''}`]);
         pairs.push(['  side effects', `${k.locality.same}/${k.locality.total} unrelated answers unchanged ${k.locality.ok ? c.ok('✓') : c.err('✗')}`]);
         if (k.parent_regression.total) pairs.push(['  parents', `${k.parent_regression.hit}/${k.parent_regression.total} still right ${k.parent_regression.ok ? c.ok('✓') : c.err('✗')}`]);
         if (k.reverted_and_reapplied) pairs.push(['  note', 'the model server restarted during the check; the lesson was re-applied']);
       }
+      if (k.simulated && !k.note) pairs.push(['  note', c.warn('simulated — this node has no model server, so nothing was measured on a live model')]);
+      if (k.skipped) pairs.push(['  note', c.warn('you turned the side-effect check off — publishing stays blocked until it is measured (`teach status` again after a recheck)')]);
       if (k.note) pairs.push(['  note', k.note]);
     }
     if (j.draft_id) pairs.push(['private draft', j.draft_id]);
@@ -231,7 +286,10 @@ export function renderTeachStatus(r: TeachStatusResult): string {
       ]));
     }
     if (j.patch_id) lines.push('', c.dim(`knowledge page: ${r.node}/patch/${j.patch_id} · ainize patch get ${j.patch_id}`));
-    else if (j.status === 'READY') lines.push('', c.dim(`ready: open ${r.node}/chat?lesson=${j.id} to try it, keep it private or publish it`));
+    else if (j.status === 'READY') lines.push('', c.dim([
+      `ready: open ${r.node}/teach/lesson/${j.id} to try it, keep it private or publish it`,
+      ...(j.dataset?.id && !j.dataset.deleted ? [`train the same questions harder: ${PROG} teach train ${j.dataset.id} --effort thorough`] : []),
+    ].join('\n')));
     return lines.join('\n');
   }
   const p = r.profile;

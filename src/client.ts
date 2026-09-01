@@ -36,7 +36,7 @@ export class NodeClient {
       let msg = err?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
       if (err?.issues?.length) msg += ': ' + err.issues.map((i) => `${(i.path ?? []).join('.')} ${i.message}`.trim()).join('; ');
       if (res.status === 401) msg += ` — run \`${PROG} login\` first`;
-      throw new CliError(msg, res.status === 401 ? 3 : 1);
+      throw new CliError(msg, res.status === 401 ? 3 : 1, data);
     }
     return data as T;
   }

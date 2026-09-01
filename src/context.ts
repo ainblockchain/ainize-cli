@@ -31,7 +31,9 @@ export interface CliContext {
 }
 
 export class CliError extends Error {
-  constructor(message: string, public exitCode = 1) { super(message); }
+  /** The node's JSON error body, when there was one — e.g. the per-line report a refused dataset upload carries. */
+  details?: unknown;
+  constructor(message: string, public exitCode = 1, details?: unknown) { super(message); this.details = details; }
 }
 
 export function statePath(home: string): string { return join(home, 'cli.json'); }

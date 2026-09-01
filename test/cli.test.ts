@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,8 @@ import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords, patchPublish, patchImport, patchForget, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
-import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey } from '../src/commands/teach.js';
+import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey, TEACH_KEY_FILE } from '../src/commands/teach.js';
+import { datasetGet, datasetLs, datasetRm, datasetUpload, ensureTeacherKey, renderDatasetGet, renderDatasetList, renderJobCreated, renderJobs, renderUpload, teachJobs, teachTrain } from '../src/commands/teach-dataset.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { status } from '../src/commands/node.js';
@@ -364,4 +365,156 @@ test('patch forget stops serving a body from this node; the record is untouched 
   assert.equal(after.status, before.status);
   await assert.rejects(patchForget(ctx, 'does-not-exist'), /patch not found/);
   await assert.rejects(patchForget(ctx, 'law-us-2025'), /body not held by this node/);
+});
+
+// ---------------------------------------------------------------- PR-D3: the file door from the terminal (design §7.4 / §15.4)
+/** A small dataset with one of every problem the preview must explain, so the report is not just "3 questions". */
+const DATASET_CSV = [
+  'question,answer',
+  'What is the capital of Freedonia?,Fredville',
+  'What is the currency of Freedonia?,Freedonian dollar',
+  'What is the capital of Freedonia?,Fredville',                       // duplicate of line 2
+  'What is the motto of Freedonia?,Hail Freedonia',
+  'What is the currency of Freedonia?,Freedonian peso',                // contradicts line 3 → BOTH excluded
+  'How many people live in Freedonia?,',                               // no answer
+  `What is the anthem of Freedonia?,${'x'.repeat(240)}`,               // answer over ANSWER_MAX (200)
+].join('\n') + '\n';
+
+test('teach dataset <file>: the node reads it, every unused line is named with its source line, and the report carries the fingerprint', async () => {
+  const csv = join(tmp, 'freedonia.csv');
+  writeFileSync(csv, DATASET_CSV);
+  const up = await datasetUpload(ctx, csv, {});
+  assert.equal(up.created, true);
+  assert.equal(up.dataset.source, 'upload');
+  assert.equal(up.dataset.format, 'csv');
+  assert.equal(up.dataset.has_header, true);
+  assert.equal(up.dataset.rows, 2);                                    // capital and motto: the currency pair contradicts itself, so BOTH copies are excluded
+  assert.equal(up.dataset.sha256.length, 64);
+  assert.equal(up.sha256, createHash('sha256').update(readFileSync(csv)).digest('hex'));   // what was signed is what was sent
+  const s = up.report.summary;
+  assert.equal(s.source_rows, 7);
+  assert.equal(s.accepted, 2);
+  assert.deepEqual([s.duplicates, s.conflicts, s.empty, s.too_long], [1, 2, 1, 1]);
+  // one entry per SOURCE line, with the 1-based line number of the file (the header is line 1)
+  assert.deepEqual(up.report.rows.map((r) => [r.line, r.status]), [[2, 'ok'], [3, 'conflict'], [4, 'duplicate'], [5, 'ok'], [6, 'conflict'], [7, 'empty'], [8, 'too_long']]);
+  assert.match(up.report.rows.find((r) => r.line === 4)!.detail!, /line 2/);
+  assert.match(up.report.rows.find((r) => r.line === 8)!.detail!, /240 characters, 40 over the 200 limit/);
+  // what the terminal actually prints: the summary, the fingerprint, and a row per problem line
+  const out = renderUpload(up);
+  for (const needle of [up.dataset.sha256.slice(0, 16), '2 of 7 lines will train', 'duplicate', 'conflict', 'too_long', 'the same question and answer as line 2', `teach train ${up.dataset.id}`]) {
+    assert.ok(out.includes(needle), `missing ${needle}`);
+  }
+  assert.ok(!out.includes('Fredville'.repeat(2)));
+
+  // the same file again → the SAME dataset, not a second copy
+  const again = await datasetUpload(ctx, csv, {});
+  assert.equal(again.created, false);
+  assert.equal(again.dataset.id, up.dataset.id);
+  assert.match(renderUpload(again), /already on this node/);
+});
+
+test('teach dataset get: the report paginates, -o downloads the canonical questions, and re-uploading them lands on the same dataset', async () => {
+  const list = await datasetLs(ctx, {});
+  const ds = list.items.find((d) => d.source_name === 'freedonia.csv')!;
+  assert.ok(ds, 'the uploaded dataset is listed');
+  assert.match(renderDatasetList(list), /freedonia|QUESTIONS/);
+
+  const got = await datasetGet(ctx, ds.id, { rows: 200, all: true });
+  assert.equal(got.dataset.id, ds.id);
+  assert.equal(got.page.total, 7);
+  assert.equal(got.page.summary.accepted, 2);
+  assert.equal(renderDatasetGet(got, true).includes('will train'), true);
+  // only the lines that were rejected
+  const rejected = await datasetGet(ctx, ds.id, { status: 'rejected' });
+  assert.equal(rejected.page.items.length, 5);                          // 2 contradicting + 1 duplicate + 1 without an answer + 1 too long
+  assert.ok(rejected.page.items.every((r) => r.status !== 'ok' && r.status !== 'fixed'));
+
+  // -o writes the canonical .jsonl — the bytes the fingerprint is over
+  const out = join(tmp, 'freedonia.jsonl');
+  const saved = await datasetGet(ctx, ds.id, { out });
+  assert.equal(saved.saved!.verified, true);
+  assert.equal(saved.saved!.sha256, ds.sha256);
+  const lines = readFileSync(out, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal((JSON.parse(lines[0]) as { prompt: string }).prompt, 'What is the capital of Freedonia?');
+  const round = await datasetUpload(ctx, out, {});
+  assert.equal(round.created, false);
+  assert.equal(round.dataset.id, ds.id);
+});
+
+test('teach train <dataset-id>: the lesson names the dataset it came from; teach jobs and teach status show it', async () => {
+  const ds = (await datasetLs(ctx, {})).items.find((d) => d.source_name === 'freedonia.csv')!;
+  const r = await teachTrain(ctx, ds.id, { effort: 'quick', name: 'Freedonia facts' });
+  assert.equal(r.dataset_id, ds.id);
+  assert.equal(r.job.dataset?.id, ds.id);
+  assert.equal(r.job.dataset?.sha256, ds.sha256);
+  assert.equal(r.job.dataset?.trained_rows, 2);
+  assert.equal(r.job.training?.effort, 'quick');
+  assert.equal(r.job.facts?.length, 2);
+  assert.ok((r.quota?.rows_remaining ?? 0) > 0);
+  assert.match(renderJobCreated(r, r.node), /2 of 2 in the dataset/);
+
+  const ready = await waitFor(() => teachStatus(ctx, r.job.id, { key: undefined }), (x) => x.kind === 'job' && ['READY', 'NEEDS_MORE', 'FAILED'].includes(x.job.status), 60_000);
+  assert.equal(ready.kind, 'job');
+  if (ready.kind !== 'job') return;
+  assert.equal(ready.job.status, 'READY', ready.job.error);
+  assert.equal(ready.job.owner ?? true, true);
+  // `teach status <lesson>` says what it was trained on and how to get those questions back
+  const text = renderTeachStatus(ready);
+  for (const needle of ['dataset', ds.sha256.slice(0, 12), 'trained 2 of 2 questions', `teach dataset get ${ds.id}`, 'effort', 'quick']) assert.ok(text.includes(needle), `missing ${needle}`);
+
+  const jobs = await teachJobs(ctx, {});
+  const mine = jobs.items.find((j) => j.id === r.job.id)!;
+  assert.equal(mine.dataset?.id, ds.id);
+  assert.equal(jobs.items.length, (await teachJobs(ctx, { dataset: ds.id })).items.length + jobs.items.filter((j) => j.dataset?.id !== ds.id).length);
+  assert.match(renderJobs(jobs), /DATASET/);
+});
+
+test('teach train <file>: a path is uploaded first, so one command goes from a file on disk to a lesson', async () => {
+  const file = join(tmp, 'two-facts.jsonl');
+  writeFileSync(file, [
+    JSON.stringify({ prompt: 'Who founded Freedonia?', answer: 'Rufus T. Firefly' }),
+    JSON.stringify({ instruction: 'What is the Freedonian flag?', output: 'A blue field' }),      // alpaca keys are accepted
+  ].join('\n') + '\n');
+  const r = await teachTrain(ctx, file, { effort: 'quick' });
+  assert.ok(r.uploaded, 'the file was uploaded first');
+  assert.equal(r.uploaded!.dataset.rows, 2);
+  assert.equal(r.uploaded!.dataset.format, 'jsonl');
+  assert.equal(r.job.dataset?.id, r.uploaded!.dataset.id);
+  assert.equal(r.job.facts?.[1].prompt, 'What is the Freedonian flag?');
+  // a dataset that a lesson is training from cannot be deleted; once it is over, it can
+  const done = await waitFor(() => teachStatus(ctx, r.job.id, {}), (x) => x.kind === 'job' && ['READY', 'NEEDS_MORE', 'FAILED'].includes(x.job.status), 60_000);
+  assert.equal(done.kind === 'job' && done.job.status, 'READY');
+  const del = await datasetRm(ctx, r.uploaded!.dataset.id, {});
+  assert.equal(del.deleted, r.uploaded!.dataset.id);
+  // the lesson still renders — it just says the questions are gone (design G5 / §11)
+  const after = await teachStatus(ctx, r.job.id, {});
+  assert.equal(after.kind === 'job' && after.job.dataset?.deleted, true);
+  assert.match(renderTeachStatus(after), /deleted by its owner/);
+  const tomb = await datasetGet(ctx, r.uploaded!.dataset.id, {});
+  assert.ok(tomb.dataset.deleted_at, 'the tombstone still explains itself');
+  assert.equal(tomb.page.items.length, 0);                              // the questions really are gone
+  assert.match(renderDatasetGet(tomb, false), /they were deleted/);
+});
+
+test('the teaching key: kept in <home>/teaching-key.json, created once, never re-minted, and --key-file still wins', () => {
+  const keyPath = join(home, TEACH_KEY_FILE);
+  assert.ok(existsSync(keyPath), 'the first dataset command created the key');
+  assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+  const first = ensureTeacherKey(ctx);
+  assert.equal(first.created, false);                                   // never a second identity for the same home
+  assert.equal(first.path, keyPath);
+  assert.equal(ensureTeacherKey(ctx).key.address, first.key.address);
+  const backup = JSON.parse(readFileSync(keyPath, 'utf8')) as { kind: string; privateKey: string; address: string };
+  assert.equal(backup.kind, 'ainize-teaching-key');                     // the same file format the browser downloads
+  assert.equal(backup.address, first.key.address);
+  // an explicit key wins over the stored one
+  const other = createIdentity();
+  assert.equal(ensureTeacherKey(ctx, { key: other.privateKey }).key.address, other.address);
+  // a fresh home mints one, exactly once
+  const freshHome = join(tmp, 'fresh-teacher');
+  const made = ensureTeacherKey({ ...ctx, home: freshHome });
+  assert.equal(made.created, true);
+  assert.equal(ensureTeacherKey({ ...ctx, home: freshHome }).created, false);
+  assert.notEqual(made.key.address, first.key.address);
 });
