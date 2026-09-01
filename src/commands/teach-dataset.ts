@@ -106,11 +106,12 @@ export function renderSummary(s: TeachDatasetSummary): string {
 }
 
 /** The per-line problems — every line that will NOT train, with its source line number and the reason. */
-export function renderRows(rows: TeachDatasetRow[], opts: { all?: boolean } = {}): string {
+export function renderRows(rows: TeachDatasetRow[], opts: { all?: boolean; positions?: boolean } = {}): string {
   const shown = opts.all ? rows : rows.filter((r) => r.status !== 'ok' && r.status !== 'fixed');
   if (!shown.length) return c.dim(opts.all ? '(no questions)' : 'every line will train');
   return table(shown, [
-    { key: 'l', title: 'LINE', get: (r) => String(r.line), align: 'right' },
+    // after an edit the dataset was rewritten: these are positions in it, not lines of the file that was uploaded
+    { key: 'l', title: opts.positions ? '#' : 'LINE', get: (r) => String(r.line), align: 'right' },
     { key: 's', title: 'STATUS', get: (r) => rowColor(r.status) },
     { key: 'q', title: 'QUESTION', get: (r) => (r.prompt ?? r.raw ?? '').replace(/\s+/g, ' ').slice(0, 36) },
     { key: 'w', title: 'WHY', get: (r) => (r.detail ?? (r.fixes?.length ? `tidied up: ${r.fixes.join(', ')}` : ROW_COPY[r.status] ?? r.status)).slice(0, 60) },
@@ -126,7 +127,10 @@ export function renderDataset(d: TeachDataset, node: string): string {
     ['where it came from', d.source === 'upload' ? `a file you uploaded${file ? ` — ${file}` : ''}` : d.source === 'chat' ? 'corrections you collected in chat' : d.source === 'sample' ? 'an example dataset of this node' : 'the questions of a lesson taught before datasets existed'],
     ['size', `${fmtBytes(d.size_bytes)}${d.source_bytes ? ` (uploaded ${fmtBytes(d.source_bytes)})` : ''}`],
     ['state', d.deleted_at ? c.err('deleted') : d.status === 'in_use' ? c.warn('a lesson is training from it') : d.status === 'staged' ? 'never trained yet' : c.ok('ready')],
-    ['kept', d.deleted_at ? `deleted ${fmtTime(d.deleted_at)} — the questions are gone from this node` : d.retention === 'delete_after_training' ? 'deleted as soon as its lesson finishes' : `until ${fmtTime(d.expires_at)}`],
+    ['kept', d.deleted_at ? `deleted ${fmtTime(d.deleted_at)} — the questions are gone from this node`
+      // the sweep already ran: the row survives (name, fingerprint, lessons) but the questions do not
+      : d.size_bytes === 0 && d.rows > 0 ? 'the questions were deleted when its lesson finished, as you asked — it cannot be downloaded or trained again'
+        : d.retention === 'delete_after_training' ? 'deleted as soon as its lesson finishes' : `until ${fmtTime(d.expires_at)}`],
   ];
   if (d.parent_dataset) pairs.push(['copied from', d.parent_dataset]);
   if (d.job_ids.length) pairs.push(['lessons', d.job_ids.join(', ')]);
@@ -270,7 +274,7 @@ export function renderDatasetGet(r: DatasetGetResult, all: boolean): string {
     lines.push('', c.dim(`it held ${r.dataset.rows} questions; they were deleted, so they can no longer be read, downloaded or re-trained. The lessons trained from it are kept.`));
     return lines.join('\n');
   }
-  lines.push('', renderSummary(r.page.summary), '', c.head(all ? 'every line' : 'lines that will not train'), renderRows(r.page.items, { all }));
+  lines.push('', renderSummary(r.page.summary), '', c.head(all ? 'every line' : 'lines that will not train'), renderRows(r.page.items, { all, positions: r.dataset.revision > 1 }));
   if (r.page.total > r.page.offset + r.page.items.length) lines.push(c.dim(`${r.page.offset + r.page.items.length} of ${r.page.total} lines shown — more with --rows / --offset`));
   if (r.saved) lines.push('', c.ok('✓ ') + `saved ${r.saved.path} (${fmtBytes(r.saved.bytes)})` + (r.saved.verified ? c.dim(` · fingerprint verified — re-uploading it lands on this same dataset`) : ''));
   return lines.join('\n');
