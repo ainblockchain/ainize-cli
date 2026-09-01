@@ -17,7 +17,11 @@ export type ChatMode = 'base' | 'patched' | 'compare';
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string }
 
-export interface ChatAnswer { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
+export interface ChatAnswer {
+  content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string;
+  /** D1 — the model got stuck repeating itself (answer cut here) or ran out of budget. */
+  truncated?: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string;
+}
 export interface ChatApplied { patch_id: string; applied_ms: number | null; was_applied: boolean }
 export interface ChatResponse {
   patch_id: string;
@@ -99,6 +103,9 @@ function answerBlock(label: string, ans: ChatAnswer | null, extra: string[], sho
   const lines = [`${c.head(label)}  ${c.dim(meta)}`];
   if (showThinking && ans.reasoning) lines.push(c.dim(ans.reasoning.trim().split('\n').map((l) => '  ┆ ' + l).join('\n')));
   lines.push(ans.content.trim() ? ans.content.trim().split('\n').map((l) => '  ' + l).join('\n') : c.dim('  (empty answer)'));
+  // D1: say why the answer stops where it does — a silent cut reads as a wrong answer.
+  if (ans.truncated === 'repetition') lines.push(c.dim(`  — the model started repeating itself, so the answer is cut here (showing ${ans.shown_chars} of ${ans.raw_chars} characters; usually the question is outside what this knowledge covers)`));
+  else if (ans.truncated === 'length') lines.push(c.dim('  — the answer stopped at the length limit before it was finished'));
   return lines.join('\n');
 }
 

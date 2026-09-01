@@ -242,8 +242,10 @@ run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; pat
     return chat.chatPatches(ctx);
   }
   const opts: chat.ChatArgs = { mode: a.mode, thinking: a.thinking, maxTokens: a['max-tokens'], system: a.system };
-  const prompt = promptParts.join(' ').trim();
-  if (prompt) return chat.chat(ctx, ids, prompt, opts);
+  // D2: keep the prompt exactly as typed — this product's knowledge is trained on prompts that end with a space
+  // ("종목코드 픽셀플러스 "), so `ainize chat <id> "종목코드 픽셀플러스 "` must send that space too.
+  const prompt = promptParts.join(' ');
+  if (prompt.trim()) return chat.chat(ctx, ids, prompt, opts);
   await chat.chatRepl(ctx, ids, opts);
   process.exit(0);
 }, true));
