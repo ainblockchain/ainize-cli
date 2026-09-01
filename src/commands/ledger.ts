@@ -71,10 +71,21 @@ export async function ledgerGraph(ctx: CliContext): Promise<GraphResponse> {
   return g;
 }
 
+/** The node returns the NEWEST `limit` records and cannot page backwards (GET /api/ledger). */
+const EXPORT_MAX = 5000;
+
 export async function ledgerExport(ctx: CliContext, file: string): Promise<number> {
-  const d = await new NodeClient(ctx).get<{ records: LedgerRecord[] }>('/api/ledger?limit=1000');
+  const client = new NodeClient(ctx);
+  // Ask how big the ledger is first, then ask for exactly that many: exporting a fixed 1,000 silently dropped
+  // everything older once the chain grew past it, and still printed "exported 1000 record(s)".
+  const head = await client.get<{ info: LedgerInfo }>('/api/ledger?limit=1');
+  const total = head.info.records ?? 0;
+  const want = Math.min(Math.max(total, 1), EXPORT_MAX);
+  const d = await client.get<{ records: LedgerRecord[] }>(`/api/ledger?limit=${want}`);
   const recs = [...d.records].reverse();
   writeFileSync(file, recs.map((r) => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''));
-  ok(ctx, `exported ${recs.length} record(s) to ${file}`);
+  ok(ctx, recs.length < total
+    ? `exported the most recent ${recs.length} of ${total} record(s) to ${file} — this node returns at most ${EXPORT_MAX} per request and cannot page further back`
+    : `exported ${recs.length} record(s) to ${file}`);
   return recs.length;
 }
