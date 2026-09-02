@@ -8,6 +8,7 @@
  *   ainize chat --patch krx-all-2761,pixelplus-087600 "…"  load up to 3 knowledges together (list order; the last wins on overlap)
  */
 import { createInterface } from 'node:readline';
+import { verificationCount } from '@ngram/core';
 import type { CatalogEntry, RuntimeStatus } from '@ngram/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
@@ -80,7 +81,7 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       { key: 'model', title: 'MODEL', get: (e) => e.anchor.model.id_M },
       { key: 'facts', title: 'FACTS', get: (e) => String(e.anchor.benchmark.queries), align: 'right' },
       { key: 'rows', title: 'MEMORY ROWS', get: (e) => e.anchor.rows.toLocaleString('en-US'), align: 'right' },
-      { key: 'att', title: 'VERIFIED', get: (e) => { const s = `${e.passed}/${e.quorum}`; return e.quorum_ok ? c.ok(s + ' ✓') : c.warn(s); }, align: 'right' },
+      { key: 'att', title: 'VERIFIED', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s + ' ✓') : c.warn(s); }, align: 'right' },
       { key: 'sample', title: 'TRY', get: (e) => { const s = e.anchor.benchmark.samples?.[0]; return s ? `${JSON.stringify(s.prompt.trim())} → ${s.expect}` : c.dim('-'); } },
     ], 'no testable patch on this node — its body must be held here (seller node, or `' + PROG + ' patch buy <id>` first)'),
     x.items.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`) : ''].filter(Boolean).join('\n');

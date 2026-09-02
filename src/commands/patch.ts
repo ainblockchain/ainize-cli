@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, type CliContext } from '../context.js';
@@ -28,11 +29,21 @@ export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogE
     { key: 'rows', title: 'ROWS', get: (e) => e.anchor.rows.toLocaleString('en-US'), align: 'right' },
     { key: 'size', title: 'SIZE', get: (e) => fmtBytes(e.anchor.size_bytes), align: 'right' },
     { key: 'price', title: 'PRICE', get: (e) => `${e.anchor.price} ${e.anchor.currency}`, align: 'right' },
-    { key: 'att', title: 'ATTEST', get: (e) => { const s = `${e.passed}/${e.quorum}`; return e.quorum_ok ? c.ok(s) : c.warn(s); }, align: 'right' },
+    // The numerator never exceeds the quorum (`3/2` is not a fraction anyone can read); extra independent
+    // attestations are shown as `2/2+1`, and self-checks by the author are never in this count at all.
+    { key: 'att', title: 'ATTEST', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s) : c.warn(s); }, align: 'right' },
     { key: 'dl', title: 'SOLD', get: (e) => String(e.downloads), align: 'right' },
     { key: 'schema', title: 'BENCHMARK', get: (e) => e.anchor.benchmark.schema },
   ], 'no patches match'));
   return items;
+}
+
+/** `2/2 passed ✓ quorum` — clamped, with the extra evidence spelled out instead of an unreadable `3/2`. */
+export function verificationLine(e: CatalogEntry): string {
+  const v = verificationCount(e);
+  const extra = v.extra ? c.dim(` (+${v.extra} more independent attestation${v.extra > 1 ? 's' : ''})`) : '';
+  const self = e.self_checks ? c.warn(` · ${e.self_checks} self-check${e.self_checks > 1 ? 's' : ''} by the author (not counted)`) : '';
+  return `${v.fraction} passed${e.quorum_ok ? c.ok(' ✓ quorum') : ''}${extra}${self}`;
 }
 
 export interface PatchDetail extends CatalogEntry {
@@ -53,7 +64,7 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         ['rows / size', `${a.rows.toLocaleString('en-US')} rows · ${fmtBytes(a.size_bytes)}`], ['sha256', a.patch_sha256],
         ['price', `${a.price} ${a.currency} · ${a.billing}`], ['benchmark', `${a.benchmark.schema} · ${a.benchmark.queries} queries · ${a.benchmark.format.join('/')}${a.benchmark.collateral_bound_nat ? ` · collateral ≤ ${a.benchmark.collateral_bound_nat} nat` : ''}`],
         ['benchmark hash', a.benchmark_hash], ['topic', a.topic_path], ['branch', a.branch ?? '-'], ['gateway', e.gateway_url ?? '-'],
-        ['verification', `${e.passed}/${e.quorum} passed${e.quorum_ok ? c.ok(' ✓ quorum') : ''}`], ['sold', `${e.downloads} · revenue ${e.revenue} ${a.currency}`],
+        ['verification', verificationLine(e)], ['sold', `${e.downloads} · revenue ${e.revenue} ${a.currency}`],
         ['created', fmtTime(a.created_at)], ['body on this node', e.has_body ? 'yes' : 'no'],
       ]),
       '', a.description ? a.description : c.dim('(no description)'),
@@ -65,7 +76,15 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         { key: 's', title: 'SCORE', get: (x) => Object.entries(x.score).map(([k, v]) => `${k}=${v}`).join(' ') },
         { key: 'on', title: 'VERIFIED ON', get: (x) => x.verified_on },
         { key: 'rs', title: 'RESTARTS', get: (x) => String(x.restarts_detected ?? 0), align: 'right' },
-        { key: 'st', title: 'STAKE', get: (x) => x.stake, align: 'right' },
+        { key: 'ct', title: 'COUNTS', get: (x) => (x.verifier.toLowerCase() === a.author.toLowerCase() ? c.warn('no — self-check') : 'yes') },
+        { key: 't', title: 'AT', get: (x) => fmtTime(x.created_at) },
+      ]));
+    }
+    if (e.challenges.length) {
+      lines.push('', c.head('challenges'), table([...e.challenges].sort((x, y) => y.created_at - x.created_at), [
+        { key: 'c', title: 'CHALLENGER', get: (x) => shortAddr(x.challenger, 8) },
+        { key: 'r', title: 'REASON', get: (x) => x.reason },
+        { key: 'o', title: 'OPEN', get: (x) => (e.open_challenge && x.created_at === e.open_challenge.created_at && x.challenger === e.open_challenge.challenger ? c.warn('yes — sale on hold') : c.dim('answered')) },
         { key: 't', title: 'AT', get: (x) => fmtTime(x.created_at) },
       ]));
     }
@@ -241,6 +260,10 @@ export async function patchUse(ctx: CliContext, id: string, opts: { apply?: bool
   const detail = await client.get<PatchDetail & { purchased: boolean; has_body: boolean; owned: boolean; applied: boolean }>(`/api/patches/${encodeURIComponent(id)}`);
   const apply = opts.apply !== false;
   // SUPERSEDED knowledge stays valid (point-in-time versions); it just has a newer version on the same subject.
+  if (detail.status === 'CHALLENGED') {
+    const ch = detail.open_challenge;
+    throw new CliError(`${id} is CHALLENGED — a verifier disputes it, so it is not for sale until it is re-verified${ch ? `\n  ${shortAddr(ch.challenger, 8)}: "${ch.reason}" (${fmtTime(ch.created_at)})` : ''}\n  see the dispute: ainize patch get ${id}`);
+  }
   if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet; try \`ainize patch get ${id}\``);
   if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
