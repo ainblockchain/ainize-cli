@@ -106,11 +106,17 @@ run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: num
 
 cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
   .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx), false, true))
+  .command('get <key>', 'Print one config key (dotted path)', (yy: Y) => yy.positional('key', { type: 'string', demandOption: true })
+    .example('$0 config get market.defaultPrice', ''),
+  run((ctx, a: G & { key: string }) => init.configGet(ctx, a.key), false, true))
   .command('set <key> <value>', 'Set a config key (dotted path, e.g. market.defaultPrice 0.5)', (yy: Y) => yy
     .positional('key', { type: 'string', demandOption: true }).positional('value', { type: 'string', demandOption: true })
     .example('$0 config set ledger.kind ain', '').example('$0 config set peers http://a:3402,http://b:3403', ''),
   run((ctx, a: G & { key: string; value: string }) => init.configSet(ctx, a.key, a.value), false, true))
-  .demandCommand(1, 'Subcommand is required (show|set).'), () => undefined);
+  .command('unset <key>', 'Remove a config key so the node uses its built-in default', (yy: Y) => yy.positional('key', { type: 'string', demandOption: true })
+    .example('$0 config unset teach.trainer.gpus', ''),
+  run((ctx, a: G & { key: string }) => init.configUnset(ctx, a.key), false, true))
+  .demandCommand(1, 'Subcommand is required (show|get|set|unset).'), () => undefined);
 
 cli.command('keys', 'Node identity keys', (y: Y) => fail(y)
   .command('show', 'Print address and public key', (yy: Y) => yy.option('reveal', { type: 'boolean', default: false, describe: 'also print the private key' }),

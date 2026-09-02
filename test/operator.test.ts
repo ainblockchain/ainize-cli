@@ -11,9 +11,10 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultConfig, saveConfig } from '@ngram/core';
+import { DEFAULT_TEACH_CONFIG, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
 import { buildContext, requireNodeTarget, type CliError } from '../src/context.js';
 import { start, stop } from '../src/commands/node.js';
+import { configGet, configSet, configUnset } from '../src/commands/init.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
@@ -104,4 +105,57 @@ test('`stop` escalates to SIGKILL and only reports success on a confirmed exit (
     rmSync(h, { recursive: true, force: true });
     delete process.env.NGRAM_STOP_GRACE_MS;
   }
+});
+
+test('`config set` refuses an unknown key, a wrong type and an out-of-range value (item 123)', () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-cset-'));
+  try {
+    const cfg = defaultConfig({ home: h, name: 'c', port: 3999, ledger: 'local' });
+    saveConfig(cfg, h);
+    const ctx = buildContext({ home: h, quiet: true });
+    const refused: [string, string, RegExp][] = [
+      ['port', 'notanumber', /^port must be a number — got "notanumber"$/],
+      ['verifier.stak', '5', /^unknown config key 'verifier\.stak' — did you mean 'verifier\.stake'\?$/],
+      ['market.defaultprice', '0.5', /did you mean 'market\.defaultPrice'\?$/],
+      ['typo.that.does.not.exist', 'hello', /lists every key this node has$/],
+      ['host', '999.999.999.999', /^host must be an interface to bind/],
+      ['roles', 'admin', /^roles must be a comma list of 'seller', 'verifier', 'serving', 'gateway'/],
+      ['verifier.quorum', '-3', /^verifier\.quorum must be at least 1/],
+      ['market.royaltyShare', '47', /must be a fraction between 0 and 1/],
+      ['ledger.knid', 'ain', /did you mean 'ledger\.kind'\?$/],
+      ['identity.privateKey', 'dead', /^refusing to set identity\.privateKey/],
+      ['market', '{}', /^market is a group of keys, not a value — set one of: market\.currency, market\.defaultPrice/],
+    ];
+    for (const [key, value, re] of refused) {
+      assert.throws(() => configSet(ctx, key, value), (e: CliError) => { assert.match(e.message, re); return true; }, `${key}=${value}`);
+    }
+    // nothing was written by any of them
+    assert.deepEqual(loadConfig(h), JSON.parse(JSON.stringify(cfg)));
+    // and the value the schema does want is stored in the type the product uses: a price is a string, a port a number
+    configSet(ctx, 'market.defaultPrice', '9.99');
+    configSet(ctx, 'port', '3123');
+    const after = loadConfig(h)!;
+    assert.equal(after.market.defaultPrice, '9.99');
+    assert.equal(after.port, 3123);
+  } finally { rmSync(h, { recursive: true, force: true }); }
+});
+
+test('`config get` prints one key and `config unset` restores the default (item 123)', () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-cunset-'));
+  try {
+    saveConfig(defaultConfig({ home: h, name: 'c', port: 3999, ledger: 'local' }), h);
+    const ctx = buildContext({ home: h, quiet: true });
+    assert.equal(configGet(ctx, 'market.defaultPrice'), '0.1');
+    assert.equal(configGet(ctx, 'identity.privateKey'), '<hidden — `ainize keys show --reveal`>');   // never the key itself
+    assert.throws(() => configGet(ctx, 'nosuch.key'), /unknown config key 'nosuch\.key'/);
+
+    configSet(ctx, 'teach.trainer.gpus', '0,1');
+    assert.equal(loadConfig(h)!.teach!.trainer.gpus, '0,1');
+    configUnset(ctx, 'teach.trainer.gpus');
+    assert.equal(loadConfig(h)!.teach!.trainer.gpus, DEFAULT_TEACH_CONFIG.trainer.gpus);            // required → reset, not deleted
+    configSet(ctx, 'publicUrl', 'http://example.test:3999');
+    configUnset(ctx, 'publicUrl');
+    assert.equal('publicUrl' in (loadConfig(h) as object), false);                                   // optional → really gone
+    assert.throws(() => configUnset(ctx, 'publicUrl'), /is not set in/);
+  } finally { rmSync(h, { recursive: true, force: true }); }
 });
