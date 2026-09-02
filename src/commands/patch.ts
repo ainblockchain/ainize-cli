@@ -187,6 +187,8 @@ export async function patchVerify(ctx: CliContext, id: string): Promise<unknown>
 export async function patchChallenge(ctx: CliContext, id: string, reason: string): Promise<void> {
   await new NodeClient(ctx).post(`/api/patches/${encodeURIComponent(id)}/challenge`, { reason });
   ok(ctx, `challenge recorded for ${id}: ${reason}`);
+  // A challenge is not a comment: it takes the knowledge off sale everywhere until a verifier re-runs it.
+  ok(ctx, c.dim(`${id} is off sale until a verifier re-runs the benchmark and passes it; the author is told who challenged it and why`));
 }
 
 export interface PurchaseResult { patch_id: string; steps: { step: string; detail: string; at: number }[]; manifest: { patch_sha256: string; size_bytes: number; rows: number }; path: string; tx_hash: string; amount: string; scheme: string; }
