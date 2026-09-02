@@ -23,6 +23,7 @@ import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
+import { EVENT_KINDS, EVENT_LEVELS } from '@ngram/node';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -139,8 +140,12 @@ cli.command('stop', 'Stop a background node', (y: Y) => fail(y), run((ctx) => no
 cli.command('status', 'Show node / ledger / runtime status', (y: Y) => fail(y), run((ctx) => node.status(ctx)));
 cli.command('logs', 'Show node events', (y: Y) => fail(y)
   .option('follow', { alias: 'f', type: 'boolean', default: false }).option('patch', { type: 'string', describe: 'only events of a patch' })
-  .option('kind', { type: 'string', describe: 'filter by kind (p2p, verify, trade, runtime, …)' }).option('limit', { type: 'number', default: 100 }),
-run((ctx, a: G & { follow: boolean; patch?: string; kind?: string; limit: number }) => node.logs(ctx, a), true));
+  .option('kind', { choices: EVENT_KINDS, describe: 'only this kind of event' })
+  .option('level', { choices: EVENT_LEVELS, describe: 'this level and worse (warn shows warn + error)' })
+  .option('limit', { type: 'number', default: 100 })
+  .example('$0 logs --level warn', 'everything that went wrong, newest last')
+  .example('$0 logs --kind trade --limit 20', ''),
+run((ctx, a: G & { follow: boolean; patch?: string; kind?: string; level?: string; limit: number }) => node.logs(ctx, a), true));
 cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if present, synthetic branches)', (y: Y) => fail(y)
   .option('real', { type: 'boolean', default: true, describe: 'register real patches from the runtime repo' })
   .option('synthetic', { type: 'boolean', default: false, describe: 'create synthetic law/KR vs law/US demo patches' })

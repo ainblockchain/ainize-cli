@@ -187,19 +187,25 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
 
 export interface EventRow { seq: number; ts: number; level: string; kind: string; patch_id: string | null; message: string; data: unknown; }
 
-export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: string; limit?: number; kind?: string } = {}): Promise<EventRow[]> {
+export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: string; limit?: number; kind?: string; level?: string } = {}): Promise<EventRow[]> {
   const client = new NodeClient(ctx);
   const fetchEvents = async (since?: number) => {
-    const path = a.patch ? `/api/patches/${encodeURIComponent(a.patch)}/events${query({ limit: a.limit ?? 100 })}` : `/api/events${query({ limit: a.limit ?? 100, kind: a.kind, since })}`;
-    const r = await client.get<{ events: EventRow[] }>(path, { auth: false });
+    const path = a.patch
+      ? `/api/patches/${encodeURIComponent(a.patch)}/events${query({ limit: a.limit ?? 100 })}`
+      : `/api/events${query({ limit: a.limit ?? 100, kind: a.kind, level: a.level, since })}`;
+    // send the operator token: without it the operator's own terminal was served the redacted visitor stream,
+    // where every `draft …` line is dropped — so `logs --kind patch` printed a blank screen on a busy node (item 132)
+    const r = await client.get<{ events: EventRow[] }>(path);
     return [...r.events].sort((x, y) => x.seq - y.seq);
   };
   const render = (rows: EventRow[]) => rows.map((e) => {
     const lvl = e.level === 'error' ? c.err(e.level.padEnd(5)) : e.level === 'warn' ? c.warn(e.level.padEnd(5)) : c.dim(e.level.padEnd(5));
     return `${c.dim(fmtTime(e.ts))} ${lvl} ${c.id(e.kind.padEnd(9))} ${e.patch_id ? c.dim(`[${e.patch_id}] `) : ''}${e.message}`;
   }).join('\n');
+  const filters = [a.patch && `patch ${a.patch}`, a.kind && `kind '${a.kind}'`, a.level && `level ${a.level} or worse`].filter(Boolean).join(', ');
+  const empty = () => c.dim(filters ? `(no events match ${filters}${ctx.token ? '' : ` — and you are not logged in, so teach and draft lines are hidden; run \`${PROG} login\``})` : '(no events yet)');
   let rows = await fetchEvents();
-  if (!a.follow) { emit(ctx, rows, render); return rows; }
+  if (!a.follow) { emit(ctx, rows, (r) => (r.length ? render(r) : empty())); return rows; }
   emit(ctx, rows, render);
   let since = rows.length ? rows[rows.length - 1].ts : Date.now();
   for (;;) {

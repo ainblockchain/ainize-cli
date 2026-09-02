@@ -18,7 +18,7 @@ import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, sign
 import { datasetGet, datasetLs, datasetRm, datasetUpload, ensureTeacherKey, renderDatasetGet, renderDatasetList, renderJobCreated, renderJobs, renderUpload, teachJobs, teachTrain } from '../src/commands/teach-dataset.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
-import { status } from '../src/commands/node.js';
+import { logs, status } from '../src/commands/node.js';
 import { keysShow, configShow } from '../src/commands/init.js';
 import { runAgent, creditBalance, fetchInitialCredit, pickPatch, fetchCatalog } from '../../agent/src/agent.js';
 import { loadIdentity } from '../../agent/src/identity.js';
@@ -242,6 +242,19 @@ test('publish --contributor addr:name:share parses and lands on the draft anchor
   assert.equal(r.announced, false);
   assert.deepEqual(r.anchor.contributors, [{ address: alice, share: 0.7, role: 'data_provider', proof: 'declared', name: 'Alice' }, { address: '0x2222222222222222222222222222222222222222', share: 0, role: 'data_provider', proof: 'declared' }]);
   assert.equal((await patchGet(ctx, 'cli-contrib')).status, 'DRAFT');
+});
+
+test('logs sends the operator token, and an empty result says which filter emptied it (item 132)', async () => {
+  // `draft created: cli-contrib` was written by the publish above — the operator sees it, a visitor never does
+  const mine = await logs(ctx, { kind: 'patch', limit: 50 });
+  assert.ok(mine.some((e) => /^draft created: cli-contrib/.test(e.message)), 'the operator sees draft lines');
+  const anon = await logs({ ...ctx, token: null }, { kind: 'patch', limit: 50 });
+  assert.ok(!anon.some((e) => /^draft /.test(e.message)), 'a visitor never does');
+  // `level` is a floor: nothing on this node ever logged an error
+  const errors = await logs(ctx, { level: 'error', limit: 50 });
+  assert.deepEqual(errors, []);
+  const warns = await logs(ctx, { level: 'warn', limit: 50 });
+  assert.ok(warns.every((e) => e.level === 'warn' || e.level === 'error'));
 });
 
 test('teach status: target parsing, node policy, lesson status with / without the teaching key, teacher page', async () => {
