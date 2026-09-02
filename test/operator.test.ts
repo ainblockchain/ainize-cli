@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_TEACH_CONFIG, buildStamp, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
 import { buildContext, requireNodeTarget, type CliError } from '../src/context.js';
 import { nodeVersion, start, stop } from '../src/commands/node.js';
-import { configGet, configSet, configUnset, init, keysBackup, readKeyBackup } from '../src/commands/init.js';
+import { configGet, configSet, configShow, configUnset, init, keysBackup, readKeyBackup } from '../src/commands/init.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
@@ -231,5 +231,47 @@ test('keys backup / import round-trip, encrypted and in the clear (item 122)', a
     assert.equal(p.privateKey, cfg.identity.privateKey);
     assert.equal((await readKeyBackup(ctx, plain)).privateKey, cfg.identity.privateKey);
     await assert.rejects(() => readKeyBackup(ctx, join(h, 'nope.json')), /no such file/);
+  } finally { rmSync(h, { recursive: true, force: true }); }
+});
+
+test('a config whose port is not a number is named as such, and never locks the operator out of the fix (item 123)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-badport-'));
+  try {
+    const cfg = defaultConfig({ home: h, name: 'p', port: 3999, ledger: 'local' });
+    writeFileSync(join(h, 'config.json'), JSON.stringify({ ...cfg, port: 'notanumber' }, null, 2));
+    // every command — `config set port …`, the fix, included — used to die here with
+    // "--node must be a full URL — did you mean http://localhost:notanumber?": a flag nobody passed
+    const ctx = buildContext({ home: h, quiet: true });
+    assert.equal(ctx.nodeSource, 'config');
+    assert.equal(ctx.nodeUrlProblem, `port in ${join(h, 'config.json')} is "notanumber", not a port number — fix it with \`ainize config set port <1-65535>\``);
+    assert.throws(() => requireNodeTarget(ctx), (e: CliError) => e.exitCode === 2 && /not a port number/.test(e.message));
+    // the local commands work, and so does the fix
+    assert.equal(configShow(ctx).name, 'p');
+    await assert.rejects(() => start(ctx, {}), /this node's config is not usable:\n  port must be a number/);
+    await configSet(ctx, 'port', '3999');
+    assert.equal(buildContext({ home: h, quiet: true }).nodeUrlProblem, null);
+    // a typed URL is still checked as one
+    assert.throws(() => buildContext({ home: h, node: 'localhost:3999' }), /--node must be a full URL — did you mean http:\/\/localhost:3999\?$/);
+    process.env.NGRAM_PORT = 'abc';
+    try { assert.throws(() => buildContext({ home: h }), /NGRAM_PORT must be a port number \(1–65535\) — got "abc"$/); }
+    finally { delete process.env.NGRAM_PORT; }
+  } finally { rmSync(h, { recursive: true, force: true }); }
+});
+
+test('`start -d` refuses an unusable config itself, before spawning anything (item 123)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-badcfg-'));
+  try {
+    const cfg = defaultConfig({ home: h, name: 'r', port: 3999, ledger: 'local' });
+    writeFileSync(join(h, 'config.json'), JSON.stringify({ ...cfg, roles: ['admin'], verifier: { ...cfg.verifier, quorum: -3 } }, null, 2));
+    const ctx = buildContext({ home: h, quiet: true });
+    await assert.rejects(() => start(ctx, { detach: true }), (e: CliError) => {
+      assert.match(e.message, /^this node's config is not usable:\n/);
+      assert.match(e.message, /\n  roles\.0 must be a comma list of 'seller', 'verifier', 'serving', 'gateway'\n/);
+      assert.match(e.message, /\n  verifier\.quorum must be at least 1\n/);
+      assert.ok(e.message.endsWith(`(or \`ainize config unset <key>\` for the default) in ${join(h, 'config.json')}`), e.message);
+      return true;
+    });
+    assert.equal(existsSync(join(h, 'node.pid')), false, 'nothing was spawned');
+    assert.equal(existsSync(join(h, 'node.log')), false, 'the reason is on the terminal, not in a log the operator has to find');
   } finally { rmSync(h, { recursive: true, force: true }); }
 });

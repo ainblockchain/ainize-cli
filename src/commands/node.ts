@@ -11,7 +11,7 @@ import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { logFile, pidFile, runningPid } from '../pid.js';
 import { c, emit, fmtTime, info, kv, ok, shortAddr, table, warn } from '../output.js';
-import { requireConfig } from './init.js';
+import { assertUsableConfig, requireConfig } from './init.js';
 
 export { runningPid };
 
@@ -56,7 +56,7 @@ function startFailed(ctx: CliContext, why: string): never {
 
 /** Start the node in-process (returns when it is listening; caller keeps the event loop alive) or detached. */
 export async function start(ctx: CliContext, a: StartArgs = {}): Promise<RunningNode | { detached: true; pid: number; log: string }> {
-  const cfg = applyArgs(applyEnv(requireConfig(ctx)), a);
+  const cfg = assertUsableConfig(applyArgs(applyEnv(requireConfig(ctx)), a), ctx.home);
   if (a.detach) {
     const existing = runningPid(ctx.home);
     if (existing) throw new CliError(`node already running in the background (pid ${existing}) — \`${PROG} stop\` first`);
@@ -253,7 +253,7 @@ export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: strin
 }
 
 export async function seed(ctx: CliContext, opts: SeedOptions = {}): Promise<SeedReport> {
-  const cfg = applyEnv(requireConfig(ctx));
+  const cfg = assertUsableConfig(applyEnv(requireConfig(ctx)), ctx.home);
   const client = new NodeClient(ctx);
   if (await client.alive()) {
     throw new CliError(`a node is running at ${ctx.nodeUrl}; seeding writes to its data directory — stop it first (\`${PROG} stop\`) or seed from the web console`);

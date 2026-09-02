@@ -89,6 +89,19 @@ export function requireConfig(ctx: CliContext): NodeConfig {
   return cfg;
 }
 
+/**
+ * Refuse a config the node could not boot on, naming every offending key — the same check `startNode` makes, made
+ * here first so `start -d` does not spawn a child only to read its refusal back out of node.log (item 123).
+ */
+export function assertUsableConfig(cfg: NodeConfig, home: string): NodeConfig {
+  const invalid = validateConfig(cfg).filter((p) => p.kind === 'invalid');
+  if (invalid.length) {
+    throw new CliError(`this node's config is not usable:\n${invalid.map((p) => `  ${p.key} ${p.message}`).join('\n')}\n` +
+      `fix it with \`${PROG} config set <key> <value>\` (or \`${PROG} config unset <key>\` for the default) in ${configPath(home)}`);
+  }
+  return cfg;
+}
+
 
 function redact(cfg: NodeConfig): Record<string, unknown> {
   const clone = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
