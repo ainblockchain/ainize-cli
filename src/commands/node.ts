@@ -152,10 +152,17 @@ export async function stop(ctx: CliContext): Promise<{ stopped: boolean; pid: nu
 }
 
 export interface InfoResponse {
-  node: { address: string; name: string; endpoint: string; roles: string[]; ledger: string; model?: string; branches: string[]; blobs: string[]; version: string };
+  node: { address: string; name: string; endpoint: string; roles: string[]; ledger: string; model?: string; branches: string[]; blobs: string[]; version: string; build?: string; config_version?: string };
   ledger: { kind: string; network: string; height?: number; records: number; provider?: string; head?: string };
   runtime: { available: boolean; api: string | null; model: string | null; hook: boolean; repo: string | null; error?: string };
   quorum: number; currency: string; peers: number; counts: { patches: number; listed: number };
+}
+
+/** What build is actually running — with the config's own version only when it differs (item 141). */
+export function nodeVersion(n: InfoResponse['node']): string {
+  const built = n.build ? ` · built ${fmtTime(Date.parse(n.build))}` : '';
+  const written = n.config_version && n.config_version !== n.version ? c.dim(`  (config.json written by ${n.config_version})`) : '';
+  return `${n.version}${built}${written}`;
 }
 
 export async function status(ctx: CliContext): Promise<InfoResponse> {
@@ -172,7 +179,7 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
   emit(ctx, { ...d, pid, is_this_home: !stranger }, (x) => [
     c.bold(`${x.node.name}`) + c.dim(`  ${x.node.endpoint}${pid ? `  (pid ${pid})` : ''}`),
     kv([
-      ['address', x.node.address], ['roles', x.node.roles.join(', ')], ['version', x.node.version],
+      ['address', x.node.address], ['roles', x.node.roles.join(', ')], ['version', nodeVersion(x.node)],
       ['ledger', `${x.ledger.kind} · ${x.ledger.network}${x.ledger.provider ? ` · ${x.ledger.provider}` : ''} · ${x.ledger.records} records${x.ledger.height !== undefined ? ` · height ${x.ledger.height}` : ''}`],
       ['runtime', x.runtime.available ? c.ok(`available · ${x.runtime.model} · hook ok`) : c.warn(`unavailable${x.runtime.error ? ` (${x.runtime.error})` : ''}`)],
       ['peers', x.peers], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],

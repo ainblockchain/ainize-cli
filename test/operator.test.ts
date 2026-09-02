@@ -11,9 +11,9 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_TEACH_CONFIG, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
+import { DEFAULT_TEACH_CONFIG, buildStamp, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
 import { buildContext, requireNodeTarget, type CliError } from '../src/context.js';
-import { start, stop } from '../src/commands/node.js';
+import { nodeVersion, start, stop } from '../src/commands/node.js';
 import { configGet, configSet, configUnset } from '../src/commands/init.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
@@ -168,4 +168,14 @@ test('a scheme-less --node is a typo, not a dead node (item 116)', () => {
   });
   assert.throws(() => buildContext({ node: 'ftp://x/y' }), /did you mean http:\/\/x\/y\?$/);
   assert.equal(buildContext({ node: 'http://localhost:3402/' }).nodeUrl, 'http://localhost:3402');
+});
+
+test('status reports the build that is running, and names the config version only when it differs (item 141)', () => {
+  const base = { address: '0x1', name: 'n', endpoint: 'http://x', roles: [], ledger: 'local', branches: [], blobs: [] };
+  assert.equal(nodeVersion({ ...base, version: '0.1.0' }), '0.1.0');
+  assert.equal(nodeVersion({ ...base, version: '0.1.0', config_version: '0.1.0' }), '0.1.0');
+  assert.match(nodeVersion({ ...base, version: '0.2.0', config_version: '0.1.0' }), /^0\.2\.0 {2}\(config\.json written by 0\.1\.0\)$/);
+  assert.match(nodeVersion({ ...base, version: '0.1.0', build: '2026-09-02T08:36:54.000Z' }), /^0\.1\.0 · built 2026-09-02 \d\d:36:54$/);
+  // the build stamp is measured from the running code, never a string in a file
+  assert.match(buildStamp()!, /^\d{4}-\d\d-\d\dT/);
 });
