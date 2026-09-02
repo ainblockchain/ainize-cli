@@ -21,9 +21,17 @@ export function progName(argv1: string | undefined = process.argv[1]): ProgName 
 }
 export const PROG: ProgName = progName();
 
+/**
+ * Where `nodeUrl` came from. `default` means nobody chose it: there is no config in this home and no `--node`,
+ * so the URL is the built-in `http://localhost:3402` — a node that, if it answers at all, belongs to someone else.
+ * Commands that talk to a node refuse on `default` rather than report a stranger's node as yours (item 101).
+ */
+export type NodeUrlSource = 'flag' | 'env' | 'state' | 'config' | 'default';
+
 export interface CliContext {
   home: string;
   nodeUrl: string;
+  nodeSource: NodeUrlSource;
   token: string | null;
   json: boolean;
   quiet: boolean;
@@ -53,12 +61,30 @@ export function resolveHome(explicit?: string): string {
   return explicit ?? process.env.NGRAM_HOME ?? DEFAULT_HOME;
 }
 
-/** Build a context from global flags. Node URL precedence: --node > cli.json > config port > default. */
+/** Build a context from global flags. Node URL precedence: --node > NGRAM_NODE_URL > cli.json > config port > default. */
 export function buildContext(opts: { home?: string; node?: string; json?: boolean; quiet?: boolean } = {}): CliContext {
   const home = resolveHome(opts.home);
   const cfg = loadConfig(home);
   const state = readState(home);
   const port = process.env.NGRAM_PORT ? Number(process.env.NGRAM_PORT) : cfg?.port ?? 3402;
-  const nodeUrl = (opts.node ?? process.env.NGRAM_NODE_URL ?? state.nodeUrl ?? `http://localhost:${port}`).replace(/\/+$/, '');
-  return { home, nodeUrl, token: process.env.NGRAM_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
+  const url = opts.node ?? process.env.NGRAM_NODE_URL ?? state.nodeUrl ?? `http://localhost:${port}`;
+  const nodeSource: NodeUrlSource = opts.node ? 'flag'
+    : process.env.NGRAM_NODE_URL ? 'env'
+    : state.nodeUrl ? 'state'
+    : cfg ? 'config'
+    : process.env.NGRAM_PORT ? 'env'
+    : 'default';
+  return { home, nodeUrl: url.replace(/\/+$/, ''), nodeSource, token: process.env.NGRAM_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
+}
+
+/**
+ * Refuse to send a request nobody aimed: with no config in this home and no `--node`, every read command used to
+ * report whatever answered port 3402 — a colleague's node, or the demo cluster — as yours (item 101).
+ */
+export function requireNodeTarget(ctx: CliContext): void {
+  if (ctx.cfg || ctx.nodeSource !== 'default') return;
+  throw new CliError(
+    `no node configured in ${ctx.home} — run \`${PROG} init\` to create one, or pass --node <url> to talk to an existing node`,
+    2,
+  );
 }

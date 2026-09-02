@@ -4,7 +4,7 @@
 import { createInterface } from 'node:readline';
 import { NodeClient } from '../client.js';
 import { CliError, readState, writeState, type CliContext } from '../context.js';
-import { c, ok } from '../output.js';
+import { c, ok, shortAddr } from '../output.js';
 
 export async function promptPassword(question: string): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -33,6 +33,16 @@ export interface LoginArgs { password?: string; }
 export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token: string; nodeUrl: string; setup: boolean }> {
   const client = new NodeClient({ ...ctx, token: null });
   const me = await client.get<{ signedIn: boolean; needsSetup: boolean; name: string; address: string }>('/api/auth/me', { auth: false });
+  // Setting the password claims the node for good. Only ever do that to this home's own node, or to a URL the
+  // user named on this command line — never to whatever happens to answer the port in the config (item 101).
+  if (me.needsSetup && ctx.nodeSource !== 'flag' && ctx.nodeSource !== 'env'
+      && ctx.cfg?.identity.address.toLowerCase() !== me.address.toLowerCase()) {
+    throw new CliError(
+      `${ctx.nodeUrl} is answered by "${me.name}" (${shortAddr(me.address, 8)}), which has no operator password yet — and it is not the node in ${ctx.home}` +
+      `${ctx.cfg ? ` (${shortAddr(ctx.cfg.identity.address, 8)})` : ''}. Refusing to claim someone else's node; re-run with --node ${ctx.nodeUrl} if that is really what you want.`,
+      2,
+    );
+  }
   let password = a.password ?? process.env.NGRAM_PASSWORD;
   if (!password) {
     password = await promptPassword(me.needsSetup ? `Set an operator password for ${me.name} (${me.address.slice(0, 10)}…): ` : `Operator password for ${me.name}: `);

@@ -10,7 +10,7 @@ import './quiet.js';
 import yargs, { type Argv, type ArgumentsCamelCase } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import chalk from 'chalk';
-import { CliError, PROG, buildContext, type CliContext } from './context.js';
+import { CliError, PROG, buildContext, requireNodeTarget, type CliContext } from './context.js';
 import * as init from './commands/init.js';
 import * as node from './commands/node.js';
 import * as auth from './commands/auth.js';
@@ -33,10 +33,24 @@ type Y = Argv<any>;
 type Raw = ArgumentsCamelCase<any>;
 const ctxOf = (a: G): CliContext => buildContext({ home: a.home, node: a.node, json: a.json, quiet: a.quiet });
 
-const run = <A extends G>(fn: (ctx: CliContext, a: A) => Promise<unknown> | unknown, keepAlive = false) => async (raw: Raw) => {
+/** `teach status <target>`: a target that carries a host names its own node, so no config is needed for it. */
+const namesItsOwnNode = (a: Raw): boolean => {
+  try { return !!teach.parseTeachTarget(a.target as string | undefined, '').nodeUrl; } catch { return false; }
+};
+
+/**
+ * `local` = the command never talks to a node (init, config, keys, chain, logout), so it runs without a config;
+ * a predicate = the command names its own node in an argument (`teach status <node url>`). Everything else refuses
+ * to guess a node when this home has no config (item 101).
+ */
+type NoConfig = boolean | ((a: Raw) => boolean);
+
+const run = <A extends G>(fn: (ctx: CliContext, a: A) => Promise<unknown> | unknown, keepAlive = false, noConfig: NoConfig = false) => async (raw: Raw) => {
   const a = raw as unknown as A;
   try {
-    await fn(ctxOf(a), a);
+    const ctx = ctxOf(a);
+    if (!(typeof noConfig === 'function' ? noConfig(raw) : noConfig)) requireNodeTarget(ctx);
+    await fn(ctx, a);
     if (!keepAlive) process.exitCode = 0;
   } catch (e) {
     const err = e as CliError;
@@ -87,19 +101,19 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .example('$0 init --name alice --port 3402', 'local ledger node')
   .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `$0 chain up`)'),
 run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string }) =>
-  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'] })));
+  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'] }), false, true));
 
 cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
-  .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx)))
+  .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx), false, true))
   .command('set <key> <value>', 'Set a config key (dotted path, e.g. market.defaultPrice 0.5)', (yy: Y) => yy
     .positional('key', { type: 'string', demandOption: true }).positional('value', { type: 'string', demandOption: true })
     .example('$0 config set ledger.kind ain', '').example('$0 config set peers http://a:3402,http://b:3403', ''),
-  run((ctx, a: G & { key: string; value: string }) => init.configSet(ctx, a.key, a.value)))
+  run((ctx, a: G & { key: string; value: string }) => init.configSet(ctx, a.key, a.value), false, true))
   .demandCommand(1, 'Subcommand is required (show|set).'), () => undefined);
 
 cli.command('keys', 'Node identity keys', (y: Y) => fail(y)
   .command('show', 'Print address and public key', (yy: Y) => yy.option('reveal', { type: 'boolean', default: false, describe: 'also print the private key' }),
-    run((ctx, a: G & { reveal: boolean }) => init.keysShow(ctx, a.reveal)))
+    run((ctx, a: G & { reveal: boolean }) => init.keysShow(ctx, a.reveal), false, true))
   .demandCommand(1, 'Subcommand is required (show).'), () => undefined);
 
 // ---------------------------------------------------------------- lifecycle
@@ -113,8 +127,8 @@ run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
   if ('detached' in r) return r;
   process.stdout.write(chalk.gray('press Ctrl+C to stop\n'));
   await new Promise(() => undefined);   // keep alive
-}, true));
-cli.command('stop', 'Stop a background node', (y: Y) => fail(y), run((ctx) => node.stop(ctx)));
+}, true, true));
+cli.command('stop', 'Stop a background node', (y: Y) => fail(y), run((ctx) => node.stop(ctx), false, true));
 cli.command('status', 'Show node / ledger / runtime status', (y: Y) => fail(y), run((ctx) => node.status(ctx)));
 cli.command('logs', 'Show node events', (y: Y) => fail(y)
   .option('follow', { alias: 'f', type: 'boolean', default: false }).option('patch', { type: 'string', describe: 'only events of a patch' })
@@ -125,13 +139,13 @@ cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if p
   .option('synthetic', { type: 'boolean', default: false, describe: 'create synthetic law/KR vs law/US demo patches' })
   .option('prototype', { type: 'boolean', default: false, describe: 'import the reference prototype ledger' })
   .option('announce', { type: 'boolean', default: true }),
-run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a)));
+run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a), false, true));
 cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
 
 // ---------------------------------------------------------------- auth
 cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y).option('password', { type: 'string', describe: 'or NGRAM_PASSWORD env' }),
   run((ctx, a: G & { password?: string }) => auth.login(ctx, a)));
-cli.command('logout', 'Forget the operator session', (y: Y) => fail(y), run((ctx) => auth.logout(ctx)));
+cli.command('logout', 'Forget the operator session', (y: Y) => fail(y), run((ctx) => auth.logout(ctx), false, true));
 
 // ---------------------------------------------------------------- peers
 cli.command('peers', 'Manage peers', (y: Y) => fail(y)
@@ -219,7 +233,8 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .example('$0 teach status http://localhost:3402', 'is this node accepting lessons? publish mode, trainer, queue')
     .example('$0 teach status "http://localhost:3402/chat?lesson=8f0c…" --key-file ainize-teaching-key-1a2b3c4d.json', 'your lesson: progress, checks, before/after')
     .example('$0 teach status http://localhost:3402/teacher/0xAbC…', 'a data provider\'s lessons and earnings'),
-  run((ctx, a: G & { target?: string; key?: string; 'key-file'?: string }) => teach.teachStatus(ctx, a.target, { key: a.key, keyFile: a['key-file'] })))
+  run((ctx, a: G & { target?: string; key?: string; 'key-file'?: string }) => teach.teachStatus(ctx, a.target, { key: a.key, keyFile: a['key-file'] }),
+    false, namesItsOwnNode))
 
   // ---- teach mode v2: the file door. One pipeline (dataset → validate → train → check → lesson), two entry points.
   .command('dataset', 'The questions a lesson is trained from: upload a file, list, inspect, download, delete', (yy: Y) => yy
@@ -361,13 +376,13 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
 
 // ---------------------------------------------------------------- chain
 cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) => fail(y)
-  .command('up', 'Start (or attach to) a local 1-node AIN chain on :8081', (yy: Y) => yy.option('wait', { type: 'number', default: 90, describe: 'seconds to wait for SERVING' }), run((ctx, a: G & { wait: number }) => chain.chainUp(ctx, a)))
-  .command('down', 'Remove the local chain container', (yy: Y) => yy, run((ctx) => chain.chainDown(ctx)))
-  .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider)))
+  .command('up', 'Start (or attach to) a local 1-node AIN chain on :8081', (yy: Y) => yy.option('wait', { type: 'number', default: 90, describe: 'seconds to wait for SERVING' }), run((ctx, a: G & { wait: number }) => chain.chainUp(ctx, a), false, true))
+  .command('down', 'Remove the local chain container', (yy: Y) => yy, run((ctx) => chain.chainDown(ctx), false, true))
+  .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider), false, true))
   .command('fund <address> [amount]', 'Transfer AIN from the local genesis account (local chain only)', (yy: Y) => yy.positional('address', { type: 'string', demandOption: true }).positional('amount', { type: 'number', default: 1000 }).option('provider', { type: 'string' }),
-    run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider)))
+    run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider), false, true))
   .command('setup', 'Register the knowledge app + market rules on-chain (funds the node identity first on a local chain)', (yy: Y) => yy.option('fund', { type: 'number', describe: 'AIN to fund the node identity with' }),
-    run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a)))
+    run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a), false, true))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 
 fail(cli);
