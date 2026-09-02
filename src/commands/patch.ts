@@ -76,7 +76,8 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         { key: 's', title: 'SCORE', get: (x) => Object.entries(x.score).map(([k, v]) => `${k}=${v}`).join(' ') },
         { key: 'on', title: 'VERIFIED ON', get: (x) => x.verified_on },
         { key: 'rs', title: 'RESTARTS', get: (x) => String(x.restarts_detected ?? 0), align: 'right' },
-        { key: 'ct', title: 'COUNTS', get: (x) => (x.verifier.toLowerCase() === a.author.toLowerCase() ? c.warn('no — self-check') : 'yes') },
+        // `self_checks` is how many of the author's own attestations this node excluded (0 on a node that counts them).
+        { key: 'ct', title: 'COUNTS', get: (x) => (e.self_checks > 0 && x.verifier.toLowerCase() === a.author.toLowerCase() ? c.warn('no — self-check') : 'yes') },
         { key: 't', title: 'AT', get: (x) => fmtTime(x.created_at) },
       ]));
     }
