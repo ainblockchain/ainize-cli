@@ -43,7 +43,7 @@ before(async () => {
   cfg.host = '127.0.0.1';
   cfg.publicUrl = `http://127.0.0.1:${port}`;
   cfg.runtime = { repo: undefined, api: 'http://127.0.0.1:1' };
-  cfg.verifier = { quorum: 1, stake: '5', allowSelfAttest: true, intervalMs: 300 };
+  cfg.verifier = { quorum: 1, allowSelfAttest: true, intervalMs: 300 };
   cfg.gossipIntervalMs = 60_000;
   // teach mode on, stub trainer, offline stub (no model server in this test) — for `ainize teach status` / `patch import`
   cfg.teach = { ...teachConfig(cfg), enabled: true, publish: 'auto', backend: 'stub', stubOffline: true, jobsPerKeyPerDay: 10, jobsPerIpPerDay: 50 };
