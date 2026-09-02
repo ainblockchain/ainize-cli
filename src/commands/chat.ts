@@ -4,7 +4,7 @@
  *
  *   ainize chat --list                                   patches whose bodies are on this node → testable
  *   ainize chat pixelplus-087600 "Pixelplus ticker code? Digits only."   one-shot compare (base vs patched)
- *   ainize chat pixelplus-087600                         interactive REPL (transcript kept, /quit to exit)
+ *   ainize chat pixelplus-087600                         interactive REPL (one transcript per column, /quit to exit)
  *   ainize chat --patch krx-all-2761,pixelplus-087600 "…"  load up to 3 knowledges together (list order; the last wins on overlap)
  */
 import { createInterface } from 'node:readline';
@@ -17,7 +17,11 @@ export type ChatMode = 'base' | 'patched' | 'compare';
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string }
 
-export interface ChatAnswer { content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string }
+export interface ChatAnswer {
+  content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string;
+  /** D1 — the model got stuck repeating itself (answer cut here) or ran out of budget. */
+  truncated?: 'repetition' | 'length' | null; shown_chars?: number; raw_chars?: number; raw_content?: string;
+}
 export interface ChatApplied { patch_id: string; applied_ms: number | null; was_applied: boolean }
 export interface ChatResponse {
   patch_id: string;
@@ -35,6 +39,8 @@ export interface ChatResponse {
   applied?: ChatApplied[];
   benchmark_hits?: Record<string, boolean | null>;
   remaining_quota: number | null;
+  /** how many messages each column was sent, and whether the two conversations differed */
+  history?: { base: number; patched: number; split: boolean };
 }
 export interface ChatPatchesResponse {
   items: CatalogEntry[]; runtime: RuntimeStatus; lock: { owner: string; label: string; since: number } | null;
@@ -83,11 +89,13 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
 }
 
 /** One request → POST /api/chat. One id sends `patch_id` (works on every node); several send `patch_ids` (teach-mode nodes). */
-export async function chatOnce(ctx: CliContext, patchIds: string | string[], messages: ChatMessage[], a: ChatArgs = {}): Promise<ChatResponse> {
+export async function chatOnce(ctx: CliContext, patchIds: string | string[], messages: ChatMessage[], a: ChatArgs = {}, split?: { base: ChatMessage[]; patched: ChatMessage[] }): Promise<ChatResponse> {
   if (!messages.some((m) => m.role === 'user' && m.content.trim())) throw new CliError('prompt is empty');
   const ids = parsePatchIds(patchIds);
   const target = ids.length === 1 ? { patch_id: ids[0] } : { patch_ids: ids };
-  const body = { ...target, mode: a.mode ?? 'compare', messages, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
+  // Compare mode past the first turn: each column replays its OWN earlier answers (see ReplState below).
+  const histories = split ? { messages_base: split.base, messages_patched: split.patched } : {};
+  const body = { ...target, mode: a.mode ?? 'compare', messages, ...histories, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
   return new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
 }
 
@@ -99,6 +107,9 @@ function answerBlock(label: string, ans: ChatAnswer | null, extra: string[], sho
   const lines = [`${c.head(label)}  ${c.dim(meta)}`];
   if (showThinking && ans.reasoning) lines.push(c.dim(ans.reasoning.trim().split('\n').map((l) => '  ┆ ' + l).join('\n')));
   lines.push(ans.content.trim() ? ans.content.trim().split('\n').map((l) => '  ' + l).join('\n') : c.dim('  (empty answer)'));
+  // D1: say why the answer stops where it does — a silent cut reads as a wrong answer.
+  if (ans.truncated === 'repetition') lines.push(c.dim(`  — the model started repeating itself, so the answer is cut here (showing ${ans.shown_chars} of ${ans.raw_chars} characters; usually the question is outside what this knowledge covers)`));
+  else if (ans.truncated === 'length') lines.push(c.dim('  — the answer stopped at the length limit before it was finished'));
   return lines.join('\n');
 }
 
@@ -136,26 +147,36 @@ export async function chat(ctx: CliContext, patchIds: string | string[], prompt:
   return r;
 }
 
-/** The answer that continues the conversation: the patched (ainized) one when present, else the base one. */
+/**
+ * The answer that continues the conversation: the patched (ainized) one when present, else the base one.
+ * The REPL keeps a transcript per column instead (see chatRepl) — this stays for one-shot callers and scripts.
+ */
 export function assistantTurn(r: ChatResponse): string | null {
   return r.patched?.content ?? r.base?.content ?? null;
 }
 
-export interface ReplState { transcript: ChatMessage[]; turns: number; mode: ChatMode }
+/**
+ * The REPL keeps ONE transcript per column. Replaying the patched answer to the un-patched model would tell it that
+ * it already produced the knowledge's answer, and from the second turn the "before" column just repeats it — the
+ * comparison would disprove itself. `transcript` stays as the patched (continuing) conversation for callers that
+ * read it; `baseTranscript` is what the base column is replayed.
+ */
+export interface ReplState { transcript: ChatMessage[]; baseTranscript: ChatMessage[]; turns: number; mode: ChatMode }
 
 /**
- * Interactive REPL: reads lines from stdin, keeps the transcript (system + user + the model's answer with the
- * patch loaded), `/quit` to exit. Slash commands: /mode base|patched|compare, /reset, /help.
+ * Interactive REPL: reads lines from stdin, keeps one transcript per column (system + user + that column's own
+ * answer), `/quit` to exit. Slash commands: /mode base|patched|compare, /reset, /help.
  */
 export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: ChatArgs = {}, io: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {}): Promise<ReplState> {
   const ids = parsePatchIds(patchIds);
-  const state: ReplState = { transcript: initialMessages(a), turns: 0, mode: a.mode ?? 'compare' };
+  const state: ReplState = { transcript: initialMessages(a), baseTranscript: initialMessages(a), turns: 0, mode: a.mode ?? 'compare' };
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const tty = !!(input as NodeJS.ReadStream).isTTY;
   const rl = createInterface({ input, output: tty ? output : undefined, prompt: c.bold('you> '), terminal: tty });
   const say = (s: string) => { if (!ctx.quiet && !ctx.json) output.write(s + '\n'); };
   say(c.dim(`live test of ${ids.map((x) => c.id(x)).join(' + ')} · mode ${state.mode} · /quit to exit, /help for commands`));
+  if (state.mode === 'compare') say(c.dim('follow-ups: each column replays only its own earlier answers — the base model is never shown the patched one'));
 
   const handle = async (line: string): Promise<boolean> => {
     const text = line.trim();
@@ -164,7 +185,7 @@ export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: 
       const [cmd, ...rest] = text.slice(1).split(/\s+/);
       switch (cmd) {
         case 'quit': case 'exit': case 'q': return false;
-        case 'reset': state.transcript = initialMessages(a); say(c.dim('transcript cleared')); return true;
+        case 'reset': state.transcript = initialMessages(a); state.baseTranscript = initialMessages(a); say(c.dim('transcript cleared')); return true;
         case 'mode': {
           const m = rest[0] as ChatMode | undefined;
           if (m === 'base' || m === 'patched' || m === 'compare') { state.mode = m; say(c.dim(`mode → ${m}`)); } else say(c.warn('usage: /mode base|patched|compare'));
@@ -175,12 +196,19 @@ export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: 
           return true;
       }
     }
-    const messages = [...state.transcript, { role: 'user' as const, content: text }];
+    const ask = { role: 'user' as const, content: text };
+    const messages = [...state.transcript, ask];
+    const baseMessages = [...state.baseTranscript, ask];
     try {
-      const r = await chatOnce(ctx, ids, messages, { ...a, mode: state.mode });
+      const r = await chatOnce(ctx, ids, state.mode === 'base' ? baseMessages : messages, { ...a, mode: state.mode },
+        state.mode === 'compare' ? { base: baseMessages, patched: messages } : undefined);
       state.turns++;
-      const reply = assistantTurn(r);
-      state.transcript = [...messages, ...(reply ? [{ role: 'assistant' as const, content: reply }] : [])].slice(-24);
+      // Each column keeps only the turns IT answered: a question asked in `patched` mode never happened for the
+      // base model, and its answer must not be replayed as if the base model had produced it.
+      const grow = (prev: ChatMessage[], answer: string | null | undefined): ChatMessage[] =>
+        (answer?.trim() ? [...prev, ask, { role: 'assistant' as const, content: answer }].slice(-24) : prev);
+      state.transcript = grow(state.transcript, r.patched?.content);
+      state.baseTranscript = grow(state.baseTranscript, r.base?.content);
       if (ctx.json) output.write(JSON.stringify(r) + '\n');
       else if (!ctx.quiet) say(renderChat(r, a) + '\n');
     } catch (e) {
