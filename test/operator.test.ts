@@ -107,7 +107,7 @@ test('`stop` escalates to SIGKILL and only reports success on a confirmed exit (
   }
 });
 
-test('`config set` refuses an unknown key, a wrong type and an out-of-range value (item 123)', () => {
+test('`config set` refuses an unknown key, a wrong type and an out-of-range value (item 123)', async () => {
   const h = mkdtempSync(join(tmpdir(), 'ngram-cset-'));
   try {
     const cfg = defaultConfig({ home: h, name: 'c', port: 3999, ledger: 'local' });
@@ -127,20 +127,20 @@ test('`config set` refuses an unknown key, a wrong type and an out-of-range valu
       ['market', '{}', /^market is a group of keys, not a value — set one of: market\.currency, market\.defaultPrice/],
     ];
     for (const [key, value, re] of refused) {
-      assert.throws(() => configSet(ctx, key, value), (e: CliError) => { assert.match(e.message, re); return true; }, `${key}=${value}`);
+      await assert.rejects(() => configSet(ctx, key, value), (e: CliError) => { assert.match(e.message, re); return true; }, `${key}=${value}`);
     }
     // nothing was written by any of them
     assert.deepEqual(loadConfig(h), JSON.parse(JSON.stringify(cfg)));
     // and the value the schema does want is stored in the type the product uses: a price is a string, a port a number
-    configSet(ctx, 'market.defaultPrice', '9.99');
-    configSet(ctx, 'port', '3123');
+    await configSet(ctx, 'market.defaultPrice', '9.99');
+    await configSet(ctx, 'port', '3123');
     const after = loadConfig(h)!;
     assert.equal(after.market.defaultPrice, '9.99');
     assert.equal(after.port, 3123);
   } finally { rmSync(h, { recursive: true, force: true }); }
 });
 
-test('`config get` prints one key and `config unset` restores the default (item 123)', () => {
+test('`config get` prints one key and `config unset` restores the default (item 123)', async () => {
   const h = mkdtempSync(join(tmpdir(), 'ngram-cunset-'));
   try {
     saveConfig(defaultConfig({ home: h, name: 'c', port: 3999, ledger: 'local' }), h);
@@ -149,11 +149,11 @@ test('`config get` prints one key and `config unset` restores the default (item 
     assert.equal(configGet(ctx, 'identity.privateKey'), '<hidden — `ainize keys show --reveal`>');   // never the key itself
     assert.throws(() => configGet(ctx, 'nosuch.key'), /unknown config key 'nosuch\.key'/);
 
-    configSet(ctx, 'teach.trainer.gpus', '0,1');
+    await configSet(ctx, 'teach.trainer.gpus', '0,1');
     assert.equal(loadConfig(h)!.teach!.trainer.gpus, '0,1');
     configUnset(ctx, 'teach.trainer.gpus');
     assert.equal(loadConfig(h)!.teach!.trainer.gpus, DEFAULT_TEACH_CONFIG.trainer.gpus);            // required → reset, not deleted
-    configSet(ctx, 'publicUrl', 'http://example.test:3999');
+    await configSet(ctx, 'publicUrl', 'http://example.test:3999');
     configUnset(ctx, 'publicUrl');
     assert.equal('publicUrl' in (loadConfig(h) as object), false);                                   // optional → really gone
     assert.throws(() => configUnset(ctx, 'publicUrl'), /is not set in/);

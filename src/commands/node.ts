@@ -9,13 +9,14 @@ import { applyEnv, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
+import { logFile, pidFile, runningPid } from '../pid.js';
 import { c, emit, fmtTime, info, kv, ok, shortAddr, table, warn } from '../output.js';
 import { requireConfig } from './init.js';
 
+export { runningPid };
+
 export interface StartArgs { port?: number; peer?: string[]; detach?: boolean; roles?: string; publicUrl?: string; }
 
-const pidFile = (home: string) => join(home, 'node.pid');
-const logFile = (home: string) => join(home, 'node.log');
 
 function binPath(): string {
   // dist/commands/node.js → dist/bin.js  (or src/commands/node.ts → src/bin.ts under tsx)
@@ -52,13 +53,6 @@ function startFailed(ctx: CliContext, why: string): never {
   throw new CliError(`${why} — it is not running.\n${c.dim(`${logFile(ctx.home)} (last ${tail ? tail.split('\n').length : 0} lines):`)}\n${tail || c.dim('(the log is empty)')}`);
 }
 
-export function runningPid(home: string): number | null {
-  const p = pidFile(home);
-  if (!existsSync(p)) return null;
-  const pid = Number(readFileSync(p, 'utf8').trim());
-  if (!Number.isFinite(pid)) return null;
-  try { process.kill(pid, 0); return pid; } catch { return null; }
-}
 
 /** Start the node in-process (returns when it is listening; caller keeps the event loop alive) or detached. */
 export async function start(ctx: CliContext, a: StartArgs = {}): Promise<RunningNode | { detached: true; pid: number; log: string }> {

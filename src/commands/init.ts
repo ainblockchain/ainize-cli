@@ -6,8 +6,10 @@ import {
   PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, loadConfig,
   nearestConfigKey, saveConfig, validateConfig, type NodeConfig, type NodeRole,
 } from '@ngram/core';
+import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { emit, info, kv, ok, c } from '../output.js';
+import { runningPid } from '../pid.js';
+import { emit, info, kv, ok, warn, c } from '../output.js';
 
 export interface InitArgs {
   name?: string; port?: number; ledger?: 'local' | 'ain'; ainProvider?: string; ainChainId?: number; peer?: string[];
@@ -83,7 +85,21 @@ function settableField(key: string) {
   return field;
 }
 
-export function configSet(ctx: CliContext, key: string, value: string): NodeConfig {
+/**
+ * Is a node running for this home? The pid file covers `start -d`; the port probe covers a node started in the
+ * foreground or by a supervisor (the demo cluster writes no pid file). Either way the edit below only takes
+ * effect at the next start, and the operator has to be told so (item 124).
+ */
+async function runningHere(ctx: CliContext, cfg: NodeConfig): Promise<{ pid: number | null; url: string } | null> {
+  const url = `http://localhost:${cfg.port}`;
+  const pid = runningPid(ctx.home);
+  if (pid) return { pid, url };
+  const d = await new NodeClient({ ...ctx, nodeUrl: url, token: null })
+    .get<{ node: { address: string } }>('/api/info', { auth: false, timeoutMs: 1500 }).catch(() => null);
+  return d && d.node.address.toLowerCase() === cfg.identity.address.toLowerCase() ? { pid: null, url } : null;
+}
+
+export async function configSet(ctx: CliContext, key: string, value: string): Promise<NodeConfig> {
   const cfg = requireConfig(ctx);
   const field = settableField(key);
   const parsed = coerceConfigValue(field, value);
@@ -95,8 +111,13 @@ export function configSet(ctx: CliContext, key: string, value: string): NodeConf
   }
   const { parent, last } = containerOf(cfg, key);
   parent[last] = check.data;
+  const running = await runningHere(ctx, cfg);
   saveConfig(cfg, ctx.home);
   ok(ctx, `${key} = ${JSON.stringify(check.data)}  ${c.dim('(the node reads config.json when it starts)')}`);
+  if (running) {
+    warn(ctx, `the node in ${ctx.home} is running${running.pid ? ` (pid ${running.pid})` : ` on ${running.url}`} and keeps using the value it started with` +
+      ` — restart it to apply this (\`${PROG} stop\` then \`${PROG} start -d\`)`);
+  }
   return cfg;
 }
 
