@@ -1,9 +1,9 @@
 /**
- * `ngram init` / `ngram config` / `ngram keys` — local node configuration (NGRAM_HOME/config.json).
+ * `ainize init` / `ainize config` / `ainize keys` — local node configuration (NGRAM_HOME/config.json).
  */
 import { existsSync } from 'node:fs';
 import { configPath, defaultConfig, loadConfig, saveConfig, type NodeConfig, type NodeRole } from '@ngram/core';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { emit, kv, ok, c } from '../output.js';
 
 export interface InitArgs {
@@ -13,7 +13,7 @@ export interface InitArgs {
 
 export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfig> {
   const p = configPath(ctx.home);
-  if (existsSync(p) && !a.force) throw new CliError(`config already exists at ${p} (use --force to overwrite, or \`ngram config show\`)`);
+  if (existsSync(p) && !a.force) throw new CliError(`config already exists at ${p} (use --force to overwrite, or \`${PROG} config show\`)`);
   const roles = a.roles ? (a.roles.split(',').map((s) => s.trim()).filter(Boolean) as NodeRole[]) : undefined;
   for (const r of roles ?? []) if (!['seller', 'verifier', 'serving', 'gateway'].includes(r)) throw new CliError(`unknown role: ${r}`);
   const cfg = defaultConfig({
@@ -24,14 +24,14 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, ledger: cfg.ledger.kind, roles: cfg.roles }, (d) => [
     c.ok('✓ ') + `node initialised at ${d.config}`,
     kv([['name', d.name], ['address', d.address], ['port', d.port], ['ledger', d.ledger], ['roles', d.roles.join(', ')]]),
-    '', c.dim('next: `ngram start`   (then `ngram login`, `ngram seed`)'),
+    '', c.dim(`next: \`${PROG} start\`   (then \`${PROG} login\`, \`${PROG} seed\`)`),
   ].join('\n'));
   return cfg;
 }
 
 export function requireConfig(ctx: CliContext): NodeConfig {
   const cfg = ctx.cfg ?? loadConfig(ctx.home);
-  if (!cfg) throw new CliError(`no node config at ${configPath(ctx.home)} — run \`ngram init\` first`);
+  if (!cfg) throw new CliError(`no node config at ${configPath(ctx.home)} — run \`${PROG} init\` first`);
   return cfg;
 }
 
@@ -40,7 +40,7 @@ const SECRET_KEYS = new Set(['identity.privateKey', 'operatorPasswordHash']);
 function redact(cfg: NodeConfig): Record<string, unknown> {
   const clone = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;
   const id = clone.identity as Record<string, unknown>;
-  if (id) id.privateKey = '<hidden — `ngram keys show --reveal`>';
+  if (id) id.privateKey = `<hidden — \`${PROG} keys show --reveal\`>`;
   if (clone.operatorPasswordHash) clone.operatorPasswordHash = '<set>';
   return clone;
 }

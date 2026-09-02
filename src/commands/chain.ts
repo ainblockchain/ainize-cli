@@ -1,5 +1,5 @@
 /**
- * `ngram chain up|down|status|fund|setup` — local AIN blockchain (docker) for the `ain` ledger mode.
+ * `ainize chain up|down|status|fund|setup` — local AIN blockchain (docker) for the `ain` ledger mode.
  *
  * The local chain is the 1-node genesis network shipped with ainblockchain/ain-blockchain; the genesis
  * validator key below is public test material from that repository (blockchain-configs/base/genesis_accounts.json).
@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { AinLedger, applyEnv } from '@ngram/core';
 import { NodeClient } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, kv, ok, warn } from '../output.js';
 import { requireConfig } from './init.js';
 
@@ -77,7 +77,7 @@ export async function chainUp(ctx: CliContext, a: { wait?: number } = {}): Promi
   let h = await chainHealth();
   while (!(h.reachable && h.state === 'SERVING') && Date.now() < deadline) { await new Promise((r) => setTimeout(r, 2000)); h = await chainHealth(); }
   if (!(h.reachable && h.state === 'SERVING')) throw new CliError(`chain did not reach SERVING within ${a.wait ?? 90}s (state: ${h.state ?? 'unreachable'}) — check \`docker logs ${CHAIN_CONTAINER}\``);
-  emit(ctx, h, (x) => c.ok('✓ ') + `local AIN chain SERVING at ${x.provider}  block ${x.blockNumber ?? '?'}  validator ${x.address}\n` + c.dim('  next: `ngram init --ledger ain` (or `ngram config set ledger.kind ain`), `ngram chain setup`, `ngram start`'));
+  emit(ctx, h, (x) => c.ok('✓ ') + `local AIN chain SERVING at ${x.provider}  block ${x.blockNumber ?? '?'}  validator ${x.address}\n` + c.dim('  next: \`${PROG} init --ledger ain\` (or \`${PROG} config set ledger.kind ain\`), \`${PROG} chain setup\`, \`${PROG} start\`'));
   return h;
 }
 
@@ -124,7 +124,7 @@ export async function chainFund(ctx: CliContext, address: string, amount = 1000,
 /** Register the knowledge app + market rules (ain-js knowledge.setupApp + our /apps/knowledge/market rules). */
 export async function chainSetup(ctx: CliContext, a: { fund?: number } = {}): Promise<unknown> {
   const cfg = applyEnv(requireConfig(ctx));
-  if (cfg.ledger.kind !== 'ain') throw new CliError('node is not configured for the AIN ledger — `ngram config set ledger.kind ain` (and restart)');
+  if (cfg.ledger.kind !== 'ain') throw new CliError(`node is not configured for the AIN ledger — \`${PROG} config set ledger.kind ain\` (and restart)`);
   const provider = cfg.ledger.ain!.providerUrl;
   const client = new NodeClient(ctx);
   // fund the node identity on a local chain first (setupApp needs gas-less but non-empty accounts registered)

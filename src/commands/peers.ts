@@ -1,6 +1,6 @@
-/** `ngram peers ls|add|rm` */
+/** `ainize peers ls|add|rm` */
 import { NodeClient } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { emit, fmtTime, ok, shortAddr, table, c } from '../output.js';
 
 export interface PeerRow { endpoint: string; address: string | null; last_seen: number; failures: number; info: { name?: string; roles?: string[] } | null; }
@@ -14,7 +14,7 @@ export async function peersLs(ctx: CliContext): Promise<PeerRow[]> {
     { key: 'roles', title: 'ROLES', get: (p) => p.info?.roles?.join(',') ?? '-' },
     { key: 'seen', title: 'LAST SEEN', get: (p) => fmtTime(p.last_seen) },
     { key: 'fail', title: 'FAILURES', get: (p) => String(p.failures), align: 'right' },
-  ], 'no peers configured — `ngram peers add http://host:port`'));
+  ], `no peers configured — \`${PROG} peers add http://host:port\``));
   return d.peers;
 }
 

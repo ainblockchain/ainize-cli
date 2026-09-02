@@ -1,5 +1,5 @@
 /**
- * `ngram ledger ls|verify|graph|export`
+ * `ainize ledger ls|verify|graph|export`
  */
 import { writeFileSync } from 'node:fs';
 import type { LedgerRecord } from '@ngram/core';

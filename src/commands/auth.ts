@@ -1,5 +1,5 @@
 /**
- * `ngram login|logout` — operator session (bearer token stored in NGRAM_HOME/cli.json).
+ * `ainize login|logout` — operator session (bearer token stored in NGRAM_HOME/cli.json).
  */
 import { createInterface } from 'node:readline';
 import { NodeClient } from '../client.js';

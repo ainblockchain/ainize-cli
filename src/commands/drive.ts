@@ -1,12 +1,12 @@
 /**
- * `ngram drive status|up|stop|sync|login` — aindrive integration (files & change history of the node).
+ * `ainize drive status|up|stop|sync|login` — aindrive integration (files & change history of the node).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { NodeClient } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, ok, table } from '../output.js';
 import { requireConfig } from './init.js';
 
@@ -24,7 +24,7 @@ export async function driveStatus(ctx: CliContext, a: { files?: boolean } = {}):
   const d = await new NodeClient(ctx).get<DriveStatus>('/api/drive', { auth: false });
   emit(ctx, d, (x) => [
     kv([
-      ['folder', x.folder], ['paired', x.configured ? c.ok('yes') : c.warn('no — run `ngram drive login`')], ['agent', x.running ? c.ok(`running (pid ${x.pid})`) : c.dim('stopped')],
+      ['folder', x.folder], ['paired', x.configured ? c.ok('yes') : c.warn(`no — run \`${PROG} drive login\``)], ['agent', x.running ? c.ok(`running (pid ${x.pid})`) : c.dim('stopped')],
       ['server', x.server ?? '-'], ['drive id', x.drive_id ?? '-'], ['url', x.url ? c.id(x.url) : '-'], ['files', x.files.length],
     ]),
     a.files ? '\n' + table(x.files.slice(0, 200), [
@@ -56,7 +56,7 @@ export async function driveLogin(ctx: CliContext, a: { server?: string; name?: s
     c.head('aindrive pairing'),
     `  folder : ${folder}`, `  server : ${server}`,
     c.dim('  A browser sign-in link will be printed — open it, click Authorize, and this folder becomes a drive.'),
-    c.dim('  After pairing, Ctrl+C here and run `ngram drive up` to serve it in the background.'), '',
+    c.dim(`  After pairing, Ctrl+C here and run \`${PROG} drive up\` to serve it in the background.`), '',
   ].join('\n'));
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, { cwd: folder, stdio: 'inherit', env: { ...process.env, AINDRIVE_SERVER: server } });

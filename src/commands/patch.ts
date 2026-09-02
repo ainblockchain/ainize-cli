@@ -1,5 +1,5 @@
 /**
- * `ngram patch …` — publish, inspect, verify, buy and apply knowledge patches.
+ * `ainize patch …` — publish, inspect, verify, buy and apply knowledge patches.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';

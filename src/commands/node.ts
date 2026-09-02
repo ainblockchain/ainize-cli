@@ -1,5 +1,5 @@
 /**
- * `ngram start|stop|status|logs|seed` — node lifecycle.
+ * `ainize start|stop|status|logs|seed` — node lifecycle.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { applyEnv, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
 import { NodeClient, query } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtTime, info, kv, ok, shortAddr, table, warn } from '../output.js';
 import { requireConfig } from './init.js';
 
@@ -45,7 +45,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
   const cfg = applyArgs(applyEnv(requireConfig(ctx)), a);
   if (a.detach) {
     const existing = runningPid(ctx.home);
-    if (existing) throw new CliError(`node already running in the background (pid ${existing}) — \`ngram stop\` first`);
+    if (existing) throw new CliError(`node already running in the background (pid ${existing}) — \`${PROG} stop\` first`);
     mkdirSync(ctx.home, { recursive: true });
     const out = openSync(logFile(ctx.home), 'a');
     const args = [...process.execArgv, binPath(), 'start', '--home', ctx.home];
@@ -56,7 +56,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, NGRAM_HOME: ctx.home } });
     child.unref();
     writeFileSync(pidFile(ctx.home), String(child.pid));
-    ok(ctx, `node started in the background (pid ${child.pid}) — port ${cfg.port}\n  ${c.dim(`logs: ${logFile(ctx.home)}   stop: ngram stop`)}`);
+    ok(ctx, `node started in the background (pid ${child.pid}) — port ${cfg.port}\n  ${c.dim(`logs: ${logFile(ctx.home)}   stop: ${PROG} stop`)}`);
     return { detached: true, pid: child.pid!, log: logFile(ctx.home) };
   }
   const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet });
@@ -135,7 +135,7 @@ export async function seed(ctx: CliContext, opts: SeedOptions = {}): Promise<See
   const cfg = applyEnv(requireConfig(ctx));
   const client = new NodeClient(ctx);
   if (await client.alive()) {
-    throw new CliError(`a node is running at ${ctx.nodeUrl}; seeding writes to its data directory — stop it first (\`ngram stop\`) or seed from the web console`);
+    throw new CliError(`a node is running at ${ctx.nodeUrl}; seeding writes to its data directory — stop it first (\`${PROG} stop\`) or seed from the web console`);
   }
   const node = await startNode(cfg, { home: ctx.home, listen: false, quiet: true, serveWeb: false });
   try {

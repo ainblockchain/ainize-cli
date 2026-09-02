@@ -1,9 +1,9 @@
 /**
- * `ngram branch …`, `ngram route`, `ngram wallet`
+ * `ainize branch …`, `ainize route`, `ainize wallet`
  */
 import type { BranchInfo, PeerInfo } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtTime, kv, ok, shortAddr, table } from '../output.js';
 
 export type BranchRow = BranchInfo & { subscribers: Partial<PeerInfo>[] };
@@ -27,7 +27,7 @@ export async function branchLs(ctx: CliContext): Promise<{ branches: BranchRow[]
     { key: 's', title: 'SUBSCRIBERS', get: (b) => b.subscribers.map((s) => s.name ?? shortAddr(s.address, 4)).join(', ') || '-' },
     { key: 'o', title: 'OWNER', get: (b) => shortAddr(b.owner, 6) },
     { key: 't', title: 'CREATED', get: (b) => fmtTime(b.created_at) },
-  ], 'no branches yet — `ngram branch create law/KR --context jurisdiction=KR --patch <id>`') + (x.mine.length ? `\n${c.dim('✓ = this node subscribes')}` : ''));
+  ], `no branches yet — \`${PROG} branch create law/KR --context jurisdiction=KR --patch <id>\``) + (x.mine.length ? `\n${c.dim('✓ = this node subscribes')}` : ''));
   return d;
 }
 
