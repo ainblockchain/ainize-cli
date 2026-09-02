@@ -74,7 +74,16 @@ export function buildContext(opts: { home?: string; node?: string; json?: boolea
     : cfg ? 'config'
     : process.env.NGRAM_PORT ? 'env'
     : 'default';
-  return { home, nodeUrl: url.replace(/\/+$/, ''), nodeSource, token: process.env.NGRAM_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
+  const nodeUrl = url.replace(/\/+$/, '');
+  // `--node localhost:3402` is the standard typo, and a scheme-less URL used to be reported as a dead node while
+  // the node was serving happily on that very port (item 116).
+  let parsed: URL | null = null;
+  try { parsed = new URL(nodeUrl); } catch { /* not a URL at all */ }
+  // note `new URL('localhost:3402')` parses — with protocol "localhost:" — so the scheme has to be checked too
+  if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+    throw new CliError(`--node must be a full URL — did you mean http://${nodeUrl.replace(/^\w+:\/\//, '').replace(/^\/+/, '')}?`, 2);
+  }
+  return { home, nodeUrl, nodeSource, token: process.env.NGRAM_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
 }
 
 /**

@@ -24,6 +24,7 @@ import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
 import { EVENT_KINDS, EVENT_LEVELS } from '@ngram/node';
+import { RECORD_KINDS, type RecordKind } from '@ngram/core';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -321,6 +322,12 @@ cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model
   .option('mode', { alias: 'm', choices: ['base', 'patched', 'compare'] as const, default: 'compare', describe: 'base = model only, patched = with the patch loaded, compare = both' })
   .option('thinking', { type: 'boolean', default: false, describe: 'let the model think first and show its reasoning' })
   .option('max-tokens', { type: 'number', default: 200, describe: 'answer length limit (1–1024)' })
+  .check((a) => {
+    // the help has always said 1–1024; check it here instead of letting the node answer with a zod sentence
+    const n = (a as { 'max-tokens'?: number })['max-tokens'];
+    if (n !== undefined && (!Number.isInteger(n) || n < 1 || n > 1024)) throw new Error(`--max-tokens must be a whole number between 1 and 1024 (got ${n})`);
+    return true;
+  })
   .option('system', { type: 'string', describe: 'system prompt prepended to the conversation' })
   .example('$0 chat --list', 'what can be tested here')
   .example('$0 chat pixelplus-087600 "Pixelplus ticker code? Digits only."', 'before/after in one shot')
@@ -345,8 +352,8 @@ run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; pat
 
 // ---------------------------------------------------------------- ledger
 cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
-  .command('ls', 'List records', (yy: Y) => yy.option('kind', { type: 'string', describe: 'anchor|attest|settle|challenge|branch|node|supersede|subscribe' }).option('limit', { type: 'number', default: 50 }),
-    run((ctx, a: G & { kind?: string; limit: number }) => ledger.ledgerLs(ctx, a)))
+  .command('ls', 'List records', (yy: Y) => yy.option('kind', { choices: RECORD_KINDS, describe: 'only this kind of record' }).option('limit', { type: 'number', default: 50 }),
+    run((ctx, a: G & { kind?: RecordKind; limit: number }) => ledger.ledgerLs(ctx, a)))
   .command('verify', 'Verify hashes, signatures and chain linkage', (yy: Y) => yy, run((ctx) => ledger.ledgerVerify(ctx)))
   .command('graph', 'ASCII lineage tree', (yy: Y) => yy, run((ctx) => ledger.ledgerGraph(ctx)))
   .command('export <file>', 'Export records as JSON lines', (yy: Y) => yy.positional('file', { type: 'string', demandOption: true }), run((ctx, a: G & { file: string }) => ledger.ledgerExport(ctx, a.file)))

@@ -2,7 +2,7 @@
  * `ainize ledger ls|verify|graph|export`
  */
 import { writeFileSync } from 'node:fs';
-import type { LedgerRecord } from '@ngram/core';
+import type { LedgerRecord, RecordKind } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import type { CliContext } from '../context.js';
 import { c, emit, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } from '../output.js';
@@ -24,8 +24,12 @@ function summary(r: LedgerRecord): string {
   }
 }
 
-export async function ledgerLs(ctx: CliContext, a: { kind?: string; limit?: number } = {}): Promise<{ info: LedgerInfo; records: LedgerRecord[] }> {
+export async function ledgerLs(ctx: CliContext, a: { kind?: RecordKind; limit?: number } = {}): Promise<{ info: LedgerInfo; records: LedgerRecord[] }> {
   const d = await new NodeClient(ctx).get<{ info: LedgerInfo; records: LedgerRecord[] }>(`/api/ledger${query({ kind: a.kind, limit: a.limit ?? 50 })}`);
+  // "ledger is empty" two lines under "records 1223" was the lie: an empty *filter* is not an empty ledger (item 116)
+  const empty = a.kind
+    ? `no records of kind '${a.kind}' (${d.info.records} record(s) in the ledger)`
+    : d.info.records ? `no records in the newest ${a.limit ?? 50} (${d.info.records} in the ledger)` : 'ledger is empty';
   emit(ctx, d, (x) => [
     kv([['ledger', `${x.info.kind} · ${x.info.network}${x.info.provider ? ` · ${x.info.provider}` : ''}`], ['records', x.info.records], ['height', x.info.height ?? '-'], ['head', x.info.head ? shortHash(x.info.head, 20) : '-']]),
     '',
@@ -33,7 +37,7 @@ export async function ledgerLs(ctx: CliContext, a: { kind?: string; limit?: numb
       { key: 't', title: 'AT', get: (r) => fmtTime(r.ts) }, { key: 'k', title: 'KIND', get: (r) => c.id(r.kind.padEnd(9)) },
       { key: 'a', title: 'AUTHOR', get: (r) => shortAddr(r.author, 6) }, { key: 's', title: 'SUMMARY', get: (r) => summary(r) },
       { key: 'h', title: 'HASH', get: (r) => shortHash(r.hash, 14) },
-    ], 'ledger is empty'),
+    ], empty),
   ].join('\n'));
   return d;
 }

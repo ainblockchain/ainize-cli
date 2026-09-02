@@ -159,3 +159,13 @@ test('`config get` prints one key and `config unset` restores the default (item 
     assert.throws(() => configUnset(ctx, 'publicUrl'), /is not set in/);
   } finally { rmSync(h, { recursive: true, force: true }); }
 });
+
+test('a scheme-less --node is a typo, not a dead node (item 116)', () => {
+  assert.throws(() => buildContext({ node: 'localhost:3402' }), (e: CliError) => {
+    assert.equal(e.exitCode, 2);
+    assert.equal(e.message, '--node must be a full URL — did you mean http://localhost:3402?');
+    return true;
+  });
+  assert.throws(() => buildContext({ node: 'ftp://x/y' }), /did you mean http:\/\/x\/y\?$/);
+  assert.equal(buildContext({ node: 'http://localhost:3402/' }).nodeUrl, 'http://localhost:3402');
+});
