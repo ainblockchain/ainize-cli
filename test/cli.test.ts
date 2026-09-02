@@ -367,6 +367,30 @@ test('patch import: downloaded lesson (.npz + recipe.json) becomes a private DRA
   assert.equal(again.anchor.id, 'taught-freedonia-copy');
 });
 
+test('patch forget refuses to take the file out from under the other knowledge built from it (item 149)', async () => {
+  // v1/v2/v3 of one knowledge are usually the same .npz re-announced: forgetting one used to delete the file for all
+  const file = join(tmp, 'shared.npz'); tinyNpz(file, 987654321n);
+  const bench = (schema: string) => { const p = join(tmp, `${schema}.json`); writeFileSync(p, JSON.stringify({ schema, queries: 1, format: ['template'], samples: [{ prompt: 'Q: s?\nA: ', expect: 'x' }] })); return p; };
+  await patchPublish(ctx, { file, name: 'shared A', model: 'Qwen3.8-Flash-Next', benchmark: bench('cli-shared-a'), id: 'shared-a', announce: true });
+  await patchPublish(ctx, { file, name: 'shared B', model: 'Qwen3.8-Flash-Next', benchmark: bench('cli-shared-b'), id: 'shared-b', announce: true });
+
+  await assert.rejects(() => patchForget(ctx, 'shared-a'), (e: CliError) => {
+    assert.match(e.message, /^shared-a shares its knowledge file with 1 other item\(s\) on this node — forgetting it stops serving them too:/);
+    assert.match(e.message, /ALSO STOPS SERVING/);
+    assert.match(e.message, /shared-b\s+shared B/);
+    assert.match(e.message, /--all-sharing/);
+    assert.equal((e.details as { also_affects: { id: string; sales: number }[] }).also_affects[0].id, 'shared-b');
+    return true;
+  });
+  assert.equal((await patchGet(ctx, 'shared-a')).has_body, true, 'nothing was deleted by the refusal');
+  assert.equal((await patchGet(ctx, 'shared-b')).has_body, true);
+
+  const r = await patchForget(ctx, 'shared-a', { allSharing: true });
+  assert.deepEqual(r.also_affects.map((x) => x.id), ['shared-b']);
+  assert.equal((await patchGet(ctx, 'shared-a')).has_body, false);
+  assert.equal((await patchGet(ctx, 'shared-b')).has_body, false, 'the shared file really is gone for both');
+});
+
 test('patch forget stops serving a body from this node; the record is untouched and unknown ids fail', async () => {
   const before = await patchGet(ctx, 'law-us-2025');
   assert.ok(before.has_body);

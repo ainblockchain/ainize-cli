@@ -7,7 +7,7 @@ import { basename, resolve } from 'node:path';
 import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
-import { CliError, type CliContext } from '../context.js';
+import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } from '../output.js';
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
@@ -243,13 +243,35 @@ export async function patchRm(ctx: CliContext, id: string): Promise<void> {
   ok(ctx, `draft ${id} deleted`);
 }
 
-export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: string[] }
+export interface SharedBody { id: string; name: string; status: string; sales: number }
+export interface ForgetResult { ok: true; patch_id: string; sha256: string; deleted_file: boolean; also_affects: SharedBody[] }
 
 /** `ainize patch forget <id>` — stop serving the knowledge file from this node (the public record is untouched). */
-export async function patchForget(ctx: CliContext, id: string): Promise<ForgetResult> {
-  const r = await new NodeClient(ctx).post<ForgetResult>(`/api/patches/${encodeURIComponent(id)}/forget`);
+/**
+ * `ainize patch forget <id>` — stop serving the body from this node. The file is content-addressed, so it is also
+ * the body of every other id trained from the same output: the node refuses and lists them, and `--all-sharing`
+ * is the operator saying yes to the whole list (item 149).
+ */
+export async function patchForget(ctx: CliContext, id: string, opts: { allSharing?: boolean } = {}): Promise<ForgetResult> {
+  let r: ForgetResult;
+  try {
+    r = await new NodeClient(ctx).post<ForgetResult>(`/api/patches/${encodeURIComponent(id)}/forget`, { all_sharing: !!opts.allSharing });
+  } catch (e) {
+    const shared = (e as CliError).details as { also_affects?: SharedBody[] } | undefined;
+    if (!(e instanceof CliError) || !shared?.also_affects?.length) throw e;
+    throw new CliError([
+      e.message + ':',
+      table(shared.also_affects, [
+        { key: 'id', title: 'ALSO STOPS SERVING', get: (x) => c.id(x.id) },
+        { key: 'name', title: 'NAME', get: (x) => x.name },
+        { key: 'st', title: 'STATUS', get: (x) => statusColor(x.status) },
+        { key: 'sales', title: 'SALES', get: (x) => String(x.sales), align: 'right' },
+      ]),
+      c.dim(`the public record is untouched either way. To stop serving all of them: \`${PROG} patch forget ${id} --all-sharing\``),
+    ].join('\n'), 1, shared);
+  }
   emit(ctx, r, (x) => c.ok('✓ ') + `forgot ${c.id(x.patch_id)} body ${c.dim(shortHash(x.sha256, 12))} — ${x.deleted_file ? 'file deleted' : 'file left in place'}, no longer served from this node`
-    + (x.also_affects.length ? `\n${c.warn('! ')}same body as ${x.also_affects.join(', ')} — those are no longer served from here either` : ''));
+    + (x.also_affects.length ? `\n${c.warn('! ')}same body as ${x.also_affects.map((a) => a.id).join(', ')} — those are no longer served from here either` : ''));
   return r;
 }
 
