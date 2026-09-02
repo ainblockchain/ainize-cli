@@ -87,11 +87,14 @@ test('`start -d` waits for the child to answer, and reports node.log when it die
 
 test('`stop` escalates to SIGKILL and only reports success on a confirmed exit (item 119)', async () => {
   const h = mkdtempSync(join(tmpdir(), 'ngram-stop-'));
-  const child = spawn('sleep', ['120'], { stdio: 'ignore' });
+  // a child that HANDLES SIGTERM, exactly like the node (`start` installs a cleanup handler): a handled signal stays
+  // pending while the process is stopped, so SIGTERM alone can never end it — the finding's node, reproduced
+  const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);"], { stdio: ['ignore', 'pipe', 'ignore'] });
   try {
+    await new Promise<void>((res) => child.stdout!.once('data', () => res()));
     saveConfig(defaultConfig({ home: h, name: 'stubborn', port: 3999, ledger: 'local' }), h);
     writeFileSync(join(h, 'node.pid'), String(child.pid));
-    process.kill(child.pid!, 'SIGSTOP');                                       // ignores SIGTERM, like the finding's node
+    process.kill(child.pid!, 'SIGSTOP');
     process.env.NGRAM_STOP_GRACE_MS = '1000';
     const t0 = Date.now();
     const r = await stop(buildContext({ home: h, quiet: true }));
