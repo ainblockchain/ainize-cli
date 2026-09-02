@@ -138,7 +138,10 @@ run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
   await new Promise(() => undefined);   // keep alive
 }, true, true));
 cli.command('stop', 'Stop a background node', (y: Y) => fail(y), run((ctx) => node.stop(ctx), false, true));
-cli.command('status', 'Show node / ledger / runtime status', (y: Y) => fail(y), run((ctx) => node.status(ctx)));
+cli.command('status', 'Show node / ledger / runtime status', (y: Y) => fail(y)
+  .option('check', { type: 'boolean', default: false, describe: 'readiness only (GET /readyz): exits 1 when a check fails' })
+  .example('$0 status --check', 'for a monitor or a deploy script'),
+run((ctx, a: G & { check: boolean }) => (a.check ? node.statusCheck(ctx) : node.status(ctx))));
 cli.command('logs', 'Show node events', (y: Y) => fail(y)
   .option('follow', { alias: 'f', type: 'boolean', default: false }).option('patch', { type: 'string', describe: 'only events of a patch' })
   .option('kind', { choices: EVENT_KINDS, describe: 'only this kind of event' })

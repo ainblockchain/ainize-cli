@@ -165,6 +165,36 @@ export function nodeVersion(n: InfoResponse['node']): string {
   return `${n.version}${built}${written}`;
 }
 
+export interface ReadyResponse {
+  ok: boolean; node: string; address: string; version: string;
+  checks: {
+    ledger: { ok: boolean; kind: string; height: number | null; records: number | null; error?: string };
+    runtime: { ok: boolean; required: boolean; available: boolean; model: string | null; error?: string };
+    peers: { ok: boolean; configured: number; unreachable: number };
+  };
+}
+
+/**
+ * `status --check`: the node's own readiness, for a monitor or a deploy script. Exit 1 when a check fails —
+ * `/api/info` answers 200 whether the model server is up or down, so it could never be a health check (item 134).
+ */
+export async function statusCheck(ctx: CliContext): Promise<ReadyResponse> {
+  const res = await new NodeClient(ctx).get<Response>('/readyz', { auth: false, raw: true });
+  if (res.status === 404) throw new CliError(`${ctx.nodeUrl} has no /readyz — it is running a build older than this CLI`, 2);
+  const d = (await res.json()) as ReadyResponse;
+  emit(ctx, d, (x) => [
+    (x.ok ? c.ok('✓ ') : c.err('✗ ')) + c.bold(x.node) + c.dim(`  ${ctx.nodeUrl}`) + (x.ok ? '' : c.err('  NOT READY')),
+    kv([
+      ['ledger', x.checks.ledger.ok ? c.ok(`ok · ${x.checks.ledger.kind}${x.checks.ledger.height === null ? '' : ` · height ${x.checks.ledger.height}`}`) : c.err(x.checks.ledger.error ?? 'unreachable')],
+      ['runtime', !x.checks.runtime.required ? c.dim('not required by this node\'s roles')
+        : x.checks.runtime.ok ? c.ok(`ok · ${x.checks.runtime.model}`) : c.err(x.checks.runtime.error ?? 'unavailable')],
+      ['peers', `${x.checks.peers.configured} configured${x.checks.peers.unreachable ? c.warn(` · ${x.checks.peers.unreachable} unreachable`) : ''}`],
+    ]),
+  ].join('\n'));
+  if (!d.ok) process.exitCode = 1;
+  return d;
+}
+
 export async function status(ctx: CliContext): Promise<InfoResponse> {
   const client = new NodeClient(ctx);
   const d = await client.get<InfoResponse>('/api/info', { auth: false });
