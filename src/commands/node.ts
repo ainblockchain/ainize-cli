@@ -32,6 +32,26 @@ function applyArgs(cfg: NodeConfig, a: StartArgs): NodeConfig {
   return cfg;
 }
 
+/** How long `start -d` waits for the child to answer /api/info before it reports the failure in node.log. */
+const startTimeoutMs = () => Number(process.env.NGRAM_START_TIMEOUT_MS ?? 20_000);
+/** How long `stop` waits for a SIGTERMed node to exit before escalating to SIGKILL. */
+const stopGraceMs = () => Number(process.env.NGRAM_STOP_GRACE_MS ?? 10_000);
+
+/** Last `n` lines of the node log — the only place a failed start ever wrote its reason. */
+export function logTail(home: string, n = 20): string {
+  try {
+    const lines = readFileSync(logFile(home), 'utf8').replace(/\n$/, '').split('\n');
+    return lines.slice(-n).join('\n');
+  } catch { return ''; }
+}
+
+/** `start -d` could not confirm the node: drop the pid file nothing owns and show what node.log says. */
+function startFailed(ctx: CliContext, why: string): never {
+  try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ }
+  const tail = logTail(ctx.home, 20);
+  throw new CliError(`${why} — it is not running.\n${c.dim(`${logFile(ctx.home)} (last ${tail ? tail.split('\n').length : 0} lines):`)}\n${tail || c.dim('(the log is empty)')}`);
+}
+
 export function runningPid(home: string): number | null {
   const p = pidFile(home);
   if (!existsSync(p)) return null;
@@ -54,8 +74,33 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     if (a.roles) args.push('--roles', a.roles);
     if (a.publicUrl) args.push('--public-url', a.publicUrl);
     const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, NGRAM_HOME: ctx.home } });
-    child.unref();
+    type Exit = { code: number | null; signal: NodeJS.Signals | null };
+    const exited: Exit[] = [];
+    child.once('exit', (code, signal) => { exited.push({ code, signal }); });
     writeFileSync(pidFile(ctx.home), String(child.pid));
+    // Wait for the child to actually answer before claiming it started: a port already in use, a config the node
+    // refuses, an unreachable chain — all of those used to print a green tick and a pid that was dead a
+    // millisecond later, with the reason in node.log and nothing on screen (item 118).
+    const probe = new NodeClient({ ...ctx, nodeUrl: `http://localhost:${cfg.port}`, token: null });
+    const timeoutMs = startTimeoutMs();
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const exit = exited[0];
+      if (exit) {
+        child.unref();
+        startFailed(ctx, `node exited while starting (${exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`})`);
+      }
+      const info = await probe.get<InfoResponse>('/api/info', { auth: false, timeoutMs: 2000 }).catch(() => null);
+      if (info && info.node.address.toLowerCase() === cfg.identity.address.toLowerCase()) break;
+      if (Date.now() > deadline) {
+        child.unref();
+        startFailed(ctx, info
+          ? `port ${cfg.port} is answered by "${info.node.name}" (${shortAddr(info.node.address, 8)}), not by the node in ${ctx.home}`
+          : `node did not answer on http://localhost:${cfg.port} within ${timeoutMs / 1000} s`);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    child.unref();
     ok(ctx, `node started in the background (pid ${child.pid}) — port ${cfg.port}\n  ${c.dim(`logs: ${logFile(ctx.home)}   stop: ${PROG} stop`)}`);
     return { detached: true, pid: child.pid!, log: logFile(ctx.home) };
   }
@@ -67,20 +112,49 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
   return node;
 }
 
-export async function stop(ctx: CliContext): Promise<{ stopped: boolean; pid: number | null }> {
+/** Poll until the process is gone; false when it is still alive after `ms`. */
+async function waitGone(pid: number, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  for (;;) {
+    try { process.kill(pid, 0); } catch { return true; }
+    if (Date.now() > until) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+export async function stop(ctx: CliContext): Promise<{ stopped: boolean; pid: number | null; killed?: boolean }> {
   const pid = runningPid(ctx.home);
   if (!pid) {
     try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ }
     info(ctx, c.dim('no background node running for this NGRAM_HOME'));
+    // …but something may still be serving this home's node (started in the foreground, or by a supervisor):
+    // saying nothing at all is how an operator ends up with a node no command of theirs can manage (item 119).
+    const cfg = ctx.cfg;
+    if (cfg) {
+      const probe = new NodeClient({ ...ctx, nodeUrl: `http://localhost:${cfg.port}`, token: null });
+      const d = await probe.get<InfoResponse>('/api/info', { auth: false, timeoutMs: 1500 }).catch(() => null);
+      if (d && d.node.address.toLowerCase() === cfg.identity.address.toLowerCase()) {
+        warn(ctx, `this node is still serving on http://localhost:${cfg.port} — it was not started by \`${PROG} start -d\` (foreground, or a supervisor), so stop it where it was started`);
+      }
+    }
     return { stopped: false, pid: null };
   }
   process.kill(pid, 'SIGTERM');
-  for (let i = 0; i < 100; i++) {
-    try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 100)); } catch { break; }
+  // The wait loop's outcome was never checked: `stop` printed the tick and deleted the pid file even when the
+  // process was still there, leaving a node nothing could manage afterwards (item 119).
+  let killed = false;
+  const grace = stopGraceMs();
+  if (!(await waitGone(pid, grace))) {
+    warn(ctx, `node ${pid} is still running ${grace / 1000} s after SIGTERM — sending SIGKILL`);
+    try { process.kill(pid, 'SIGKILL'); } catch { /* it exited in between */ }
+    killed = true;
+    if (!(await waitGone(pid, 5000))) {
+      throw new CliError(`node ${pid} did not stop (still running after SIGTERM and SIGKILL) — kill it manually (\`kill -9 ${pid}\`); ${pidFile(ctx.home)} kept so \`${PROG} stop\` can try again`);
+    }
   }
   try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ }
-  ok(ctx, `stopped node (pid ${pid})`);
-  return { stopped: true, pid };
+  ok(ctx, `stopped node (pid ${pid})${killed ? c.dim(' — it ignored SIGTERM, so it was killed') : ''}`);
+  return { stopped: true, pid, killed };
 }
 
 export interface InfoResponse {
@@ -94,7 +168,14 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
   const client = new NodeClient(ctx);
   const d = await client.get<InfoResponse>('/api/info', { auth: false });
   const pid = runningPid(ctx.home);
-  emit(ctx, { ...d, pid }, (x) => [
+  // Whatever answers the configured port is not necessarily this home's node: after a failed start it is usually
+  // someone else's, and the whole block below — address, roles, ledger height, catalogue — would be theirs (item 118).
+  const mine = ctx.cfg?.identity.address;
+  const stranger = !!mine && d.node.address.toLowerCase() !== mine.toLowerCase();
+  if (stranger) {
+    warn(ctx, `${ctx.nodeUrl} is answered by "${d.node.name}" (${shortAddr(d.node.address, 8)}), not the node in ${ctx.home} (${shortAddr(mine!, 8)}) — that node is not running.\n  ${c.dim('everything below belongs to that other node.')}`);
+  }
+  emit(ctx, { ...d, pid, is_this_home: !stranger }, (x) => [
     c.bold(`${x.node.name}`) + c.dim(`  ${x.node.endpoint}${pid ? `  (pid ${pid})` : ''}`),
     kv([
       ['address', x.node.address], ['roles', x.node.roles.join(', ')], ['version', x.node.version],
@@ -104,6 +185,9 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
       ['branches', x.node.branches.join(', ') || '-'], ['blobs held', x.node.blobs.length],
     ]),
   ].join('\n'));
+  // exit 2 = "the node you asked about is not there" — the same code the client uses for an unreachable node,
+  // so a health check built on `ainize status` fails when this home's node is down and a stranger holds its port.
+  if (stranger) process.exitCode = 2;
   return d;
 }
 

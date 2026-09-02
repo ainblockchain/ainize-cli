@@ -51,7 +51,8 @@ const run = <A extends G>(fn: (ctx: CliContext, a: A) => Promise<unknown> | unkn
     const ctx = ctxOf(a);
     if (!(typeof noConfig === 'function' ? noConfig(raw) : noConfig)) requireNodeTarget(ctx);
     await fn(ctx, a);
-    if (!keepAlive) process.exitCode = 0;
+    // a command that finished but found something wrong (e.g. `status` on a port a stranger answers) sets its own code
+    if (!keepAlive && !process.exitCode) process.exitCode = 0;
   } catch (e) {
     const err = e as CliError;
     process.stderr.write(chalk.red('error: ') + (err.message ?? String(e)) + '\n');
