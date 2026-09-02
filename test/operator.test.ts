@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_TEACH_CONFIG, buildStamp, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
 import { buildContext, requireNodeTarget, type CliError } from '../src/context.js';
 import { nodeVersion, start, stop } from '../src/commands/node.js';
-import { configGet, configSet, configUnset } from '../src/commands/init.js';
+import { configGet, configSet, configUnset, init, keysBackup, readKeyBackup } from '../src/commands/init.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
@@ -178,4 +178,55 @@ test('status reports the build that is running, and names the config version onl
   assert.match(nodeVersion({ ...base, version: '0.1.0', build: '2026-09-02T08:36:54.000Z' }), /^0\.1\.0 · built 2026-09-02 \d\d:36:54$/);
   // the build stamp is measured from the running code, never a string in a file
   assert.match(buildStamp()!, /^\d{4}-\d\d-\d\dT/);
+});
+
+test('`init --force` carries the identity and the operator password forward (item 120)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-force-'));
+  try {
+    const ctx = buildContext({ home: h, quiet: true });
+    const first = await init(ctx, { name: 'critic-n1', port: 3577, ledger: 'local' });
+    writeFileSync(join(h, 'config.json'), JSON.stringify({ ...loadConfig(h), operatorPasswordHash: 'HASH-KEEP-ME' }, null, 2));
+
+    await assert.rejects(() => init(ctx, { name: 'x' }), (e: CliError) => {
+      assert.match(e.message, /^config already exists at .* — change one setting with `ainize config set <key> <value>`; `--force` rewrites the file \(keeping this node's identity\)$/);
+      return true;
+    });
+
+    const forced = await init(ctx, { name: 'renamed', force: true });
+    assert.equal(forced.identity.address, first.identity.address, 'the identity is not re-minted');
+    assert.equal(forced.identity.privateKey, first.identity.privateKey);
+    assert.equal(loadConfig(h)!.operatorPasswordHash, 'HASH-KEEP-ME', 'the operator password survives');
+    assert.equal(loadConfig(h)!.name, 'renamed');
+    const backups = readdirSync(h).filter((f) => f.startsWith('config.json.bak-'));
+    assert.equal(backups.length, 1, 'the previous config was copied aside');
+    assert.equal(JSON.parse(readFileSync(join(h, backups[0]), 'utf8')).name, 'critic-n1');
+
+    // --new-identity needs the current address typed, and means nothing without a config
+    await assert.rejects(() => init(buildContext({ home: mkdtempSync(join(tmpdir(), 'ngram-empty-')), quiet: true }), { newIdentity: true }),
+      /--new-identity only means something when a config already exists/);
+  } finally { rmSync(h, { recursive: true, force: true }); }
+});
+
+test('keys backup / import round-trip, encrypted and in the clear (item 122)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-keys-'));
+  try {
+    const ctx = buildContext({ home: h, quiet: true });
+    const cfg = await init(ctx, { name: 'k', port: 3598, ledger: 'local' });
+    const enc = join(h, 'backup-enc.json');
+    const plain = join(h, 'backup-plain.json');
+
+    const b = await keysBackup(ctx, enc, { passphrase: 'hunter2' });
+    assert.equal(b.privateKey, undefined, 'an encrypted backup never carries the key in the clear');
+    assert.equal(b.cipher!.alg, 'aes-256-gcm');
+    assert.equal(b.address, cfg.identity.address);
+    assert.equal(statSync(enc).mode & 0o777, 0o600);
+    assert.equal((await readKeyBackup(ctx, enc, 'hunter2')).privateKey, cfg.identity.privateKey);
+    await assert.rejects(() => readKeyBackup(ctx, enc, 'wrong'), /wrong passphrase for this backup/);
+    await assert.rejects(() => keysBackup(ctx, enc, { passphrase: 'x' }), /already exists — pick another name/);
+
+    const p = await keysBackup(ctx, plain);
+    assert.equal(p.privateKey, cfg.identity.privateKey);
+    assert.equal((await readKeyBackup(ctx, plain)).privateKey, cfg.identity.privateKey);
+    await assert.rejects(() => readKeyBackup(ctx, join(h, 'nope.json')), /no such file/);
+  } finally { rmSync(h, { recursive: true, force: true }); }
 });

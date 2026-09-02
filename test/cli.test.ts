@@ -62,8 +62,8 @@ test('program name follows argv[1]: ainize (product name) or the historical ngra
   assert.equal(progName(undefined), 'ainize');
 });
 
-test('config/keys commands read the node config', () => {
-  const k = keysShow(ctx);
+test('config/keys commands read the node config', async () => {
+  const k = await keysShow(ctx);
   assert.equal(k.address, node.cfg.identity.address);
   assert.equal(k.privateKey, undefined);
   assert.equal(configShow(ctx).name, 'cli-test-node');

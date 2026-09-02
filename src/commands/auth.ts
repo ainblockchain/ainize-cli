@@ -28,6 +28,17 @@ export async function promptPassword(question: string): Promise<string> {
   });
 }
 
+/** A plain echoed prompt (a typed confirmation, not a secret). Resolves '' if stdin closes without a line. */
+export async function promptLine(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: string) => { if (!done) { done = true; rl.close(); resolve(v); } };
+    rl.question(question, (a) => finish(a.trim()));
+    rl.once('close', () => finish(''));
+  });
+}
+
 export interface LoginArgs { password?: string; }
 
 export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token: string; nodeUrl: string; setup: boolean }> {

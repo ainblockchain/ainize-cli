@@ -100,11 +100,12 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .option('runtime-api', { type: 'string', describe: 'serving API (OpenAI-compatible) URL' })
   .option('private-key', { type: 'string', describe: 'import an existing AIN private key (hex)' })
   .option('public-url', { type: 'string', describe: 'URL peers can reach this node at' })
-  .option('force', { type: 'boolean', describe: 'overwrite existing config', default: false })
+  .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)', default: false })
+  .option('new-identity', { type: 'boolean', describe: 'with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)', default: false })
   .example('$0 init --name alice --port 3402', 'local ledger node')
   .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `$0 chain up`)'),
-run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string }) =>
-  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'] }), false, true));
+run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean }) =>
+  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'] }), false, true));
 
 cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
   .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx), false, true))
@@ -120,10 +121,23 @@ cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
   run((ctx, a: G & { key: string }) => init.configUnset(ctx, a.key), false, true))
   .demandCommand(1, 'Subcommand is required (show|get|set|unset).'), () => undefined);
 
-cli.command('keys', 'Node identity keys', (y: Y) => fail(y)
-  .command('show', 'Print address and public key', (yy: Y) => yy.option('reveal', { type: 'boolean', default: false, describe: 'also print the private key' }),
-    run((ctx, a: G & { reveal: boolean }) => init.keysShow(ctx, a.reveal), false, true))
-  .demandCommand(1, 'Subcommand is required (show).'), () => undefined);
+cli.command('keys', 'Node identity: the key that owns everything this node published', (y: Y) => fail(y)
+  .command('show', 'Print address and public key', (yy: Y) => yy
+    .option('reveal', { type: 'boolean', default: false, describe: 'also print the private key (asks first)' })
+    .option('yes', { type: 'boolean', default: false, describe: 'with --reveal: skip the confirmation' }),
+  run((ctx, a: G & { reveal: boolean; yes: boolean }) => init.keysShow(ctx, a.reveal, a.yes), false, true))
+  .command(['backup <file>', 'export <file>'], 'Save the node key to a file (encrypted with --passphrase) — the only way back after a wiped disk', (yy: Y) => yy
+    .positional('file', { type: 'string', demandOption: true })
+    .option('passphrase', { type: 'string', describe: 'encrypt with this passphrase (or NGRAM_KEY_PASSPHRASE); without one the key is stored in the clear' })
+    .option('force', { type: 'boolean', default: false, describe: 'overwrite an existing file' })
+    .example('$0 keys backup ~/node-key.json --passphrase "…"', ''),
+  run((ctx, a: G & { file: string; passphrase?: string; force: boolean }) => init.keysBackup(ctx, a.file, a), false, true))
+  .command('import <file>', 'Make a backed-up key this node\'s identity (asks you to type the current address)', (yy: Y) => yy
+    .positional('file', { type: 'string', demandOption: true }).option('passphrase', { type: 'string', describe: 'or NGRAM_KEY_PASSPHRASE' }),
+  run((ctx, a: G & { file: string; passphrase?: string }) => init.keysImport(ctx, a.file, a), false, true))
+  .command('rotate', 'Mint a NEW node identity, keeping every other setting (asks you to type the current address)', (yy: Y) => yy,
+    run((ctx) => init.keysRotate(ctx), false, true))
+  .demandCommand(1, 'Subcommand is required (show|backup|import|rotate).'), () => undefined);
 
 // ---------------------------------------------------------------- lifecycle
 cli.command('start', 'Start the node (foreground unless --detach)', (y: Y) => fail(y)
