@@ -263,7 +263,7 @@ export interface TreeView {
   root: string; depth: number; truncated: boolean;
   nodes: TreeNodeView[]; edges: { from: string; to: string; kind: string }[];
   family: { sales: number; knowledges: number; authors: number };
-  money: { seller_pct: number; lineage_pct: number; seller_name: string | null; recipients: { address: string; pct: number; name: string | null }[] };
+  money: { seller_pct: number; lineage_pct: number; contributor_pct: number; seller_name: string | null; lineage_names: string[]; recipients: { address: string; pct: number; name: string | null; kind: 'lineage' | 'contributor' }[] };
 }
 
 /**
@@ -274,22 +274,30 @@ export interface TreeView {
 export async function patchTree(ctx: CliContext, id: string, opts: { depth?: number; dir?: 'up' | 'down' | 'both' } = {}): Promise<TreeView> {
   const r = await new NodeClient(ctx).get<TreeView>(`/api/patches/${encodeURIComponent(id)}/tree${query({ depth: opts.depth, dir: opts.dir })}`);
   const byId = new Map(r.nodes.map((n) => [n.id, n]));
-  const relation: Record<string, string> = { extend: 'built on it', update: 'newer version', contradict: 'correction', merge: 'combined from', version: 'newer version', track: 'different context', declared: 'declared parent — not trained on top' };
+  // The same edge reads differently from each end: looking UP at a base, `version` means "this replaces it"; looking
+  // DOWN at a derivative it means "a newer version of this". One map per direction, so no line is true backwards.
+  const relDown: Record<string, string> = { extend: 'built on it', update: 'newer version', contradict: 'correction', merge: 'combined from', version: 'newer version', track: 'different context', declared: 'declared parent — not trained on top' };
+  const relUp: Record<string, string> = { extend: 'this was built on it', update: 'this replaces it', contradict: 'this corrects it', merge: 'combined from it', version: 'this replaces it', track: 'a different context of it', declared: 'declared parent — not trained on top' };
+  const plural = (n: number, one: string) => `${n.toLocaleString('en-US')} ${one}${n === 1 ? '' : 's'}`;
   const label = (n: TreeNodeView) => {
     if (n.missing) return `${c.dim(n.id)} ${c.dim('(not on this node)')}`;
     const added = `+${n.added.questions} questions · ${n.added.changed} changed · ${n.added.rows.toLocaleString('en-US')} rows (${n.added.new.toLocaleString('en-US')} new)`;
-    const sig = `${n.signals.sales_all ?? 0} sales · loaded on ${n.signals.loads ?? 0} nodes · built on ${n.signals.built_on ?? 0}×`;
+    const sig = `${plural(n.signals.sales_all ?? 0, 'sale')} · loaded on ${plural(n.signals.loads ?? 0, 'node')} · built on ${n.signals.built_on ?? 0}×`;
     return `${c.id(n.id)}${n.name && n.name !== n.id ? ` — ${n.name}` : ''}\n      ${c.dim(added)}\n      ${c.dim(sig)}`;
   };
   emit(ctx, r, () => {
     const lines: string[] = [];
     const children = (from: string) => r.edges.filter((e) => e.from === from);
-    const parents = r.edges.filter((e) => e.to === r.root);
-    for (const e of parents) {
-      const n = byId.get(e.from);
-      if (n) lines.push(`  ${c.dim('base')}  ${label(n)}  ${c.dim(`(${relation[e.kind] ?? e.kind})`)}`);
+    // One line per KNOWLEDGE above the root, not per edge: ep12 is both a declared parent of krx-all and a version
+    // of it, and printing it twice made the demo node's tree read as two different knowledges with the same name.
+    const above = new Map<string, string[]>();
+    for (const e of r.edges.filter((x) => x.to === r.root)) above.set(e.from, [...(above.get(e.from) ?? []), relUp[e.kind] ?? e.kind]);
+    for (const [id, kinds] of above) {
+      const n = byId.get(id);
+      const onlyVersion = kinds.every((k) => k === relUp.version);
+      if (n) lines.push(`  ${c.dim(onlyVersion ? 'older' : 'base')}  ${label(n)}  ${c.dim(`(${[...new Set(kinds)].join(', ')})`)}`);
     }
-    if (parents.length) lines.push(c.dim('    ↓'));
+    if (above.size) lines.push(c.dim('    ↓'));
     const root = byId.get(r.root);
     if (root) lines.push(`  ${c.dim('this')}  ${label(root)}`);
     const kids = children(r.root);
@@ -300,15 +308,16 @@ export async function patchTree(ctx: CliContext, id: string, opts: { depth?: num
         const n = byId.get(e.to);
         if (!n || seen.has(e.to)) continue;
         seen.add(e.to);
-        lines.push(`${indent}${c.dim(relation[e.kind] ?? e.kind)}  ${label(n)}`);
+        lines.push(`${indent}${c.dim(relDown[e.kind] ?? e.kind)}  ${label(n)}`);
         walk(e.to, `${indent}  `);
       }
     };
     walk(r.root, '  ');
-    if (!parents.length && !kids.length) lines.push(c.dim('  nothing was built on this, and it was not built on anything'));
+    if (!above.size && !kids.length) lines.push(c.dim('  nothing was built on this, and it was not built on anything'));
     lines.push('');
     lines.push(c.dim(`this family: ${r.family.sales} sales · ${r.family.knowledges} knowledges · ${r.family.authors} creators`));
-    if (r.money.lineage_pct > 0) lines.push(c.dim(`each sale: ${r.money.seller_pct}% to ${r.money.seller_name ?? 'the seller'}, ${r.money.lineage_pct}% shared by ${r.money.recipients.map((x) => x.name ?? shortAddr(x.address, 8)).join(', ')}`));
+    if (r.money.lineage_pct > 0) lines.push(c.dim(`each sale: ${r.money.seller_pct}% to ${r.money.seller_name ?? 'the seller'}, ${r.money.lineage_pct}% shared by the creators of ${r.money.lineage_names.join(', ')}`));
+    if (r.money.contributor_pct > 0) lines.push(c.dim(`  and ${r.money.contributor_pct}% to this knowledge's own credited teacher${r.money.recipients.filter((x) => x.kind === 'contributor').map((x) => ` (${x.name ?? shortAddr(x.address, 8)})`).join('')}`));
     if (r.truncated) lines.push(c.dim(`(stopped at depth ${r.depth} — ask for more with --depth)`));
     return lines.join('\n');
   });
