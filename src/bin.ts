@@ -11,6 +11,8 @@ import yargs, { type Argv, type ArgumentsCamelCase } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import chalk from 'chalk';
 import { CliError, PROG, buildContext, requireNodeTarget, type CliContext } from './context.js';
+import { explainUsageError } from './help.js';
+import { flushJson, jsonError, setWide } from './output.js';
 import * as init from './commands/init.js';
 import * as node from './commands/node.js';
 import * as auth from './commands/auth.js';
@@ -27,7 +29,7 @@ import * as dataset from './commands/dataset.js';
 import { EVENT_KINDS, EVENT_LEVELS } from '@ngram/node';
 import { RECORD_KINDS, type RecordKind } from '@ngram/core';
 
-type G = { home?: string; node?: string; json?: boolean; quiet?: boolean };
+type G = { home?: string; node?: string; json?: boolean; quiet?: boolean; wide?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
 // and cast to the shape their builder guarantees.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -48,25 +50,52 @@ const namesItsOwnNode = (a: Raw): boolean => {
  */
 type NoConfig = boolean | ((a: Raw) => boolean);
 
+/** Was `--json` asked for? Read from argv, because a parse failure never reaches a context (item 104). */
+const jsonMode = (): boolean => { const v = hideBin(process.argv); return v.includes('--json') && !v.includes('--no-json'); };
+
+/** `patch get` — the command a JSON error names, taken from what yargs matched rather than from a second list. */
+const commandOf = (raw: Raw): string => (raw._ ?? []).map(String).join(' ') || null as unknown as string;
+
 const run = <A extends G>(fn: (ctx: CliContext, a: A) => Promise<unknown> | unknown, keepAlive = false, noConfig: NoConfig = false) => async (raw: Raw) => {
   const a = raw as unknown as A;
+  let ctx: CliContext | null = null;
   try {
-    const ctx = ctxOf(a);
+    ctx = ctxOf(a);
+    setWide(!!(a as G).wide);
     if (!(typeof noConfig === 'function' ? noConfig(raw) : noConfig)) requireNodeTarget(ctx);
     await fn(ctx, a);
+    // a command whose only output was `ok()` still owes `--json` one document (item 104)
+    flushJson(ctx);
     // a command that finished but found something wrong (e.g. `status` on a port a stranger answers) sets its own code
     if (!keepAlive && !process.exitCode) process.exitCode = 0;
   } catch (e) {
     const err = e as CliError;
-    process.stderr.write(chalk.red('error: ') + (err.message ?? String(e)) + '\n');
-    process.exit(err instanceof CliError ? err.exitCode : 1);
+    const code = err instanceof CliError ? err.exitCode : 1;
+    // Item 104: under `--json` the failure is a document too — with the node's own error body, which `CliError`
+    // has been carrying and nothing ever printed. A CI job reads the reason instead of matching `error:` prose.
+    if (ctx?.json ?? !!a.json) jsonError(err, commandOf(raw), code);
+    else process.stderr.write(chalk.red('error: ') + (err.message ?? String(e)) + '\n');
+    process.exit(code);
   }
 };
 
-const fail = (y: Y): Y => y.fail((msg, err) => {
-  process.stderr.write(chalk.red('error: ') + (err?.message ?? msg) + '\n' + chalk.gray('Specify --help for available options.') + '\n');
+/**
+ * Every failure of the command line itself (item 103). yargs' own strings — `Not enough non-option arguments: got 0,
+ * need at least 1` for a bare `ainize publish`, `Unknown argument: statsu` for a typo — are rewritten from the help
+ * of the command that failed: what is missing, in its own words, with its usage line and first worked example.
+ */
+const usageError = (msg: string | null, err: Error | undefined, yy: Y): never => {
+  let help = '';
+  // yargs renders the help of the level that failed synchronously into this callback; an older/odd path leaves it
+  // empty, and the explanation degrades to yargs' own sentence rather than to nothing.
+  try { yy.showHelp((s: string) => { help = s; }); } catch { /* the message below stands on its own */ }
+  const e = explainUsageError(msg, err, help, hideBin(process.argv));
+  if (jsonMode()) jsonError({ message: e.message, details: e.hints.length ? { help: e.hints } : undefined }, e.command, 1);
+  else process.stderr.write(chalk.red('error: ') + e.message + '\n' + e.hints.map((h) => chalk.gray('  ' + h) + '\n').join(''));
   process.exit(1);
-});
+};
+
+const fail = (y: Y): Y => y.fail((msg, err, yy) => usageError(msg, err, yy as Y));
 
 const cli: Y = yargs(hideBin(process.argv))
   .scriptName(PROG)
@@ -80,13 +109,30 @@ const cli: Y = yargs(hideBin(process.argv))
   ].join('\n'))
   .option('home', { type: 'string', describe: 'node home directory (NGRAM_HOME)', global: true })
   .option('node', { type: 'string', describe: 'node API URL (default: http://localhost:<config port>)', global: true })
-  .option('json', { type: 'boolean', describe: 'machine-readable JSON output', global: true, default: false })
-  .option('quiet', { type: 'boolean', describe: 'suppress output', global: true, default: false })
+  .option('json', { type: 'boolean', describe: 'machine-readable JSON output — one document per command, errors included, on failure to stderr', global: true, default: false })
+  .option('quiet', { type: 'boolean', describe: 'print nothing but the id of whatever was created or changed', global: true, default: false })
+  .option('wide', { type: 'boolean', describe: 'do not fit tables to the terminal width (piped output is never fitted)', global: true, default: false })
   .alias('h', 'help').help('help').version()
-  .showHelpOnFail(false, 'Specify --help for available options.')
+  .showHelpOnFail(false, `Specify --help for available options.`)
   .strict()
+  // a one-character typo answers with the command it meant instead of "Unknown argument" (item 103)
+  .recommendCommands()
   .wrap(Math.min(110, process.stdout.columns || 100))
-  .demandCommand(1, `Specify a command. Try \`${PROG} --help\`.`);
+  .demandCommand(1, `Specify a command. Try \`${PROG} --help\`.`)
+  // Item 104: the codes that make a failure legible to a script were documented nowhere at all.
+  .epilogue([
+    'Exit codes:',
+    '  0    it worked',
+    '  1    the command ran and failed (the node refused it, a file was missing)',
+    '  2    no node to talk to: no config here, a bad --node, or nothing answering',
+    '  3    not yours to ask: log in (`' + PROG + ' login`), or you may not read it',
+    '  4    the node did not answer in time — it may be running the work anyway',
+    '  5    in the way: the shared model lock, or an incomplete subscription',
+    '  130  cancelled at a confirmation prompt',
+    '  `' + PROG + ' teach train --wait` sets 4-8 from the lesson\'s own outcome.',
+    '',
+    'Docs: <node url>/docs   ·   one command: `' + PROG + ' <command> --help`',
+  ].join('\n'));
 
 // ---------------------------------------------------------------- init / config / keys
 cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) => fail(y)
@@ -330,7 +376,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .positional('id', { type: 'string', demandOption: true })
     .option('all-sharing', { type: 'boolean', default: false, describe: 'also stop serving every other knowledge built from the same file (the command lists them first)' }),
   run((ctx, a: G & { id: string; 'all-sharing': boolean }) => patch.patchForget(ctx, a.id, { allSharing: a['all-sharing'] })))
-  .demandCommand(1, 'Subcommand is required.'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (ls|get|publish|import|announce|retire|verify|challenge|buy|download|apply|remove|stack|fork|merge|tree|missing|signals|conflicts|records|rm|forget).'), () => undefined);
 
 // ---------------------------------------------------------------- one-liners (publish / use)
 cli.command('publish <file>', 'One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale)', (y: Y) => fail(y)
@@ -527,7 +573,7 @@ cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
   .command('verify', 'Verify hashes, signatures and chain linkage', (yy: Y) => yy, run((ctx) => ledger.ledgerVerify(ctx)))
   .command('graph', 'ASCII lineage tree', (yy: Y) => yy, run((ctx) => ledger.ledgerGraph(ctx)))
   .command('export <file>', 'Export records as JSON lines', (yy: Y) => yy.positional('file', { type: 'string', demandOption: true }), run((ctx, a: G & { file: string }) => ledger.ledgerExport(ctx, a.file)))
-  .demandCommand(1, 'Subcommand is required.'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (ls|verify|graph|export).'), () => undefined);
 
 // ---------------------------------------------------------------- branches / routing / wallet
 cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patch sets)', (y: Y) => fail(y)
@@ -549,7 +595,7 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
   .command('sync <name>', 'Bring a subscribed track up to date now (buy and load what it added, unload what it retired)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
     run((ctx, a: G & { name: string }) => branch.branchSync(ctx, a.name)))
   .command('unsubscribe <name>', 'Unsubscribe (unload the track\'s knowledge; nothing is refunded)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'unsubscribe')))
-  .demandCommand(1, 'Subcommand is required.'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (ls|create|add|quote|subscribe|sync|unsubscribe).'), () => undefined);
 cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
 cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
@@ -569,7 +615,7 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
   .command('login', 'One-time browser pairing of the drive folder (interactive)', (yy: Y) => yy.option('server', { type: 'string', describe: `aindrive server (default ${drive.DEFAULT_AINDRIVE_SERVER})` })
     .option('name', { type: 'string', describe: 'drive name' }).option('open', { type: 'boolean', default: true, describe: 'open the browser for the pairing login (--no-open prints the link only)' }),
   run(async (ctx, a: G & { server?: string; name?: string; open: boolean }) => { const code = await drive.driveLogin(ctx, { server: a.server, name: a.name, noOpen: !a.open }); process.exit(code); }, true))
-  .demandCommand(1, 'Subcommand is required.'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (status|up|stop|sync|login).'), () => undefined);
 
 // ---------------------------------------------------------------- chain
 cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) => fail(y)
@@ -580,7 +626,7 @@ cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) 
     run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider), false, true))
   .command('setup', 'Register the knowledge app + market rules on-chain (funds the node identity first on a local chain)', (yy: Y) => yy.option('fund', { type: 'number', describe: 'AIN to fund the node identity with' }),
     run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a), false, true))
-  .demandCommand(1, 'Subcommand is required.'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (up|down|status|fund|setup).'), () => undefined);
 
 fail(cli);
 await cli.parseAsync();

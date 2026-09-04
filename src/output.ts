@@ -48,22 +48,118 @@ export function fmtTime(ts?: number | null): string {
 }
 
 // eslint-disable-next-line no-control-regex
-const ANSI = /\[[0-9;]*m/g;
-const width = (s: string) => { let w = 0; for (const ch of s.replace(ANSI, '')) w += /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? 2 : 1; return w; };
+const ANSI = /\x1b\[[0-9;]*m/g;
+const WIDE_CHAR = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+export const width = (s: string) => { let w = 0; for (const ch of s.replace(ANSI, '')) w += WIDE_CHAR.test(ch) ? 2 : 1; return w; };
 const padEnd = (s: string, n: number) => s + ' '.repeat(Math.max(0, n - width(s)));
+
+/**
+ * Cut a coloured string to `n` display cells (item 115). Escape sequences cost nothing on screen, so they are copied
+ * through and never counted; a cut string ends with `…` and a reset, so a truncated cyan id does not colour the rest
+ * of the row. CJK cells count as two, the same way `width` counts them, so a Korean name is cut on a character
+ * boundary and the column below it still lines up.
+ */
+export function clip(s: string, n: number): string {
+  if (width(s) <= n) return s;
+  const room = Math.max(0, n - 1);        // the … itself occupies one cell
+  let out = '';
+  let w = 0;
+  let coloured = false;
+  for (let i = 0; i < s.length;) {
+    // eslint-disable-next-line no-control-regex
+    const esc = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
+    if (esc) { out += esc[0]; coloured = true; i += esc[0].length; continue; }
+    const ch = [...s.slice(i)][0] ?? '';
+    const cw = WIDE_CHAR.test(ch) ? 2 : 1;
+    if (w + cw > room) break;
+    out += ch; w += cw; i += ch.length;
+  }
+  return out + '…' + (coloured ? '\x1b[0m' : '');
+}
+
+/**
+ * `--wide` (item 115). Tables are fitted to the terminal; this turns the fitting off for a session that wants every
+ * column whatever the width. Piped output is never fitted either — a script reading `patch ls` gets the full cells.
+ */
+let wideOutput = false;
+export function setWide(v: boolean): void { wideOutput = v; }
+
+/**
+ * How many display columns this output may use. `Infinity` means "do not fit": not a terminal (a pipe, a CI log, a
+ * file) or `--wide`. 60 is the floor, below which a table cannot be a table.
+ */
+export function budget(): number {
+  if (wideOutput || !process.stdout.isTTY) return Infinity;
+  return Math.max(60, process.stdout.columns || 100);
+}
 
 export interface Column<T> { key: string; title: string; get: (row: T) => string; align?: 'left' | 'right'; }
 
+/**
+ * A table fitted to the terminal (item 115). Natural widths first; when they do not fit, the text columns are
+ * shrunk (widest first, down to 8 cells) with `clip`, and only if that is still not enough are columns dropped from
+ * the right — with a line saying how many and how to get them back. Right-aligned columns are numbers and are never
+ * shrunk. Piped output and `--wide` skip the whole mechanism.
+ */
 export function table<T>(rows: T[], cols: Column<T>[], empty = '(none)'): string {
   if (!rows.length) return c.dim(empty);
   const cells = rows.map((r) => cols.map((col) => col.get(r) ?? ''));
-  const widths = cols.map((col, i) => Math.max(width(col.title), ...cells.map((r) => width(r[i]))));
-  const line = (vals: string[], head = false) => vals.map((v, i) => {
-    const w = widths[i];
-    const s = cols[i].align === 'right' ? ' '.repeat(Math.max(0, w - width(v))) + v : padEnd(v, w);
+  const natural = cols.map((col, i) => Math.max(width(col.title), ...cells.map((r) => width(r[i]))));
+  const GAP = 2;
+  const max = budget();
+  let show = cols.map((_, i) => i);
+  const widths = natural.slice();
+  const total = (idx: number[], w: number[]) => idx.reduce((a, i) => a + w[i], 0) + GAP * Math.max(0, idx.length - 1);
+
+  if (max !== Infinity && total(show, widths) > max) {
+    // 1. shrink the text columns, widest first, to a floor of 8 cells (or their title, when that is shorter)
+    const floor = (i: number) => Math.min(natural[i], Math.max(8, Math.min(width(cols[i].title), 12)));
+    const shrinkable = () => show.filter((i) => cols[i].align !== 'right' && widths[i] > floor(i));
+    for (;;) {
+      const over = total(show, widths) - max;
+      if (over <= 0) break;
+      const cand = shrinkable();
+      if (!cand.length) break;
+      const widest = cand.reduce((a, b) => (widths[a] >= widths[b] ? a : b));
+      const next = cand.map((i) => widths[i]).filter((w) => w < widths[widest]).sort((a, b) => b - a)[0] ?? floor(widest);
+      widths[widest] = Math.max(floor(widest), next, widths[widest] - over);
+    }
+    // 2. still too wide: drop columns from the right, keeping at least the first two
+    while (show.length > 2 && total(show, widths) > max) show = show.slice(0, -1);
+  }
+
+  const dropped = cols.length - show.length;
+  const line = (vals: string[], head = false) => show.map((i) => {
+    const v = clip(vals[i], widths[i]);
+    const s = cols[i].align === 'right' ? ' '.repeat(Math.max(0, widths[i] - width(v))) + v : padEnd(v, widths[i]);
     return head ? c.head(s) : s;
-  }).join('  ');
-  return [line(cols.map((x) => x.title), true), c.dim(widths.map((w) => '─'.repeat(w)).join('  ')), ...cells.map((r) => line(r))].join('\n');
+  }).join(' '.repeat(GAP));
+  const out = [
+    line(cols.map((x) => x.title), true),
+    c.dim(show.map((i) => '─'.repeat(widths[i])).join(' '.repeat(GAP))),
+    ...cells.map((r) => line(r)),
+  ];
+  if (dropped) out.push(c.dim(`(${dropped} more column${dropped === 1 ? '' : 's'} not shown: ${cols.slice(show.length).map((x) => x.title).join(', ')} — --wide, or a wider terminal, shows them)`));
+  return out.join('\n');
+}
+
+/**
+ * A prose line fitted to the same budget (item 115): the widest thing on the screen was never a table but the
+ * `overlapping memory entries: …` line. Wrapped, not cut, and continuation lines are indented under the first.
+ */
+export function fitLine(s: string, indent = 2): string {
+  const max = budget();
+  if (max === Infinity || width(s) <= max) return s;
+  const words = s.split(' ');
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    const pad = lines.length ? ' '.repeat(indent) : '';
+    if (cur && width(cur) + 1 + width(w) > max) { lines.push(cur); cur = pad + w; continue; }
+    cur = cur ? `${cur} ${w}` : pad + w;
+  }
+  if (cur) lines.push(cur);
+  return lines.join('\n');
 }
 
 export function kv(pairs: [string, unknown][]): string {
@@ -71,13 +167,57 @@ export function kv(pairs: [string, unknown][]): string {
   return pairs.map(([k, v]) => `${c.dim(k.padEnd(w))}  ${v === undefined || v === null || v === '' ? c.dim('-') : String(v)}`).join('\n');
 }
 
-/** Print according to context: JSON mode dumps `data`, otherwise `render(data)`; quiet suppresses. */
+// ---------------------------------------------------------------- the --json / --quiet contract (items 104, 220)
+/**
+ * Did a command already write its JSON document? `ok()` and `info()` are prose and have no place in a JSON stream,
+ * but a command whose ONLY output is `ok()` (`logout`, `stop`, `config set`) must still say something a script can
+ * read — so their messages are kept here and written as one `{ok:true,message}` document at the end, and only when
+ * nothing else was emitted. One command, one document, always.
+ */
+let jsonEmitted = false;
+const jsonNotes: string[] = [];
+
+/** The id of the thing a mutating command just affected — what `--quiet` prints, the way git and kubectl do. */
+function affectedId(data: unknown): string | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const d = data as Record<string, unknown>;
+  const anchor = d.anchor as Record<string, unknown> | undefined;
+  const job = d.job as Record<string, unknown> | undefined;
+  for (const v of [d.patch_id, anchor?.id, d.dataset_id, d.job_id, job?.id, d.id]) {
+    if (typeof v === 'string' && v) return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return null;
+}
+
+/**
+ * Print according to context. `--json` wins over `--quiet` (item 104: `--json --quiet` used to print nothing at
+ * all), `--quiet` prints the id of whatever was affected and nothing else, and a terminal gets `render(data)`.
+ */
 export function emit<T>(ctx: CliContext, data: T, render: (d: T) => string | void): T {
-  if (ctx.quiet) return data;
-  if (ctx.json) { process.stdout.write(JSON.stringify(data, null, 2) + '\n'); return data; }
+  if (ctx.json) { jsonEmitted = true; process.stdout.write(JSON.stringify(data, null, 2) + '\n'); return data; }
+  if (ctx.quiet) { const id = affectedId(data); if (id) process.stdout.write(id + '\n'); return data; }
   const s = render(data);
   if (typeof s === 'string') process.stdout.write(s + (s.endsWith('\n') ? '' : '\n'));
   return data;
+}
+
+/** End of a command: under `--json`, a command that only spoke through `ok()` still owes the script one document. */
+export function flushJson(ctx: CliContext): void {
+  if (!ctx.json || jsonEmitted || !jsonNotes.length) return;
+  jsonEmitted = true;
+  process.stdout.write(JSON.stringify({ ok: true, message: jsonNotes.join('\n') }, null, 2) + '\n');
+}
+
+/**
+ * A failure as a document (item 104). `--json` used to answer every error with `error: <prose>` on stderr and
+ * nothing on stdout, so a CI job had to string-match the prose and could never read the reason the node gave —
+ * which `CliError.details` has been carrying all along.
+ */
+export function jsonError(err: { message?: string; exitCode?: number; details?: unknown }, command: string | null, code: number): void {
+  const body: Record<string, unknown> = { error: { message: err.message ?? 'failed', code, command: command ?? undefined } };
+  if (err.details !== undefined) (body.error as Record<string, unknown>).details = err.details;
+  process.stderr.write(JSON.stringify(body, null, 2) + '\n');
 }
 
 /**
@@ -112,6 +252,53 @@ export async function confirm(ctx: CliContext, question: string, opts: { yes?: b
   if (answer !== 'y' && answer !== 'yes') throw new CliError('cancelled — nothing was bought, nothing was charged', 130);
 }
 
-export function info(ctx: CliContext, msg: string) { if (!ctx.quiet && !ctx.json) process.stdout.write(msg + '\n'); }
+export function info(ctx: CliContext, msg: string) {
+  if (ctx.json) { jsonNotes.push(msg.replace(ANSI, '')); return; }
+  if (!ctx.quiet) process.stdout.write(msg + '\n');
+}
 export function ok(ctx: CliContext, msg: string) { info(ctx, c.ok('✓ ') + msg); }
 export function warn(ctx: CliContext, msg: string) { if (!ctx.quiet) process.stderr.write(c.warn('! ') + msg + '\n'); }
+
+// ---------------------------------------------------------------- the wait (item 105)
+/** What a slow command can say about itself while it waits. `note` replaces the line's tail as the node reports it. */
+export interface Progress { note(msg: string | null): void }
+
+const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/**
+ * Run something slow with the terminal told what is happening (item 105). Every heavy verb here is one awaited fetch
+ * behind a shared GPU lock — up to 30 minutes — and printed nothing at all until it finished, which is
+ * indistinguishable from a hang.
+ *
+ * stdout stays pipe-clean: the clock is written to stderr, and only when stderr is a terminal. A non-terminal (CI, a
+ * cron log) gets one line every 30 s instead of an animation, and `--json` / `--quiet` get nothing at all.
+ */
+export async function withProgress<T>(ctx: CliContext, label: string, fn: (p: Progress) => Promise<T>): Promise<T> {
+  const tty = !!process.stderr.isTTY;
+  const silent = ctx.json || ctx.quiet;
+  let tail: string | null = null;
+  const p: Progress = { note: (m) => { tail = m; if (!silent && !tty && m) process.stderr.write(c.dim(`… ${m}\n`)); } };
+  if (silent) return fn(p);
+  const t0 = Date.now();
+  let frame = 0;
+  let printed = 0;
+  const secs = () => Math.round((Date.now() - t0) / 1000);
+  const clear = () => { if (tty && printed) { process.stderr.write('\r' + ' '.repeat(printed) + '\r'); printed = 0; } };
+  const draw = () => {
+    const line = `${FRAMES[frame++ % FRAMES.length]} ${label} ${secs()}s${tail ? ` · ${tail}` : ''}`;
+    clear();
+    process.stderr.write(c.dim(line));
+    printed = width(line);
+  };
+  const timer = tty
+    ? setInterval(draw, 100)
+    : setInterval(() => process.stderr.write(c.dim(`… still waiting for ${label} (${secs()}s)${tail ? ` · ${tail}` : ''}\n`)), 30_000);
+  timer.unref?.();
+  try {
+    if (tty) draw();
+    return await fn(p);
+  } finally {
+    clearInterval(timer);
+    clear();
+  }
+}
