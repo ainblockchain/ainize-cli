@@ -202,7 +202,9 @@ cli.command('start', 'Start the node (foreground unless --detach)', (y: Y) => fa
 run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
   const r = await node.start(ctx, { ...a, publicUrl: a['public-url'] });
   if ('detached' in r) return r;
-  process.stdout.write(chalk.gray('press Ctrl+C to stop\n'));
+  // Only to a terminal: `start -d` spawns this same foreground path with stdout redirected into node.log, so this
+  // line used to end every detached run's log with an instruction nobody can carry out there (item 131).
+  if (process.stdout.isTTY) process.stdout.write(chalk.gray('press Ctrl+C to stop\n'));
   await new Promise(() => undefined);   // keep alive
 }, true, true));
 cli.command('stop', 'Stop a background node', (y: Y) => fail(y), run((ctx) => node.stop(ctx), false, true));
@@ -225,7 +227,12 @@ cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if p
   .option('prototype', { type: 'boolean', default: false, describe: 'import the reference prototype ledger' })
   .option('announce', { type: 'boolean', default: true, describe: 'announce the seeded knowledge on the ledger (--no-announce leaves drafts)' }),
 run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a), false, true));
-cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
+cli.command('nodes', 'List the peers this node talks to and the nodes it knows of', (y: Y) => fail(y)
+  .option('all', { type: 'boolean', default: false, describe: 'include node records not seen for over an hour (they are permanent, so there are many)' })
+  .option('limit', { type: 'number', describe: 'show at most this many node records' })
+  .example('$0 nodes', 'peers first, then the nodes seen in the last hour')
+  .example('$0 nodes --all', 'every node record this node has ever read'),
+run((ctx, a: G & node.NodesArgs) => node.nodesTable(ctx, a)));
 cli.command('blobs', 'Knowledge files this node holds on disk, and what they cost', (y: Y) => fail(y)
   .command(['ls', 'list'], 'List every knowledge file with its size and why it is held', (yy: Y) => yy, run((ctx) => node.blobsLs(ctx)))
   .demandCommand(1, 'Subcommand is required (ls).'), () => undefined);

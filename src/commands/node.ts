@@ -294,6 +294,16 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
   return d;
 }
 
+/** `18s` / `12m` / `4h 03m` / `9d` — an age a column can hold, for the SEEN column and the peer state. */
+export function relAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h ${String(m % 60).padStart(2, '0')}m` : `${Math.round(h / 24)}d`;
+}
+
 export interface EventRow { seq: number; ts: number; level: string; kind: string; patch_id: string | null; message: string; data: unknown; }
 
 /** warn is "warnings and worse", the question an operator asks — the same floor `/api/events` applies. */
@@ -487,13 +497,31 @@ export async function gc(ctx: CliContext, a: GcArgs = {}): Promise<GcResponse> {
   return done;
 }
 
-export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; peers: unknown[]; self: string }> {
+export interface NodesArgs { all?: boolean; limit?: number }
+
+/** How recently a node must have been heard from to make the default `ainize nodes` list (item 140). */
+export const NODES_RECENT_MS = 3600_000;
+
+export async function nodesTable(ctx: CliContext, a: NodesArgs = {}): Promise<{ nodes: unknown[]; peers: unknown[]; self: string }> {
   const client = new NodeClient(ctx);
-  const d = await client.get<{ nodes: (InfoResponse['node'] & { last_seen?: number; blobs_advertised?: number; ledger_mismatch?: boolean })[]; peers: PeerRow[]; blocked?: BlockedPeer[]; self: string; peer_status?: PeerStatus }>('/api/nodes', { auth: false });
-  emit(ctx, d, (x) => [
-    c.head('known nodes'),
-    table(x.nodes, [
-      { key: 'name', title: 'NAME', get: (n) => (n.address === x.self ? c.bold(n.name + ' (self)') : n.name) },
+  type NodeRow = InfoResponse['node'] & { last_seen?: number; blobs_advertised?: number; ledger_mismatch?: boolean; duplicate_endpoints?: string[] };
+  // Ask for everything and filter here, so `--all` needs no second round trip and the cut-off is the CLI's own.
+  const d = await client.get<{ nodes: NodeRow[]; peers: PeerRow[]; blocked?: BlockedPeer[]; self: string; peer_status?: PeerStatus }>('/api/nodes?all=1', { auth: false });
+  // The peers table carries the state that actually diagnoses a gossip problem, and it used to be printed BELOW a
+  // wall of 122 dead node records (item 140). It goes first.
+  const recent = d.nodes.filter((n) => n.address === d.self || Date.now() - (n.last_seen ?? 0) < NODES_RECENT_MS);
+  const shown = (a.all ? d.nodes : recent).slice(0, a.limit && a.limit > 0 ? a.limit : undefined);
+  const hidden = d.nodes.length - shown.length;
+  // One line per colliding ADDRESS, not per row: both rows carry the same endpoint pair (item 139).
+  const dupes = new Map<string, NodeRow>();
+  for (const n of d.nodes) if (n.duplicate_endpoints?.length && !dupes.has(n.address.toLowerCase())) dupes.set(n.address.toLowerCase(), n);
+  emit(ctx, { ...d, nodes: shown, nodes_total: d.nodes.length, nodes_hidden: hidden }, (x) => [
+    c.head('peers'),
+    table(x.peers, peerColumns),
+    ...blockedLines(x.blocked),
+    '', c.head(`known nodes${a.all ? '' : ' (seen in the last hour)'}`),
+    table(shown, [
+      { key: 'name', title: 'NAME', get: (n) => (n.address === x.self ? c.bold(n.name + ' (self)') : n.name) + (n.duplicate_endpoints?.length ? c.err(' DUPLICATE') : '') },
       { key: 'addr', title: 'ADDRESS', get: (n) => shortAddr(n.address, 8) },
       { key: 'ep', title: 'ENDPOINT', get: (n) => n.endpoint },
       { key: 'roles', title: 'ROLES', get: (n) => n.roles.join(',') },
@@ -502,14 +530,14 @@ export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; p
       // what the node ITSELF says it holds: `blobs` is filtered through this node's catalogue, so a peer on another
       // ledger showed 0 while holding four (item 170)
       { key: 'blobs', title: 'BLOBS', get: (n) => String(n.blobs_advertised ?? n.blobs.length), align: 'right' },
-      { key: 'seen', title: 'LAST SEEN', get: (n) => fmtTime(n.last_seen) },
-    ]),
+      { key: 'seen', title: 'SEEN', get: (n) => (n.address === x.self ? c.dim('now') : n.last_seen ? `${relAge(Date.now() - n.last_seen)} ago` : c.dim('never')) },
+    ], 'no node records yet'),
+    ...(hidden > 0 ? [c.dim(`… and ${hidden} node record(s) not seen for over an hour — \`${PROG} nodes --all\` lists them`)] : []),
+    // item 139: two endpoints answering for one identity. Whichever spoke last owns the address in every registry.
+    ...[...dupes.values()].map((n) => c.err('! ') + `${shortAddr(n.address, 8)} is answering at ${n.duplicate_endpoints!.join(' and ')} — two nodes are running on one identity, so buyers and verifiers reach one of them at random. Stop one, or give it its own key (\`${PROG} keys rotate\`).`),
     // "configured peers" was a lie on this table: gossip adds every endpoint any peer advertises, so an operator was
     // shown other people's nodes under a heading that said they had configured them (item 136). SOURCE says which is
     // which, and STATE carries the reason a peer is not answering instead of a raw counter (item 138).
-    '', c.head('peers'),
-    table(x.peers, peerColumns),
-    ...blockedLines(x.blocked),
     ...ledgerMismatchLines(x.peer_status),
   ].join('\n'));
   return d;
