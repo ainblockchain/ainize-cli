@@ -136,7 +136,14 @@ export interface TeachJobView {
   contributor?: { address: string; name?: string }; context_patch_ids?: string[]; builds_on_context?: boolean;
   facts?: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean }[];
   progress?: { step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; phase?: string; percent?: number; rows_total?: number; rows_touched?: number; eval_sample?: { n: number; of: number }; elapsed_s?: number };
-  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number; sampled?: { checked: number; of: number } }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string; simulated?: boolean; skipped?: true };
+  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number; sampled?: { checked: number; of: number } }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string; simulated?: boolean; skipped?: true;
+    parent_check?: { patch_id: string; hit: number; total: number; failed: number[]; base_hit?: number; base_total?: number; base_failed?: number[]; overridden?: number }[]; reversibility_ok?: boolean | null };
+  /** Lineage (design §12.1): what this lesson was trained ON TOP OF, and what it did with the base's questions. */
+  bases?: { patch_id: string; sha256: string; name?: string; status?: string }[];
+  mode?: 'scratch' | 'extend' | 'fork' | 'merge';
+  export?: 'delta' | 'squash';
+  inherited_rows?: number;
+  changed_rows?: number;
   result?: { sha256: string; rows: number; size_bytes: number };
   /** teach mode v2: what this lesson was trained from. A lesson taught before datasets existed reports `id: null`. */
   dataset?: TeachDatasetRef;
@@ -238,6 +245,24 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     }
     if (j.contributor) pairs.push(['taught by', `${j.contributor.name ?? ''} ${shortAddr(j.contributor.address, 6)}`.trim()]);
     if (j.context_patch_ids?.length) pairs.push(['taught with', `${j.context_patch_ids.join(', ')}${j.builds_on_context ? ' (builds on them)' : ''}`]);
+    // design §13: one line that says what this lesson is built on and what it did to it
+    if (j.bases?.length) {
+      const direct = j.bases[j.bases.length - 1];
+      const name = direct.name ?? direct.patch_id;
+      const pc = j.checks?.parent_check?.find((x) => x.patch_id === direct.patch_id);
+      const bits = [
+        `${name}${j.export ? ` (${j.export === 'delta' ? 'add-on — buyers need it too' : 'stand-alone build'})` : ''}`,
+        `adds ${(j.facts?.length ?? 0) - (j.changed_rows ?? 0)}`,
+        ...(j.changed_rows ? [`changes ${j.changed_rows} of its answers`] : []),
+        ...(j.inherited_rows ? [`keeps ${j.inherited_rows} of its questions`] : []),
+        ...(pc && pc.total ? [`${name} still answers ${pc.hit}/${pc.total} with the lesson on top`] : []),
+        ...(j.checks?.reversibility_ok === true ? ['reversible: yes'] : j.checks?.reversibility_ok === false ? [c.err('reversible: no')] : []),
+      ];
+      pairs.push(['built on', bits.join(' · ')]);
+      if (j.bases.length > 1) pairs.push(['  loaded under it', j.bases.slice(0, -1).map((b) => b.patch_id).join(' → ')]);
+      const stale = j.bases.filter((b) => b.status && !['LISTED', 'ANNOUNCED', 'VERIFYING'].includes(b.status));
+      if (stale.length) pairs.push(['  not published yet', `${stale.map((b) => `${b.patch_id} (${b.status})`).join(', ')} — publish it first, or this lesson cannot be published on top of it`]);
+    }
     if (j.dataset) {
       const d = j.dataset;
       const what = d.id === null

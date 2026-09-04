@@ -34,7 +34,13 @@ export interface DatasetRowsPage { total: number; source_rows: number; offset: n
 export interface CreateJobResult { job: TeachJobView; quota?: { key_remaining?: number; ip_remaining?: number; rows_remaining?: number; rows_ip_remaining?: number } }
 
 export interface ParseOpts { format?: string; delimiter?: string; header?: boolean; columns?: string; encoding?: string; layout?: string }
-export interface TrainOpts { effort?: TeachEffort; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; wait?: boolean }
+export interface TrainOpts { effort?: TeachEffort; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; wait?: boolean;
+  /** `--on <id>`: the knowledge this lesson is trained ON TOP OF (design §13). Distinct from `--patch`, which only loads for comparison. */
+  on?: string;
+  /** `--no-inherit`: check against the base, but do not train its questions as known answers. */
+  inherit?: boolean;
+  /** `--yes-change`: these answers are meant to replace the base's (design §12.1 `base_unresolved_conflicts`). */
+  yesChange?: boolean }
 export interface DatasetOpts extends KeyOpts, ParseOpts { name?: string; retention?: 'keep' | 'delete_after_training' }
 
 // ---------------------------------------------------------------- teaching key
@@ -291,6 +297,33 @@ export async function datasetRm(ctx: CliContext, id: string, opts: KeyOpts = {})
   return out;
 }
 
+// ---------------------------------------------------------------- patch fork (lineage design §13, Story B)
+export interface ForkResult {
+  node: string; dataset_id: string; dataset: TeachDataset; created: boolean; inherited_rows: number;
+  parent: { patch_id: string; name: string; dataset_sha256: string }; license: string | null;
+}
+
+/**
+ * `ainize patch fork <id>` — copy a published knowledge's questions into MY training sets, with that knowledge
+ * recorded as their parent. The next line is `teach train <dataset> --on <id>`, and the command says so.
+ */
+export async function patchFork(ctx: CliContext, id: string, opts: KeyOpts & { name?: string } = {}): Promise<ForkResult> {
+  const s = await TeachSession.open(ctx, opts);
+  const r = await s.post<Omit<ForkResult, 'node'>>(`/api/patches/${encodeURIComponent(id)}/fork`, { ...(opts.name ? { name: opts.name } : {}) });
+  const out: ForkResult = { ...r, node: s.client.baseUrl };
+  emit(ctx, out, (d) => [
+    c.ok('✓ ') + (d.created ? `copied ${d.inherited_rows} question(s) from ${c.id(d.parent.patch_id)} into ${c.id(d.dataset_id)}` : `you already have this copy: ${c.id(d.dataset_id)}`),
+    kv([
+      ['dataset', `${d.dataset.name} · ${d.dataset.rows} question(s) · ${shortHash(d.dataset.sha256, 12)}`],
+      ['from', `${d.parent.name} (${d.parent.patch_id})${d.license ? ` · ${d.license}` : ''}`],
+      ['inherited', `${d.inherited_rows} — every one of them points at the question of ${d.parent.patch_id} it came from`],
+    ]),
+    c.dim(`add your own questions:  ${PROG} teach dataset get ${d.dataset_id} -o questions.jsonl   (edit, then re-upload)`),
+    c.dim(`teach on top of it:      ${PROG} teach train ${d.dataset_id} --on ${d.parent.patch_id}`),
+  ].join('\n'));
+  return out;
+}
+
 // ---------------------------------------------------------------- teach train
 const EFFORTS: TeachEffort[] = ['quick', 'balanced', 'thorough'];
 
@@ -312,8 +345,16 @@ function trainingSpec(opts: TrainOpts): Record<string, unknown> | undefined {
 
 async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts): Promise<CreateJobResult> {
   const patchIds = (opts.patch ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const baseIds = (opts.on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (baseIds.length > 1) throw new CliError('--on takes one knowledge — combining two is `ainize patch merge`, which is not on this node yet');
   const body = {
-    dataset_id: datasetId, patch_ids: patchIds, builds_on_context: patchIds.length > 0,
+    dataset_id: datasetId,
+    // `--patch` alone keeps meaning "loaded for comparison"; with `--on` the base is what the lesson is built on and
+    // the rest is context (design §13). `builds_on_context` is only sent for the legacy shape, without a base.
+    patch_ids: patchIds, context_ids: patchIds, builds_on_context: !baseIds.length && patchIds.length > 0,
+    ...(baseIds.length ? { base_ids: baseIds, mode: 'extend' as const } : {}),
+    ...(opts.inherit === false ? { inherit: false } : {}),
+    ...(opts.yesChange ? { confirm_conflicts: true } : {}),
     ...(opts.name ? { name: opts.name } : {}), ...(trainingSpec(opts) ? { training: trainingSpec(opts) } : {}),
     ...(s.key.name ? { contributor: { name: s.key.name } } : {}),
   };
@@ -368,6 +409,7 @@ export function renderJobCreated(r: CreateJobResult, node: string): string {
     c.ok('✓ ') + `lesson ${c.id(r.job.id)} queued` + (r.job.position !== undefined ? c.dim(`  ${r.job.position} ahead of it`) : ''),
     kv([
       ['questions', `${r.job.facts?.length ?? r.job.dataset?.trained_rows ?? 0} of ${r.job.dataset?.rows ?? '?'} in the dataset`],
+      ...(r.job.bases?.length ? [['built on', `${r.job.bases[r.job.bases.length - 1].name ?? r.job.bases[r.job.bases.length - 1].patch_id}${r.job.inherited_rows ? ` · keeps ${r.job.inherited_rows} of its questions as known answers` : ''}${r.job.changed_rows ? ` · changes ${r.job.changed_rows} of its answers` : ''}`] as [string, unknown]] : []),
       ['effort', r.job.training ? `${r.job.training.effort} · ${r.job.training.max_steps} passes${r.job.training.check_side_effects === false ? ' · side-effect check OFF (publishing stays blocked until it is measured)' : ''}` : c.dim('node default')],
       ['left today', `${q.key_remaining ?? '?'} lessons · ${q.rows_remaining ?? '?'} questions (this key)`],
     ]),

@@ -236,6 +236,14 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
       .option('cascade', { type: 'boolean', default: false, describe: 'also unload everything that is loaded on top of it' }),
     run((ctx, a: G & { id: string; cascade?: boolean }) => patch.patchRemove(ctx, a.id, { cascade: a.cascade })))
   .command('stack', 'What is loaded in the serving model, bottom first', (yy: Y) => yy, run((ctx) => patch.patchStack(ctx)))
+  .command('fork <id>', 'Copy this knowledge\'s questions into your own training set, and continue from there', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('name', { type: 'string', describe: 'name for your copy' })
+    .option('key-file', { type: 'string', describe: 'teaching key file (default: <home>/teaching-key.json)' })
+    .option('key', { type: 'string', describe: 'teaching key as hex / json (or NGRAM_TEACH_KEY)' })
+    .example('$0 patch fork krx-all-2761 --name "KRX + biotech"', 'start from its questions')
+    .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
+  run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
@@ -325,13 +333,17 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('alt', { type: 'boolean', describe: '--no-alt trains only the wording in the file, not the second phrasing' })
     .option('rows', { type: 'number', describe: 'train only the first N questions of the dataset' })
     .option('name', { type: 'string', describe: 'name for the lesson (and for the dataset, when a file is uploaded here)' })
-    .option('patch', { type: 'string', describe: 'knowledge id(s) loaded while teaching, comma-separated — the lesson then builds on them' })
+    .option('patch', { type: 'string', describe: 'knowledge id(s) loaded while teaching, comma-separated — for comparison only' })
+    .option('on', { type: 'string', describe: 'the knowledge this lesson is trained ON TOP OF: its questions are kept as known answers, it is recorded as the base, and buyers need it too' })
+    .option('inherit', { type: 'boolean', describe: '--no-inherit checks against the base without keeping its questions as known answers' })
+    .option('yes-change', { type: 'boolean', default: false, describe: 'my answers are meant to replace the base\'s where they differ' })
     .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage)' })
     .example('$0 teach train 6f2c1b2a-…', 'train an uploaded dataset')
     .example('$0 teach train ./questions.csv --effort quick --wait', 'file → lesson in one line')
+    .example('$0 teach train 6f2c1b2a-… --on krx-all-2761', 'teach it on top of someone else\'s knowledge')
     .example('$0 teach train 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
-  run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; wait: boolean }) =>
-    teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, wait: a.wait })))
+  run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; on?: string; inherit?: boolean; 'yes-change': boolean; wait: boolean }) =>
+    teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, on: a.on, inherit: a.inherit, yesChange: a['yes-change'], wait: a.wait })))
 
   .command('jobs', 'My lessons on this node and the dataset each came from', (yy: Y) => keyOpts(yy)
     .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),
