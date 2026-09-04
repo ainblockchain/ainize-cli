@@ -67,7 +67,7 @@ test('config/keys commands read the node config', async () => {
   const k = await keysShow(ctx);
   assert.equal(k.address, node.cfg.identity.address);
   assert.equal(k.privateKey, undefined);
-  assert.equal(configShow(ctx).name, 'cli-test-node');
+  assert.equal((await configShow(ctx)).name, 'cli-test-node');
 });
 
 test('status reaches the node', async () => {

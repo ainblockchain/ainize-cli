@@ -183,18 +183,18 @@ test('`config get` prints one key and `config unset` restores the default (item 
   try {
     saveConfig(defaultConfig({ home: h, name: 'c', port: 3999, ledger: 'local' }), h);
     const ctx = buildContext({ home: h, quiet: true });
-    assert.equal(configGet(ctx, 'market.defaultPrice'), '0.1');
-    assert.equal(configGet(ctx, 'identity.privateKey'), '<hidden — `ainize keys show --reveal`>');   // never the key itself
-    assert.throws(() => configGet(ctx, 'nosuch.key'), /unknown config key 'nosuch\.key'/);
+    assert.equal(await configGet(ctx, 'market.defaultPrice'), '0.1');
+    assert.equal(await configGet(ctx, 'identity.privateKey'), '<hidden — `ainize keys show --reveal`>');   // never the key itself
+    await assert.rejects(() => configGet(ctx, 'nosuch.key'), /unknown config key 'nosuch\.key'/);
 
     await configSet(ctx, 'teach.trainer.gpus', '0,1');
     assert.equal(loadConfig(h)!.teach!.trainer.gpus, '0,1');
-    configUnset(ctx, 'teach.trainer.gpus');
+    await configUnset(ctx, 'teach.trainer.gpus');
     assert.equal(loadConfig(h)!.teach!.trainer.gpus, DEFAULT_TEACH_CONFIG.trainer.gpus);            // required → reset, not deleted
     await configSet(ctx, 'publicUrl', 'http://example.test:3999');
-    configUnset(ctx, 'publicUrl');
+    await configUnset(ctx, 'publicUrl');
     assert.equal('publicUrl' in (loadConfig(h) as object), false);                                   // optional → really gone
-    assert.throws(() => configUnset(ctx, 'publicUrl'), /is not set in/);
+    await assert.rejects(() => configUnset(ctx, 'publicUrl'), /is not set in/);
   } finally { rmSync(h, { recursive: true, force: true }); }
 });
 
@@ -281,7 +281,7 @@ test('a config whose port is not a number is named as such, and never locks the 
     assert.equal(ctx.nodeUrlProblem, `port in ${join(h, 'config.json')} is "notanumber", not a port number — fix it with \`ainize config set port <1-65535>\``);
     assert.throws(() => requireNodeTarget(ctx), (e: CliError) => e.exitCode === 2 && /not a port number/.test(e.message));
     // the local commands work, and so does the fix
-    assert.equal(configShow(ctx).name, 'p');
+    assert.equal((await configShow(ctx)).name, 'p');
     await assert.rejects(() => start(ctx, {}), /this node's config is not usable:\n  port must be a number/);
     await configSet(ctx, 'port', '3999');
     assert.equal(buildContext({ home: h, quiet: true }).nodeUrlProblem, null);
