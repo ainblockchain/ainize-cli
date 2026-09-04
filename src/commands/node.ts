@@ -12,7 +12,7 @@ import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { logFile, pidFile, runningPid } from '../pid.js';
 import { c, emit, fmtTime, info, kv, ok, shortAddr, table, warn } from '../output.js';
-import { ledgerMismatchLines, type PeerStatus } from './peers.js';
+import { blockedLines, peerColumns, ledgerMismatchLines, type BlockedPeer, type PeerRow, type PeerStatus } from './peers.js';
 import { assertUsableConfig, requireConfig } from './init.js';
 import { promptLine } from './auth.js';
 
@@ -489,7 +489,7 @@ export async function gc(ctx: CliContext, a: GcArgs = {}): Promise<GcResponse> {
 
 export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; peers: unknown[]; self: string }> {
   const client = new NodeClient(ctx);
-  const d = await client.get<{ nodes: (InfoResponse['node'] & { last_seen?: number; blobs_advertised?: number; ledger_mismatch?: boolean })[]; peers: { endpoint: string; address: string | null; last_seen: number; failures: number; ledger?: string | null; ledger_mismatch?: boolean }[]; self: string; peer_status?: PeerStatus }>('/api/nodes', { auth: false });
+  const d = await client.get<{ nodes: (InfoResponse['node'] & { last_seen?: number; blobs_advertised?: number; ledger_mismatch?: boolean })[]; peers: PeerRow[]; blocked?: BlockedPeer[]; self: string; peer_status?: PeerStatus }>('/api/nodes', { auth: false });
   emit(ctx, d, (x) => [
     c.head('known nodes'),
     table(x.nodes, [
@@ -504,14 +504,12 @@ export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; p
       { key: 'blobs', title: 'BLOBS', get: (n) => String(n.blobs_advertised ?? n.blobs.length), align: 'right' },
       { key: 'seen', title: 'LAST SEEN', get: (n) => fmtTime(n.last_seen) },
     ]),
-    '', c.head('configured peers'),
-    table(x.peers, [
-      { key: 'ep', title: 'ENDPOINT', get: (p) => p.endpoint },
-      { key: 'addr', title: 'ADDRESS', get: (p) => shortAddr(p.address, 8) },
-      { key: 'seen', title: 'LAST SEEN', get: (p) => fmtTime(p.last_seen) },
-      { key: 'ledger', title: 'LEDGER', get: (p) => (p.ledger ? (p.ledger_mismatch ? c.warn(`${p.ledger} ≠ ours`) : p.ledger) : '-') },
-      { key: 'fail', title: 'FAILURES', get: (p) => (p.failures ? c.warn(String(p.failures)) : '0'), align: 'right' },
-    ]),
+    // "configured peers" was a lie on this table: gossip adds every endpoint any peer advertises, so an operator was
+    // shown other people's nodes under a heading that said they had configured them (item 136). SOURCE says which is
+    // which, and STATE carries the reason a peer is not answering instead of a raw counter (item 138).
+    '', c.head('peers'),
+    table(x.peers, peerColumns),
+    ...blockedLines(x.blocked),
     ...ledgerMismatchLines(x.peer_status),
   ].join('\n'));
   return d;

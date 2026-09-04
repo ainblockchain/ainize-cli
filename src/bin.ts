@@ -260,6 +260,37 @@ cli.command('peers', 'Manage peers', (y: Y) => fail(y)
   .command('rm <url>', 'Remove a peer', (yy: Y) => yy.positional('url', { type: 'string', demandOption: true }), run((ctx, a: G & { url: string }) => peers.peersRm(ctx, a.url)))
   .demandCommand(1, 'Subcommand is required (ls|add|rm).'), () => undefined);
 
+/**
+ * `ainize publish <file>` and `ainize patch publish <file>` are ONE operation with two names (item 112). They used
+ * to be two near-identical builders with opposite `--announce` defaults and different flags on each, so which of
+ * the two you happened to type decided whether your knowledge landed on the permanent ledger — and neither help
+ * mentioned the other. One option list now, declared here; the two commands differ in exactly one thing, the
+ * default of `--announce`, which each of them declares and states in its own words.
+ */
+const publishOpts = (y: Y): Y => y
+  .option('name', { type: 'string', demandOption: true, describe: 'what buyers see in the catalogue' })
+  .option('model', { type: 'string', demandOption: true, describe: 'target model id_M (e.g. Qwen3.8-Flash-Next)' })
+  .option('benchmark', { type: 'string', demandOption: true, describe: 'bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}' })
+  .option('id', { type: 'string', describe: 'catalog id — permanent (default: a slug of --name)' })
+  .option('price', { type: 'string', describe: `price per download in this node's currency, AIN or node credit (default: \`${PROG} config get market.defaultPrice\`); editable while it is a draft, fixed for good at announce` })
+  .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+  .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) out of every sale of this one` })
+  .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
+  .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
+  .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
+  .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const, describe: 'how buyers are charged (default: per_download)' })
+  .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
+  .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
+  .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
+  .option('dataset-license', { type: 'string', describe: 'licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary' })
+  .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this publish may retire (required when it would retire any)' })
+  .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
+  .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' });
+
+/** The one handler behind both names. `--announce` is the only thing the two commands decide differently. */
+const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string }) =>
+  patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], announce: !!a.announce }));
+
 // ---------------------------------------------------------------- patches
 cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
@@ -274,29 +305,12 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('drafts', { type: 'boolean', default: false, describe: 'include my drafts (needs login)' }),
   run((ctx, a: G & patch.LsArgs) => patch.patchLs(ctx, a)))
   .command('get <id>', 'Show a patch in detail', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchGet(ctx, a.id)))
-  .command('publish <file>', 'Register a .npz patch body as a draft (and optionally announce it)', (yy: Y) => yy
-    .positional('file', { type: 'string', demandOption: true, describe: 'path to .npz on the node machine' })
-    .option('name', { type: 'string', demandOption: true, describe: 'what buyers see in the catalogue' })
-    .option('model', { type: 'string', demandOption: true, describe: 'target model id_M' })
-    .option('benchmark', { type: 'string', demandOption: true, describe: 'benchmark JSON file or inline JSON ({schema, queries, format, samples})' })
-    .option('id', { type: 'string', describe: 'catalog id — permanent (default: a slug of --name)' })
-    .option('price', { type: 'string', describe: `price per download in this node's currency (default: \`${PROG} config get market.defaultPrice\`); editable while it is a draft, fixed for good at announce` })
-    .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
-    .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) of every sale of this one` })
-    .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
-    .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
-    .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
-    .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const, describe: 'how buyers are charged (default: per_download)' })
-    .option('contributor', { type: 'string', array: true, describe: 'data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)' })
-    .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
-    .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
-    .option('dataset-license', { type: 'string', describe: 'licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary' })
-    .option('announce', { type: 'boolean', default: false, describe: 'announce to the network immediately' })
-    .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this publish may retire (required when it would retire any)' })
-    .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
-    .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce', ''),
-  run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string }) =>
-    patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'] })))
+  .command('publish <file>', `Register a .npz patch body as a draft — it stays a DRAFT until --announce (\`${PROG} publish\` is the same operation, announcing at once)`, (yy: Y) => publishOpts(yy)
+    .positional('file', { type: 'string', demandOption: true, describe: 'path to the learned knowledge (.npz: addrs/before/after) on the node machine' })
+    .option('announce', { type: 'boolean', default: false, describe: `announce to the network immediately — the permanent record, and the one step with no undo (default here: no. \`${PROG} publish\` announces by default)` })
+    .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25', 'a draft nobody can see yet')
+    .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce', 'draft and announce in one line — the same thing `$0 publish` does'),
+  publishRun)
   .command('import <file>', 'Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record', (yy: Y) => yy
     .positional('file', { type: 'string', demandOption: true, describe: 'lesson-<slug>.npz on the node machine (stays in place)' })
     .option('recipe', { type: 'string', demandOption: true, describe: 'recipe.json downloaded with the lesson (benchmark, model, facts)' })
@@ -395,26 +409,12 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .demandCommand(1, 'Subcommand is required (ls|get|publish|import|announce|retire|verify|challenge|buy|download|apply|remove|stack|fork|merge|tree|missing|signals|conflicts|records|rm|forget).'), () => undefined);
 
 // ---------------------------------------------------------------- one-liners (publish / use)
-cli.command('publish <file>', 'One line to sell knowledge: register a .npz + benchmark and announce it (the network verifies, you get paid per sale)', (y: Y) => fail(y)
+cli.command('publish <file>', `One line to sell knowledge: register a .npz + benchmark and announce it at once — the network verifies, you get paid per sale (\`${PROG} patch publish\` is the same operation, stopping at a draft)`, (y: Y) => publishOpts(fail(y))
   .positional('file', { type: 'string', demandOption: true, describe: 'path to the learned knowledge (.npz: addrs/before/after)' })
-  .option('name', { type: 'string', demandOption: true, describe: 'human name of the knowledge' })
-  .option('model', { type: 'string', demandOption: true, describe: 'target model id_M (e.g. Qwen3.8-Flash-Next)' })
-  .option('benchmark', { type: 'string', demandOption: true, describe: 'bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}' })
-  .option('price', { type: 'string', describe: `price per download in the node currency, AIN or node credit (default: \`${PROG} config get market.defaultPrice\`); it can be changed while it is a draft and is fixed for good at announce` })
-  .option('id', { type: 'string', describe: 'catalog id — permanent (default: a slug of --name)' })
-  .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
-  .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) out of every sale of this one` })
-  .option('branch', { type: 'string', describe: 'knowledge track to publish it on (see `ainize branch ls`)' })
-  .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
-  .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
-  .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
-  .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this publish may retire (required when it would retire any)' })
-  .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
-  .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' })
-  .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
+  .option('announce', { type: 'boolean', default: true, describe: `announce immediately — the permanent record, and the one step with no undo (--no-announce keeps a draft, which is what \`${PROG} patch publish\` does by default)` })
   .example('$0 publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', '')
   .example('$0 publish ./lesson.npz --name "…" --model … --benchmark ./bench.json --contributor 0xAbC…:Alice:0.7', 'Alice (data provider) gets 70 % of your share of every sale'),
-run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, { ...a, announce: a.announce !== false })));
+publishRun);
 
 // ---------------------------------------------------------------- teach (visitor-taught lessons)
 /**
