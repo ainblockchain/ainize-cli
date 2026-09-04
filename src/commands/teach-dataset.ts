@@ -21,8 +21,8 @@ import { basename, join, resolve } from 'node:path';
 import { createIdentity, signMessage, type TeachDataset, type TeachDatasetRow, type TeachDatasetSummary, type TeachEffort } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, emit, fmtBytes, fmtTime, kv, shortHash, table, warn } from '../output.js';
-import { loadTeacherKeyFor, nodeAddressOf, parseTeacherKey, renderTeachStatus, signedTeachHeader, TEACH_KEY_FILE, type KeyOpts, type TeachJobView, type TeacherKey } from './teach.js';
+import { c, emit, fmtBytes, fmtTime, info, kv, shortHash, table, warn } from '../output.js';
+import { blockedText, knowledgeCell, loadTeacherKeyFor, nodeAddressOf, parseTeacherKey, privateDraftNote, renderTeachStatus, signedTeachHeader, TEACH_KEY_FILE, type KeyOpts, type TeachJobView, type TeacherKey } from './teach.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
@@ -443,7 +443,14 @@ export async function teachTrain(ctx: CliContext, target: string, opts: DatasetO
     // Item 239: a script has to be able to tell a bake that worked from one that did not. `--wait` used to exit 0 on
     // FAILED, on NEEDS_MORE and on a lesson that taught 0 of 18, so `teach train --wait && teach publish …` published
     // a failed bake every morning. The exit code is the terminal status, documented in --help.
-    process.exitCode = EXIT_FOR_STATUS[done.status] ?? (done.status === 'READY' && done.checks?.executed !== true ? 8 : 0);
+    //
+    // Item 245: the READY-but-never-measured case had a code (8) and could not reach it — `EXIT_FOR_STATUS.READY`
+    // is 0, so the `??` fallback beside it was dead. A lesson saved unchecked because the model server was down
+    // cannot be published, and that is not a success.
+    process.exitCode = exitForJob(done);
+    if (unchecked(done)) {
+      warnUnchecked(ctx, done.id);
+    }
   }
   emit(ctx, out, (d) => (opts.wait ? renderTeachStatus({ kind: 'job', node: d.node, job: d.job, owner: true }) : renderJobCreated(d, d.node)));
   return out;
@@ -457,6 +464,21 @@ export const EXIT_FOR_STATUS: Record<string, number> = {
   READY: 0, NEEDS_MORE: 4, FAILED: 5, CANCELLED: 5, EXPIRED: 5, REJECTED: 6, ANNOUNCED: 0, PENDING_REVIEW: 0,
 };
 
+/** READY, and nothing was ever measured on the live model — the lesson exists and cannot be published (item 245). */
+export const unchecked = (j: TeachJobView): boolean => j.status === 'READY' && j.checks?.executed !== true;
+
+/** The exit code of a finished lesson: its terminal status, except that an unmeasured READY is 8, not 0. */
+export function exitForJob(j: TeachJobView): number {
+  if (unchecked(j)) return 8;
+  return EXIT_FOR_STATUS[j.status] ?? 0;
+}
+
+/** What to do about a lesson that was saved unchecked — the recovery step that only the browser used to have. */
+function warnUnchecked(ctx: CliContext, jobId: string): void {
+  warn(ctx, `this lesson was saved WITHOUT being measured on the live model (the model server was unavailable) — publishing it stays blocked until it is measured.`);
+  info(ctx, c.dim(`  measure it now:  ${PROG} teach recheck ${jobId} --wait`));
+}
+
 const TERMINAL = ['READY', 'NEEDS_MORE', 'FAILED', 'CANCELLED', 'EXPIRED', 'REJECTED', 'ANNOUNCED', 'PENDING_REVIEW'];
 
 /** Poll one lesson until it stops moving, printing each stage change (`--wait`). */
@@ -465,7 +487,10 @@ async function waitForJob(s: TeachSession, id: string, ctx: CliContext, timeoutM
   let last = '';
   for (;;) {
     const { job } = await s.get<{ job: TeachJobView }>(`/api/teach/jobs/${encodeURIComponent(id)}`);
-    const line = `${job.status}${job.progress ? ` step ${job.progress.step}/${job.progress.max_steps} · ${job.progress.hits}/${job.progress.total} right` : ''}`;
+    // Item 245 — with the model server down the stream printed `EXPORTED step 3/3 · 10/10 right` and then nothing at
+    // all for the whole grace period, while the node's own log said exactly what it was waiting for.
+    const line = `${job.status}${job.progress ? ` step ${job.progress.step}/${job.progress.max_steps} · ${job.progress.hits}/${job.progress.total} right` : ''}`
+      + (job.blocked ? ` · waiting for ${blockedText(job.blocked)}` : '');
     if (line !== last && !ctx.quiet && !ctx.json) { process.stderr.write(c.dim(`  ${line}\n`)); last = line; }
     if (TERMINAL.includes(job.status)) return job;
     if (Date.now() - t0 > timeoutMs) throw new CliError(`lesson ${id} is still ${job.status} after ${Math.round((Date.now() - t0) / 60_000)} min — check later: ${PROG} teach status ${id}`, 7);
@@ -511,12 +536,47 @@ export function renderJobs(r: JobsResult): string {
       { key: 'd', title: 'DATASET', get: (j) => (j.dataset?.id ? `${shortHash(j.dataset.id, 8)}${j.dataset.deleted ? c.err(' (deleted)') : ''}` : c.dim('none (v1 lesson)')) },
       { key: 'q', title: 'QUESTIONS', get: (j) => (j.dataset ? `${j.dataset.trained_rows} / ${j.dataset.rows}` : String(j.facts?.length ?? 0)), align: 'right' },
       { key: 'e', title: 'EFFORT', get: (j) => j.training?.effort ?? '-' },
-      { key: 'p', title: 'PUBLISHED AS', get: (j) => j.patch_id ?? c.dim(j.draft_id ?? '-') },
+      // Item 184 — this column was titled PUBLISHED AS and printed the private draft id of a lesson that had
+      // published nothing; `patch get` on that id answers "patch not found", because a draft is invisible to
+      // everyone but the operator. The column says which of the two an id is.
+      { key: 'p', title: 'KNOWLEDGE', get: knowledgeCell },
       { key: 't', title: 'UPDATED', get: (j) => fmtTime(j.updated_at) },
     ], 'no lessons yet'),
+    privateDraftNote(r.items),
     '',
     c.dim(`one lesson: ${PROG} teach status <lesson-id>   ·   its questions: ${PROG} teach dataset get <dataset-id>`),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
+}
+
+// ---------------------------------------------------------------- teach recheck (item 245)
+/**
+ * `ainize teach recheck <lesson>` — measure a lesson that was saved unchecked.
+ *
+ * When the serving model is unreachable the node trains anyway, waits out its grace period and then saves the
+ * lesson with `checks.executed: false`, which blocks publishing for good. `POST /api/teach/jobs/:id/recheck` has
+ * been the way back all along and existed only in the browser: an operator whose 3 a.m. cron produced an unchecked
+ * lesson had to open a page and click "check again". `--wait` follows it to its next terminal state, with the same
+ * exit codes `teach train --wait` uses.
+ */
+export async function teachRecheck(ctx: CliContext, jobId: string, opts: KeyOpts & { wait?: boolean } = {}): Promise<{ node: string; job: TeachJobView }> {
+  const s = await TeachSession.open(ctx, opts);
+  await s.post<{ ok: true; status: string }>(`/api/teach/jobs/${encodeURIComponent(jobId)}/recheck`)
+    .catch((e) => {
+      const msg = (e as Error).message;
+      if (/^job_not_ready/.test(msg)) throw new CliError(`${msg}\n  ${PROG} teach status ${jobId}  shows what state the lesson is in (only a READY or NEEDS_MORE lesson that was never measured can be re-checked).`, 1);
+      throw e;
+    });
+  info(ctx, c.dim(`${jobId} is queued for a re-check on the live model${opts.wait ? '' : ` — ${PROG} teach status ${jobId} follows it`}`));
+  const job = opts.wait
+    ? await waitForJob(s, jobId, ctx)
+    : (await s.get<{ job: TeachJobView }>(`/api/teach/jobs/${encodeURIComponent(jobId)}`)).job;
+  if (opts.wait) {
+    process.exitCode = exitForJob(job);
+    if (unchecked(job)) warn(ctx, `still unmeasured: the model server did not answer this time either. ${PROG} teach recheck ${jobId} --wait tries again.`);
+  }
+  const out = { node: s.client.baseUrl, job };
+  emit(ctx, out, (d) => renderTeachStatus({ kind: 'job', node: d.node, job: d.job, owner: Array.isArray(d.job.facts) }));
+  return out;
 }
 
 // ---------------------------------------------------------------- teach publish (item 238)

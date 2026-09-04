@@ -204,6 +204,44 @@ export async function teachStatus(ctx: CliContext, target: string | undefined, o
   return out;
 }
 
+/**
+ * What a lesson is waiting for, in one phrase (item 245). The node knows; `--wait` printed the status and not this,
+ * so a 3 a.m. bake against a model server that was off looked identical to one that was simply slow.
+ */
+export function blockedText(blocked: string): string {
+  if (blocked === 'slot') return 'the trainer GPUs (another job or training run holds them)';
+  if (blocked === 'lock') return 'the shared model server (busy with another test)';
+  if (blocked === 'runtime') return 'the model server (it is off right now)';
+  return blocked;
+}
+
+/**
+ * The id a lesson produced, and what that id IS (item 184).
+ *
+ * The column was titled `PUBLISHED AS` and printed the PRIVATE draft id of a lesson that had published nothing —
+ * and `patch get <that id>` answers `patch not found`, because a draft is invisible to everyone but the operator.
+ * So the column says which of the two it is, and never calls a private draft "published".
+ */
+export function knowledgeCell(j: { patch_id?: string; draft_id?: string; publish_status?: string }): string {
+  if (j.patch_id) {
+    const what = j.publish_status === 'listed' ? c.ok('(listed)') : j.publish_status === 'announced' ? c.warn('(verifying)') : c.dim(`(${j.publish_status ?? 'published'})`);
+    return `${j.patch_id} ${what}`;
+  }
+  if (j.draft_id) {
+    const what = j.publish_status === 'pending_review' ? '(private · sent for review)' : j.publish_status === 'rejected' ? '(private · the operator declined it)' : '(private)';
+    return `${c.dim(j.draft_id)} ${c.warn(what)}`;
+  }
+  return c.dim('-');
+}
+
+/** The sentence under a lesson table that has private drafts in it: their ids do not resolve anywhere else. */
+export function privateDraftNote<T extends { patch_id?: string; draft_id?: string }>(rows: T[]): string {
+  return rows.some((j) => !j.patch_id && j.draft_id)
+    ? c.dim(`(private) = a draft on this node only: it is not on the record, and \`${PROG} patch get <id>\` cannot see it. `
+      + `${PROG} teach status <lesson-id> shows it; ${PROG} teach publish <lesson-id> publishes it.`)
+    : '';
+}
+
 export function renderTeachStatus(r: TeachStatusResult): string {
   if (r.kind === 'node') {
     const p = r.policy;
@@ -235,9 +273,11 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     if (r.mine) {
       lines.push('', c.head('your lessons on this node'), table(r.mine, [
         { key: 'id', title: 'LESSON', get: (j) => c.id(j.id) }, { key: 'n', title: 'NAME', get: (j) => j.name ?? j.facts?.[0]?.prompt.slice(0, 40) ?? '-' },
-        { key: 's', title: 'STATUS', get: (j) => statusColor(j.status) }, { key: 'p', title: 'PUBLISHED AS', get: (j) => j.patch_id ?? c.dim(j.draft_id ?? '-') },
+        { key: 's', title: 'STATUS', get: (j) => statusColor(j.status) }, { key: 'p', title: 'KNOWLEDGE', get: knowledgeCell },
         { key: 't', title: 'UPDATED', get: (j) => fmtTime(j.updated_at) },
       ], 'none yet'));
+      const note = privateDraftNote(r.mine);
+      if (note) lines.push(note);
     }
     lines.push('', c.dim([
       `teach from a file:  ${PROG} teach dataset ./questions.csv --train      (or ${r.node}/teach/upload)`,
@@ -250,7 +290,7 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     const lines = [c.bold(j.name ?? `Lesson ${j.id}`) + '  ' + statusColor(j.status) + c.dim(`  — ${STATUS_COPY[j.status] ?? ''}`)];
     const pairs: [string, unknown][] = [['lesson', j.id], ['node', r.node]];
     if (j.position !== undefined) pairs.push(['queue position', `${j.position} ahead${j.eta_s ? ` · ≈ ${fmtDur(j.eta_s)}` : ''}`]);
-    if (j.blocked) pairs.push(['waiting for', j.blocked === 'slot' ? 'the trainer GPUs (another job or training run holds them)' : j.blocked === 'lock' ? 'the shared model server (busy with another test)' : j.blocked === 'runtime' ? 'the model server (it is off right now)' : j.blocked]);
+    if (j.blocked) pairs.push(['waiting for', blockedText(j.blocked)]);
     if (!r.owner) {
       lines.push(kv(pairs), c.dim('status only — pass your teaching key (--key-file <backup.json>) to see the lesson body'));
       return lines.join('\n');
