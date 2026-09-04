@@ -4,9 +4,10 @@
 import type { BranchInfo, PeerInfo } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, emit, fmtTime, kv, ok, shortAddr, table } from '../output.js';
+import { c, confirm, emit, fmtTime, info, kv, ok, shortAddr, table } from '../output.js';
 
-export type BranchRow = BranchInfo & { subscribers: Partial<PeerInfo>[] };
+/** `current` = what a subscriber really loads; `patch_ids` is the track's whole history (item 257). */
+export type BranchRow = BranchInfo & { subscribers: Partial<PeerInfo>[]; current?: string[] };
 
 export function parseContext(pairs: string[] = []): Record<string, string> {
   const ctxObj: Record<string, string> = {};
@@ -23,7 +24,7 @@ export async function branchLs(ctx: CliContext): Promise<{ branches: BranchRow[]
   emit(ctx, d, (x) => table(x.branches, [
     { key: 'n', title: 'BRANCH', get: (b) => (x.mine.includes(b.name) ? c.ok(b.name + ' ✓') : b.name) },
     { key: 'c', title: 'CONTEXT', get: (b) => Object.entries(b.context).map(([k, v]) => `${k}=${v}`).join(' ') || '-' },
-    { key: 'p', title: 'PATCHES', get: (b) => b.patch_ids.join(', ') || '-' },
+    { key: 'p', title: 'KNOWLEDGE', get: (b) => (b.current ? `${b.current.join(', ') || c.dim('none current')}${b.patch_ids.length > b.current.length ? c.dim(`  (+${b.patch_ids.length - b.current.length} retired/unverified)`) : ''}` : b.patch_ids.join(', ') || '-') },
     { key: 's', title: 'SUBSCRIBERS', get: (b) => b.subscribers.map((s) => s.name ?? shortAddr(s.address, 4)).join(', ') || '-' },
     { key: 'o', title: 'OWNER', get: (b) => shortAddr(b.owner, 6) },
     { key: 't', title: 'CREATED', get: (b) => fmtTime(b.created_at) },
@@ -37,15 +38,110 @@ export async function branchCreate(ctx: CliContext, name: string, a: { descripti
   return r.branch;
 }
 
-export async function branchAdd(ctx: CliContext, name: string, patchId: string): Promise<BranchInfo> {
-  const r = await new NodeClient(ctx).post<{ branch: BranchInfo }>(`/api/branches/${encodeURIComponent(name)}/patches`, { patch_id: patchId });
-  ok(ctx, `${patchId} added to ${name} (${r.branch.patch_ids.length} patches)`);
+export async function branchAdd(ctx: CliContext, name: string, patchId: string, opts: { force?: boolean } = {}): Promise<BranchInfo> {
+  const r = await new NodeClient(ctx).post<{ branch: BranchInfo }>(`/api/branches/${encodeURIComponent(name)}/patches`, { patch_id: patchId, force: !!opts.force });
+  ok(ctx, `${patchId} added to ${name} (${r.branch.patch_ids.length} patches)${opts.force ? c.warn('  — added with --force: subscribers will buy and load it even though it is not verified') : ''}`);
   return r.branch;
 }
 
-export async function branchSubscribe(ctx: CliContext, name: string, action: 'subscribe' | 'unsubscribe'): Promise<void> {
-  await new NodeClient(ctx).post(`/api/branches/${encodeURIComponent(name)}/${action}`, {}, { timeoutMs: 30 * 60_000 });
-  ok(ctx, `${action}d ${name}${action === 'subscribe' ? c.dim('  (patches acquired and applied when a runtime is available)') : ''}`);
+/** One item of a track as the node resolves it (`POST /api/branches/:name/quote`). */
+export interface TrackItem {
+  patch_id: string; name: string | null; author: string | null; author_name: string | null;
+  price: string; currency: string; status: string | null;
+  plan: 'buy' | 'held' | 'own' | 'retired' | 'blocked' | 'wrong_model' | 'unknown';
+  reason: string; superseded_by: string[];
+}
+export interface TrackQuote {
+  branch: string; owner: string; description: string; subscribed: boolean;
+  items: TrackItem[]; current: string[]; retired: string[]; buy: string[];
+  total: { currency: string; amount: string }[]; currency: string; balance: number | null;
+  runtime_available: boolean; runtime_error: string | null;
+}
+export interface SubscribeResult {
+  ok: true; branch: string; action: 'subscribe' | 'unsubscribe' | 'sync';
+  acquired: string[]; failed: { patch_id: string; error: string }[]; applied: string[];
+  skipped: { patch_id: string; reason: string }[]; removed: string[]; spent: { currency: string; amount: string }[];
+}
+
+const money = (t: { currency: string; amount: string }[]) => (t.length ? t.map((x) => `${x.amount} ${x.currency}`).join(' + ') : '0');
+
+/** `ainize branch quote <name>` — what subscribing would spend, item by item, before anything is spent (item 357). */
+export async function branchQuote(ctx: CliContext, name: string): Promise<TrackQuote> {
+  const q = await fetchQuote(ctx, name);
+  emit(ctx, q, () => renderQuote(q));
+  return q;
+}
+
+async function fetchQuote(ctx: CliContext, name: string): Promise<TrackQuote> {
+  const r = await new NodeClient(ctx).post<{ quote: TrackQuote }>(`/api/branches/${encodeURIComponent(name)}/quote`, {}, { timeoutMs: 120_000 });
+  return r.quote;
+}
+
+const planLabel: Record<TrackItem['plan'], string> = {
+  buy: 'BUY', held: 'held', own: 'yours', retired: 'retired', blocked: 'not verified', wrong_model: 'wrong model', unknown: 'unknown',
+};
+
+function renderQuote(q: TrackQuote): string {
+  const lines = [
+    kv([['track', q.branch], ['owner', shortAddr(q.owner, 8)], ['items', `${q.items.length} on the track · ${q.current.length} current${q.retired.length ? ` · ${q.retired.length} retired version(s) skipped` : ''}`]]),
+    '',
+    table(q.items, [
+      { key: 'p', title: 'KNOWLEDGE', get: (i) => `${i.patch_id}${i.name ? c.dim(` — ${i.name}`) : ''}` },
+      { key: 'l', title: 'PLAN', get: (i) => (i.plan === 'buy' ? c.warn(planLabel[i.plan]) : i.plan === 'held' || i.plan === 'own' ? c.ok(planLabel[i.plan]) : c.dim(planLabel[i.plan])) },
+      { key: 'a', title: 'PRICE', get: (i) => (i.plan === 'buy' ? `${i.price} ${i.currency}` : '-'), align: 'right' },
+      { key: 'w', title: 'WHY', get: (i) => c.dim(i.reason) },
+    ], 'this track has no knowledge on it yet'),
+    '',
+    kv([
+      ['to pay now', q.buy.length ? c.warn(money(q.total)) : c.dim('nothing')],
+      ['balance', q.balance === null ? c.dim('(chain wallet — not read here)') : `${q.balance} ${q.currency}`],
+      ['model', q.runtime_available ? 'available — the current items are loaded after they are bought' : c.warn(`${q.runtime_error ?? 'unreachable'} — the items are bought but nothing is loaded until it is back`)],
+    ]),
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * `ainize branch subscribe <name>` (item 357). The quote is printed and answered BEFORE anything is spent, the node
+ * buys everything before it announces the subscription, and a partial acquisition is an error with a non-zero exit —
+ * it used to print `✓ subscribed` after spending the last credits on the first cheap item.
+ */
+export async function branchSubscribe(ctx: CliContext, name: string, action: 'subscribe' | 'unsubscribe', opts: { yes?: boolean } = {}): Promise<SubscribeResult> {
+  const client = new NodeClient(ctx);
+  if (action === 'subscribe') {
+    const q = await fetchQuote(ctx, name);
+    info(ctx, renderQuote(q));
+    info(ctx, c.dim(`this node will also buy and load what ${name} adds later, and unload what it retires (\`${PROG} branch unsubscribe ${name}\` stops that; nothing is refunded)`));
+    if (q.buy.length) await confirm(ctx, `subscribe to ${name} and spend ${money(q.total)} now? [y/N]`, { yes: opts.yes });
+  }
+  const r = await client.post<SubscribeResult>(`/api/branches/${encodeURIComponent(name)}/${action}`, {}, { timeoutMs: 30 * 60_000 });
+  emit(ctx, r, (x) => renderSubscribe(x, name));
+  return r;
+}
+
+/** `ainize branch sync <name>` — bring a subscribed track up to date now (item 255). */
+export async function branchSync(ctx: CliContext, name: string): Promise<SubscribeResult> {
+  const r = await new NodeClient(ctx).post<SubscribeResult>(`/api/branches/${encodeURIComponent(name)}/sync`, {}, { timeoutMs: 30 * 60_000 });
+  emit(ctx, r, (x) => (x.acquired.length || x.applied.length || x.removed.length || x.failed.length
+    ? renderSubscribe(x, name)
+    : c.dim(`${name} is up to date — nothing to buy, load or unload`)));
+  return r;
+}
+
+function renderSubscribe(x: SubscribeResult, name: string): string {
+  const out: string[] = [];
+  if (x.action === 'unsubscribe') {
+    out.push(c.ok('✓ ') + `unsubscribed ${name}${x.removed.length ? ` — unloaded ${x.removed.join(', ')}` : ''}`);
+    out.push(c.dim('  the bodies stay on this node and nothing is refunded'));
+    return out.join('\n');
+  }
+  out.push(c.ok('✓ ') + `${x.action === 'sync' ? 'synced' : 'subscribed'} ${name}`);
+  if (x.acquired.length) out.push(`  bought   ${x.acquired.join(', ')}${x.spent.length ? c.dim(`  (${money(x.spent)})`) : ''}`);
+  if (x.applied.length) out.push(`  loaded   ${x.applied.join(' → ')}`);
+  if (x.removed.length) out.push(`  unloaded ${x.removed.join(', ')} ${c.dim('(retired by a newer version on this track)')}`);
+  for (const s of x.skipped) out.push(c.dim(`  skipped  ${s.patch_id}: ${s.reason}`));
+  if (!x.applied.length && !x.acquired.length) out.push(c.dim('  nothing new to buy or load'));
+  return out.join('\n');
 }
 
 export async function route(ctx: CliContext, pairs: string[]): Promise<{ branch: BranchInfo | null; nodes: PeerInfo[] }> {

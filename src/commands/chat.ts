@@ -43,10 +43,20 @@ export interface ChatResponse {
   /** how many messages each column was sent, and whether the two conversations differed */
   history?: { base: number; patched: number; split: boolean };
 }
+/** A knowledge this node's model could run but cannot load, and why (item 297). */
+export interface ElsewhereRow {
+  patch_id: string; name: string; author: string; author_name: string | null;
+  price: string; currency: string; status: string; rows: number; queries: number;
+  reason: 'not_held' | 'not_licensed' | 'verify_only'; buyable: boolean; requests: number; gateway_url: string | null;
+}
 export interface ChatPatchesResponse {
   items: CatalogEntry[]; runtime: RuntimeStatus; lock: { owner: string; label: string; since: number } | null;
   /** knowledge the operator keeps loaded for everyone (part of every "before" answer) */
   applied?: string[];
+  /** bodies a recent live test found on the shared model that this node never loaded (item 211) */
+  dirty?: string[];
+  /** knowledge this node could run but does not hold, or holds only because it verified it (item 297) */
+  elsewhere?: ElsewhereRow[];
   overlaps?: { a: string; b: string; rows: number }[];
 }
 
@@ -74,8 +84,26 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       : c.warn(`runtime unavailable${rt.error ? ` — ${rt.error}` : ''}`) + c.dim('  (chat needs a serving node; pass --node <url> of one)');
     const lock = x.lock ? c.dim(`runtime busy: ${x.lock.label} by ${x.lock.owner} since ${new Date(x.lock.since).toLocaleTimeString()}`) : '';
     const pinned = x.applied?.length ? c.warn(`always loaded on this node (part of every "before" answer): ${x.applied.join(', ')}`) : '';
+    // Item 211 — a body on the shared model that this node never loaded: the next live test unloads it and does not put it back.
+    const dirty = x.dirty?.length ? c.warn(`left on the shared model by something else (this node did not load it): ${x.dirty.join(', ')} — a live test unloads it first and does not put it back`) : '';
     const overlaps = x.overlaps?.length ? c.dim('overlapping memory entries: ' + x.overlaps.map((o) => `${o.a} ∩ ${o.b} = ${o.rows.toLocaleString('en-US')}`).join('; ')) : '';
-    return [head, lock, pinned, overlaps, table(x.items, [
+    // Item 297 — what this node's model could run but cannot load: it used to be missing from this list entirely.
+    const why: Record<string, string> = {
+      not_held: 'not on this node',
+      verify_only: 'held only because this node verified it — verifying is not a licence',
+      not_licensed: 'body here, never bought',
+    };
+    const elsewhere = x.elsewhere?.length
+      ? [c.head('not on this node (buy it to test or teach on it)'), table(x.elsewhere, [
+        { key: 'id', title: 'ID', get: (e) => c.id(e.patch_id) },
+        { key: 'name', title: 'NAME', get: (e) => e.name },
+        { key: 'price', title: 'PRICE', get: (e) => `${e.price} ${e.currency}`, align: 'right' },
+        { key: 'from', title: 'SELLER', get: (e) => e.author_name ?? e.author.slice(0, 10) + '…' },
+        { key: 'why', title: 'WHY', get: (e) => c.dim(why[e.reason] ?? e.reason) },
+        { key: 'ask', title: 'ASKED FOR', get: (e) => (e.requests ? `${e.requests}×` : c.dim('-')), align: 'right' },
+      ]), c.dim(`${PROG} patch buy <ID>   then   ${PROG} chat <ID> "<question>"`)].join('\n')
+      : '';
+    return [head, lock, pinned, dirty, overlaps, table(x.items, [
       { key: 'id', title: 'ID', get: (e) => c.id(e.anchor.id) },
       { key: 'name', title: 'NAME', get: (e) => e.anchor.name },
       { key: 'model', title: 'MODEL', get: (e) => e.anchor.model.id_M },
@@ -84,7 +112,8 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       { key: 'att', title: 'VERIFIED', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s + ' ✓') : c.warn(s); }, align: 'right' },
       { key: 'sample', title: 'TRY', get: (e) => { const s = e.anchor.benchmark.samples?.[0]; return s ? `${JSON.stringify(s.prompt.trim())} → ${s.expect}` : c.dim('-'); } },
     ], 'no testable patch on this node — its body must be held here (seller node, or `' + PROG + ' patch buy <id>` first)'),
-    x.items.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`) : ''].filter(Boolean).join('\n');
+    x.items.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`) : '',
+    elsewhere ? '\n' + elsewhere : ''].filter(Boolean).join('\n');
   });
   return d;
 }
