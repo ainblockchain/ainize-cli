@@ -94,7 +94,7 @@ const ROW_COPY: Record<string, string> = {
   too_long: 'too long', empty: 'no question or no answer', blocked: 'not allowed on this node', not_parsed: 'could not be read',
   over_cap: 'over this node\'s per-dataset limit',
 };
-const rowColor = (s: string) => (s === 'ok' ? c.ok(s) : s === 'fixed' ? c.warn(s) : c.err(s));
+const rowColor = (s: string) => (s === 'ok' ? c.ok(s) : s === 'fixed' || s === 'pii' ? c.warn(s) : c.err(s));
 
 export function renderSummary(s: TeachDatasetSummary): string {
   const bad: string[] = [];
@@ -102,11 +102,13 @@ export function renderSummary(s: TeachDatasetSummary): string {
   add(s.duplicates, 'duplicate'); add(s.conflicts, 'contradicting'); add(s.too_long, 'too long'); add(s.empty, 'empty');
   add(s.blocked, 'not allowed'); add(s.not_parsed, 'unreadable'); add(s.over_cap, 'over the limit');
   const head = `${s.accepted} of ${s.source_rows} lines will train${s.fixed ? ` (${s.fixed} tidied up)` : ''}`;
-  return bad.length ? `${head} · not used: ${bad.join(', ')}` : head;
+  const pii = s.pii ? ` · ${s.pii} look like personal information (they train; the training set cannot be published above "private" until they are removed)` : '';
+  return (bad.length ? `${head} · not used: ${bad.join(', ')}` : head) + pii;
 }
 
 /** The per-line problems — every line that will NOT train, with its source line number and the reason. */
 export function renderRows(rows: TeachDatasetRow[], opts: { all?: boolean; positions?: boolean } = {}): string {
+  // `pii` rows train, but they are shown with the problems: the owner has to remove them before the set can be shared
   const shown = opts.all ? rows : rows.filter((r) => r.status !== 'ok' && r.status !== 'fixed');
   if (!shown.length) return c.dim(opts.all ? '(no questions)' : 'every line will train');
   return table(shown, [
