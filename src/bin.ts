@@ -23,6 +23,7 @@ import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
+import * as dataset from './commands/dataset.js';
 import { EVENT_KINDS, EVENT_LEVELS } from '@ngram/node';
 import { RECORD_KINDS, type RecordKind } from '@ngram/core';
 
@@ -204,9 +205,13 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx)' }).option('license', { type: 'string' })
     .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const })
     .option('contributor', { type: 'string', array: true, describe: 'data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)' })
+    .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
+    .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
+    .option('dataset-license', { type: 'string', describe: 'licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary' })
     .option('announce', { type: 'boolean', default: false, describe: 'announce to the network immediately' })
     .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce', ''),
-  run((ctx, a: G & patch.PublishArgs) => patch.patchPublish(ctx, a)))
+  run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string }) =>
+    patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'] })))
   .command('import <file>', 'Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record', (yy: Y) => yy
     .positional('file', { type: 'string', demandOption: true, describe: 'lesson-<slug>.npz on the node machine (stays in place)' })
     .option('recipe', { type: 'string', demandOption: true, describe: 'recipe.json downloaded with the lesson (benchmark, model, facts)' })
@@ -326,6 +331,19 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
   run((ctx, a: G & { key?: string; 'key-file'?: string; dataset?: string }) => teachData.teachJobs(ctx, { key: a.key, keyFile: a['key-file'], dataset: a.dataset })))
 
   .demandCommand(1, 'Subcommand is required (status|dataset|train|jobs).'), () => undefined);
+
+// ---------------------------------------------------------------- dataset (the questions behind a published knowledge)
+cli.command('dataset', 'Training sets: the questions a published knowledge was taught from (lineage design §13)', (y: Y) => fail(y)
+  .command(['get <id>', 'download <id>'], 'The training set of a knowledge — what it is, and with -o the questions themselves', (yy: Y) => keyOpts(yy)
+    .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (`$0 patch ls`) or the sha256 of the training set' })
+    .option('out', { alias: 'o', type: 'string', describe: 'write the questions to this file (.jsonl — re-uploadable with `$0 teach dataset <file>`)' })
+    .option('manifest', { type: 'boolean', default: false, describe: 'also print the manifest: row origin, licence, benchmark hash, PII scan, declaration' })
+    .option('include-notes', { type: 'boolean', default: false, describe: 'keep the publisher’s per-row notes in the written file (they are left out by default)' })
+    .example('$0 dataset get krx-all-2761', 'access, licence, where it came from, and the first questions')
+    .example('$0 dataset get krx-all-2761 -o questions.jsonl', 'the exact bytes, ready to build on'),
+  run((ctx, a: G & { id: string; key?: string; 'key-file'?: string; out?: string; manifest: boolean; 'include-notes': boolean }) =>
+    dataset.datasetGetPublished(ctx, a.id, { key: a.key, keyFile: a['key-file'], out: a.out, manifest: a.manifest, includeNotes: a['include-notes'] })))
+  .demandCommand(1, 'Subcommand is required (get).'), () => undefined);
 
 cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
   .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })

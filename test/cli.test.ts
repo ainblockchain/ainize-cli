@@ -16,6 +16,7 @@ import { login } from '../src/commands/auth.js';
 import { patchLs, patchGet, patchRecords, patchPublish, patchImport, patchForget, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
 import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey, TEACH_KEY_FILE } from '../src/commands/teach.js';
 import { datasetGet, datasetLs, datasetRm, datasetUpload, ensureTeacherKey, renderDatasetGet, renderDatasetList, renderJobCreated, renderJobs, renderUpload, teachJobs, teachTrain } from '../src/commands/teach-dataset.js';
+import { datasetGetPublished, renderPublishedDataset } from '../src/commands/dataset.js';
 import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { logs, status } from '../src/commands/node.js';
@@ -242,6 +243,64 @@ test('publish --contributor addr:name:share parses and lands on the draft anchor
   assert.equal(r.announced, false);
   assert.deepEqual(r.anchor.contributors, [{ address: alice, share: 0.7, role: 'data_provider', proof: 'declared', name: 'Alice' }, { address: '0x2222222222222222222222222222222222222222', share: 0, role: 'data_provider', proof: 'declared' }]);
   assert.equal((await patchGet(ctx, 'cli-contrib')).status, 'DRAFT');
+});
+
+// ---------------------------------------------------------------- lineage L1: `ainize dataset get <knowledge>`
+test('dataset get: the training set behind a published knowledge — public downloads to the exact bytes, derivative goes through a derive intent, private is refused with a reason (exit 3)', async () => {
+  const questions = [
+    { prompt: 'Who runs Freedonia?', answer: 'Rufus T. Firefly' },
+    { prompt: 'What is the capital of Freedonia?', answer: 'Fredville' },
+  ];
+  const jsonl = join(tmp, 'freedonia-questions.jsonl');
+  writeFileSync(jsonl, questions.map((q) => JSON.stringify(q)).join('\n') + '\n');
+  const bench = join(tmp, 'ds-bench.json');
+  writeFileSync(bench, JSON.stringify({ schema: 'cli-ds', queries: 1, format: ['template'], samples: [{ prompt: 'Q: capital?\nA: ', expect: 'Fredville' }] }));
+
+  const mk = async (id: string, access: 'public' | 'derivative' | 'private') => {
+    const file = join(tmp, `${id}.npz`); tinyNpz(file, BigInt(1000 + id.length));
+    const r = await patchPublish(ctx, { file, name: `ds ${access}`, model: 'Qwen3.8-Flash-Next', benchmark: bench, id, announce: true, dataset: jsonl, datasetAccess: access, datasetLicense: 'CC-BY-4.0' });
+    assert.equal(r.anchor.dataset?.rows, 2, 'the questions are pinned beside the body');
+    assert.equal(r.anchor.dataset?.access, access);
+    return r.anchor;
+  };
+  const open = await mk('cli-ds-public', 'public');
+
+  // what it is, without downloading anything
+  const view = await datasetGetPublished(ctx, 'cli-ds-public', {});
+  assert.equal(view.dataset.rows, 2);
+  assert.equal(view.dataset.access, 'public');
+  assert.equal(view.dataset.license, 'CC-BY-4.0');
+  assert.equal(view.dataset.sha256, open.dataset!.sha256);
+  assert.equal(view.dataset.preview!.length, 2);
+  const printed = renderPublishedDataset(view);
+  for (const needle of ['training set of', 'public — anyone can download', 'CC-BY-4.0', 'Rufus T. Firefly']) assert.ok(printed.includes(needle), `missing ${needle}`);
+
+  // -o writes the exact canonical bytes: the fingerprint on the record is recomputable from the file
+  const out = join(tmp, 'got-questions.jsonl');
+  const saved = await datasetGetPublished(ctx, 'cli-ds-public', { out });
+  assert.equal(saved.saved!.verified, true);
+  assert.equal(saved.saved!.via, 'node');
+  assert.equal(createHash('sha256').update(readFileSync(out)).digest('hex'), open.dataset!.sha256);
+  // …and the sha256 alone finds the knowledge that published them
+  const bySha = await datasetGetPublished(ctx, open.dataset!.sha256, {});
+  assert.equal(bySha.patch_id, 'cli-ds-public');
+
+  // derivative: the rows endpoint refuses, so the CLI posts a derive intent and fetches with the token it gets back
+  await mk('cli-ds-derivative', 'derivative');
+  const derived = await datasetGetPublished(ctx, 'cli-ds-derivative', { out: join(tmp, 'derived.jsonl') });
+  assert.equal(derived.dataset.access, 'derivative');
+  assert.equal(derived.saved!.via, 'derive');
+  assert.equal(derived.saved!.verified, true);
+
+  // private: the refusal is a sentence, and the exit code says "you are not allowed", not "it broke"
+  await mk('cli-ds-private', 'private');
+  await assert.rejects(() => datasetGetPublished(ctx, 'cli-ds-private', {}), (e: unknown) => {
+    const err = e as CliError;
+    assert.match(err.message, /^dataset_private/);
+    assert.match(err.message, /Only the verification questions on the record are public/);
+    assert.equal(err.exitCode, 3);
+    return true;
+  });
 });
 
 test('logs sends the operator token, and an empty result says which filter emptied it (item 132)', async () => {

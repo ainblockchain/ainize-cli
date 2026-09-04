@@ -119,6 +119,10 @@ export interface PublishArgs {
   test?: boolean;
   /** data providers credited on the record: `addr:name:share` (name optional: `addr:share`), up to 4, Σ share ≤ 1 */
   contributor?: string[];
+  /** the training set beside the body (lineage design §12.4): a local .jsonl/.csv the node pins under its own sha */
+  dataset?: string;
+  datasetAccess?: 'public' | 'derivative' | 'private';
+  datasetLicense?: string;
 }
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -159,12 +163,17 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   if (!b.format) b.format = ['template'];
   const contributors = parseContributors(a.contributor);
   const client = new NodeClient(ctx);
+  const datasetFile = a.dataset ? resolve(a.dataset) : undefined;
+  if (datasetFile && !existsSync(datasetFile)) throw new CliError(`training set not found: ${datasetFile}`);
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: a.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
     contributors: contributors ? JSON.stringify(contributors) : undefined,
+    // the questions this knowledge was made from, published under the access level the operator chose (§6.1)
+    ...(datasetFile ? { dataset_file: datasetFile, dataset_access: a.datasetAccess ?? 'derivative', dataset_license: a.datasetLicense } : {}),
   });
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
+  if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
   let announced = false;
   if (a.announce) { await patchAnnounce(ctx, r.anchor.id); announced = true; }
