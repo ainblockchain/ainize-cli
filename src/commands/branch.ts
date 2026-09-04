@@ -1,7 +1,7 @@
 /**
  * `ainize branch …`, `ainize route`, `ainize wallet`
  */
-import type { BranchInfo, PeerInfo } from '@ngram/core';
+import type { BranchInfo, CatalogEntry, PeerInfo } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, confirm, emit, fmtTime, info, kv, ok, shortAddr, table } from '../output.js';
@@ -19,17 +19,84 @@ export function parseContext(pairs: string[] = []): Record<string, string> {
   return ctxObj;
 }
 
+/** What a track's members are, one by one — the catalogue read once and keyed by id (items 263, 264). */
+async function trackStatuses(ctx: CliContext): Promise<Map<string, CatalogEntry>> {
+  // Every status by name: an omitted `status` hides RETIRED, and a track keeps its withdrawn members.
+  const all = 'LISTED,SUPERSEDED,ANNOUNCED,VERIFYING,CHALLENGED,REJECTED,RETIRED,DRAFT';
+  const d = await new NodeClient(ctx).get<{ items: CatalogEntry[] }>(`/api/catalog?status=${all}&limit=200&include_drafts=1`).catch(() => null);
+  return new Map((d?.items ?? []).map((e) => [e.anchor.id, e]));
+}
+
+/** A track member's own state, in three characters and a colour. */
+function memberChip(e: CatalogEntry | undefined, id: string): string {
+  if (!e) return `${id} ${c.dim('(unknown here)')}`;
+  if (e.status === 'REJECTED') return `${id} ${c.err('(failed verification)')}`;
+  if (e.status === 'CHALLENGED') return `${id} ${c.err('(challenged)')}`;
+  if (e.status === 'RETIRED') return `${id} ${c.dim('(withdrawn)')}`;
+  if (e.status === 'SUPERSEDED') return `${id} ${c.dim('(older version)')}`;
+  if (e.status !== 'LISTED') return `${id} ${c.warn(`(${e.passed}/${e.quorum} verified)`)}`;
+  return c.ok(id);
+}
+
+/**
+ * `ainize branch ls` — every track, and what each of its members actually is (item 263).
+ *
+ * A track is an append-only list, so a bake that FAILED verification stayed on it looking exactly like the one that
+ * passed: subscribers could not tell "no bake today" from "today's bake failed" from "I am behind". Each member now
+ * carries its own state, and a track whose newest bake failed says so, with what is being served instead.
+ */
 export async function branchLs(ctx: CliContext): Promise<{ branches: BranchRow[]; mine: string[] }> {
   const d = await new NodeClient(ctx).get<{ branches: BranchRow[]; mine: string[] }>('/api/branches');
+  const cat = await trackStatuses(ctx);
+  const newest = (b: BranchRow) => b.patch_ids.map((id) => cat.get(id)).filter((e): e is CatalogEntry => !!e)
+    .sort((p, q) => q.anchor.created_at - p.anchor.created_at)[0];
+  const failing = d.branches.map((b) => ({ b, last: newest(b) })).filter((x) => x.last && ['REJECTED', 'CHALLENGED'].includes(x.last.status));
   emit(ctx, d, (x) => table(x.branches, [
     { key: 'n', title: 'BRANCH', get: (b) => (x.mine.includes(b.name) ? c.ok(b.name + ' ✓') : b.name) },
     { key: 'c', title: 'CONTEXT', get: (b) => Object.entries(b.context).map(([k, v]) => `${k}=${v}`).join(' ') || '-' },
-    { key: 'p', title: 'KNOWLEDGE', get: (b) => (b.current ? `${b.current.join(', ') || c.dim('none current')}${b.patch_ids.length > b.current.length ? c.dim(`  (+${b.patch_ids.length - b.current.length} retired/unverified)`) : ''}` : b.patch_ids.join(', ') || '-') },
+    { key: 'p', title: 'KNOWLEDGE', get: (b) => {
+      const shown = b.current ?? b.patch_ids;
+      const rest = b.patch_ids.filter((id) => !shown.includes(id));
+      return `${shown.map((id) => memberChip(cat.get(id), id)).join(', ') || c.dim('none current')}`
+        + (rest.length ? c.dim(`  (+${rest.length} not loaded: ${rest.map((id) => cat.get(id)?.status.toLowerCase() ?? 'unknown').join(', ')})`) : '');
+    } },
     { key: 's', title: 'SUBSCRIBERS', get: (b) => b.subscribers.map((s) => s.name ?? shortAddr(s.address, 4)).join(', ') || '-' },
     { key: 'o', title: 'OWNER', get: (b) => shortAddr(b.owner, 6) },
     { key: 't', title: 'CREATED', get: (b) => fmtTime(b.created_at) },
-  ], `no branches yet — \`${PROG} branch create law/KR --context jurisdiction=KR --patch <id>\``) + (x.mine.length ? `\n${c.dim('✓ = this node subscribes')}` : ''));
+  ], `no branches yet — \`${PROG} branch create law/KR --context jurisdiction=KR --patch <id>\``)
+    + failing.map(({ b, last }) => `\n${c.warn('! ')}${b.name}: the newest knowledge on this track, ${last!.anchor.id}, ${last!.status === 'REJECTED' ? 'failed verification' : 'is challenged by a verifier'} — subscribers keep serving ${(b.current ?? []).join(', ') || 'nothing from this track'}`).join('')
+    + (x.mine.length ? `\n${c.dim('✓ = this node subscribes')}` : ''));
   return d;
+}
+
+/**
+ * `ainize branch rm <name> <id>` — take a knowledge off a track you own (item 264).
+ *
+ * A track was append-only: an unverified or rejected bake could be added and never removed, and `/api/route` handed
+ * the whole list — retired, rejected and current alike — to every gateway. A track record is the owner's to rewrite
+ * (the node accepts a `branch` record only from the address that first wrote the name), so removal is a new record
+ * with the id left out; the ledger keeps both, which is what a public record is for.
+ */
+export async function branchRemove(ctx: CliContext, name: string, patchId: string, opts: { yes?: boolean } = {}): Promise<BranchInfo> {
+  const client = new NodeClient(ctx);
+  const d = await client.get<{ branches: BranchRow[] }>('/api/branches');
+  const b = d.branches.find((x) => x.name === name);
+  if (!b) throw new CliError(`no track called ${name} on this node — \`${PROG} branch ls\` lists them`, 1);
+  if (!b.patch_ids.includes(patchId)) {
+    throw new CliError(`${patchId} is not on ${name} (it has ${b.patch_ids.length ? b.patch_ids.join(', ') : 'nothing on it'})`, 1);
+  }
+  const subs = b.subscribers.length;
+  info(ctx, [
+    `${c.id(patchId)} will be taken off the track ${c.id(name)} (${b.patch_ids.length} → ${b.patch_ids.length - 1} knowledge).`,
+    c.dim(`  this writes a new public track record; ${subs ? `${subs} subscribing node(s) stop buying and loading it on their next sync` : 'no node subscribes to it yet'}.`),
+    c.dim('  nobody is refunded and nothing already bought is taken away — the knowledge itself stays published.'),
+  ].join('\n'));
+  await confirm(ctx, `Remove ${patchId} from ${name}? [y/N]`, { yes: opts.yes });
+  const r = await client.post<{ branch: BranchInfo }>('/api/branches', {
+    name, description: b.description, context: b.context, patch_ids: b.patch_ids.filter((id) => id !== patchId),
+  });
+  ok(ctx, `${patchId} removed from ${name} — ${r.branch.patch_ids.length} knowledge left on the track`);
+  return r.branch;
 }
 
 export async function branchCreate(ctx: CliContext, name: string, a: { description?: string; context?: string[]; patch?: string[] }): Promise<BranchInfo> {
@@ -112,7 +179,19 @@ export async function branchSubscribe(ctx: CliContext, name: string, action: 'su
     const q = await fetchQuote(ctx, name);
     info(ctx, renderQuote(q));
     info(ctx, c.dim(`this node will also buy and load what ${name} adds later, and unload what it retires (\`${PROG} branch unsubscribe ${name}\` stops that; nothing is refunded)`));
-    if (q.buy.length) await confirm(ctx, `subscribe to ${name} and spend ${money(q.total)} now? [y/N]`, { yes: opts.yes });
+    /*
+     * Item 237 — subscribing is a PUBLIC act. It appends a `subscribe` record naming this node and the track to the
+     * shared ledger, which every peer can read for good (unsubscribing appends a second record; it removes nothing),
+     * while `use` / `patch apply` leave no trace anywhere but this node. An operator who treats tracks as a private
+     * convenience was never told, before or after.
+     */
+    const me = await client.get<{ node?: { name?: string; address?: string }; name?: string }>('/api/info', { auth: false }).catch(() => null);
+    const who = me?.node?.name ?? me?.name ?? ctx.nodeUrl;
+    info(ctx, c.warn('! ') + `this writes a public record on the shared ledger: "${who} serves ${name}". Every peer can read it, and it stays on the record for good — unsubscribing appends another record, it does not remove this one.`);
+    info(ctx, c.dim(`  loading the same knowledge by hand (\`${PROG} use <id>\`) leaves no trace outside this node.`));
+    await confirm(ctx, q.buy.length
+      ? `subscribe to ${name}, announce it publicly and spend ${money(q.total)} now? [y/N]`
+      : `subscribe to ${name} and announce it publicly? [y/N]`, { yes: opts.yes });
   }
   const r = await client.post<SubscribeResult>(`/api/branches/${encodeURIComponent(name)}/${action}`, {}, { timeoutMs: 30 * 60_000 });
   emit(ctx, r, (x) => renderSubscribe(x, name));
