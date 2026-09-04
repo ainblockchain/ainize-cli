@@ -8,7 +8,7 @@ import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
+import { c, confirm, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
 
@@ -43,7 +43,20 @@ export function verificationLine(e: CatalogEntry): string {
   const v = verificationCount(e);
   const extra = v.extra ? c.dim(` (+${v.extra} more independent attestation${v.extra > 1 ? 's' : ''})`) : '';
   const self = e.self_checks ? c.warn(` · ${e.self_checks} self-check${e.self_checks > 1 ? 's' : ''} by the author (not counted)`) : '';
-  return `${v.fraction} passed${e.quorum_ok ? c.ok(' ✓ quorum') : ''}${extra}${self}`;
+  return `${v.fraction} passed${e.quorum_ok ? c.ok(' ✓ quorum') : ''}${extra}${self}${executorLine(e)}`;
+}
+
+/**
+ * How many distinct model servers are behind those attestations (item 329). Two verifier processes pointed at one
+ * vLLM sign two attestations and are not two independent verifications; the record can now tell the difference, so
+ * the line says which of the two it is instead of printing a fraction that means either.
+ */
+export function executorLine(e: CatalogEntry): string {
+  const machines = (e.executors?.length ?? 0) + (e.executors_unknown ?? 0);
+  if (e.passed < 2 || !machines) return '';
+  if ((e.executors?.length ?? 0) && machines < e.passed) return c.warn(` · ${machines} model server${machines > 1 ? 's' : ''} for ${e.passed} attestations — not ${e.passed} independent runs`);
+  if (e.executors_unknown) return c.dim(` · ${e.executors_unknown} attestation${e.executors_unknown > 1 ? 's' : ''} without an engine fingerprint`);
+  return c.dim(` · ${machines} independent model server${machines > 1 ? 's' : ''}`);
 }
 
 export interface PatchDetail extends CatalogEntry {
@@ -52,6 +65,8 @@ export interface PatchDetail extends CatalogEntry {
   retired_at?: number | null;
   retire_reason?: string | null;
   branches: { name: string; context: Record<string, string> }[];
+  /** The bases this knowledge needs underneath it, deepest first, with their prices (item 270). */
+  requires?: { id: string; name: string; held: boolean; price: string | null; currency?: string; author?: string; author_name?: string | null; depth?: number; known?: boolean; purchased?: boolean; mine?: boolean }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null;
 }
 
@@ -82,6 +97,14 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         { key: 'ct', title: 'COUNTS', get: (x) => (e.self_checks > 0 && x.verifier.toLowerCase() === a.author.toLowerCase() ? c.warn('no — self-check') : 'yes') },
         { key: 't', title: 'AT', get: (x) => fmtTime(x.created_at) },
       ]));
+      // A FAIL used to be a fraction and nothing else. The verifier signs what the model actually answered on up to
+      // five of the questions it got wrong (item 155) — print it under the row, because that is what a rejected
+      // author has to work from.
+      for (const x of e.attestations) {
+        if (!x.failures?.length) continue;
+        lines.push('', `${c.err('FAIL')} ${x.verifier_name ?? shortAddr(x.verifier, 6)} — what the model answered on ${x.failures.length} of the questions it got wrong:`);
+        for (const f of x.failures) lines.push(`  ${c.dim('asked   ')} ${f.prompt}`, `  ${c.dim('expected')} ${c.ok(f.expect)}`, `  ${c.dim('answered')} ${c.err(f.got || '(nothing)')}`, '');
+      }
     }
     if (e.challenges.length) {
       lines.push('', c.head('challenges'), table([...e.challenges].sort((x, y) => y.created_at - x.created_at), [
@@ -272,22 +295,146 @@ export async function patchVerify(ctx: CliContext, id: string): Promise<unknown>
   return r;
 }
 
+/**
+ * `ainize patch challenge <id> --reason …`. A challenge is free to file and expensive for everyone else: it stops
+ * every sale of the knowledge and spends another operator's GPU minutes on the re-run (item 328). The command says
+ * that before it sends, and afterwards it reports what actually happens next — which, for a knowledge that was never
+ * LISTED, is not "off sale" but "the verifiers are asked to run it again" (item 242).
+ */
 export async function patchChallenge(ctx: CliContext, id: string, reason: string): Promise<void> {
-  await new NodeClient(ctx).post(`/api/patches/${encodeURIComponent(id)}/challenge`, { reason });
+  const client = new NodeClient(ctx);
+  const before = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
+  if (before && !ctx.json) {
+    const sellable = before.sellable;
+    ok(ctx, c.dim(`${id} is ${before.status}${sellable ? ` and on sale at ${before.anchor.price} ${before.anchor.currency}` : ''}. A challenge is not a comment: ${sellable ? 'it stops every sale of this knowledge' : 'it asks the verifiers to run the benchmark again'}, and some other operator pays the GPU minutes for the re-run. Your address is on the record next to your reason.`));
+  }
+  const r = await client.post<{ challenge?: { created_at: number }; record?: { filed: number; upheld: number; dismissed: number; open: number } }>(
+    `/api/patches/${encodeURIComponent(id)}/challenge`, { reason });
   ok(ctx, `challenge recorded for ${id}: ${reason}`);
-  // A challenge is not a comment: it takes the knowledge off sale everywhere until a verifier re-runs it.
-  ok(ctx, c.dim(`${id} is off sale until a verifier re-runs the benchmark and passes it; the author is told who challenged it and why`));
+  const after = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
+  const status = after?.status ?? before?.status;
+  if (status === 'CHALLENGED') ok(ctx, c.dim(`${id} is off sale until a verifier re-runs the benchmark and passes it; the author is told who challenged it and why`));
+  else ok(ctx, c.dim(`${id} is ${status ?? 'not listed'} (${after ? verificationCount(after).fraction : '?'} passed) — it was not on sale, so nothing stops; the verifiers that have not answered your challenge will run the benchmark again`));
+  if (r.record) ok(ctx, c.dim(`your challenges on this network: ${r.record.filed} filed · ${r.record.upheld} upheld · ${r.record.dismissed} dismissed by a re-run · ${r.record.open} waiting`));
 }
 
-export interface PurchaseResult { patch_id: string; steps: { step: string; detail: string; at: number }[]; manifest: { patch_sha256: string; size_bytes: number; rows: number }; path: string; tx_hash: string; amount: string; scheme: string; }
+export interface PurchaseResult {
+  patch_id: string; steps: { step: string; detail: string; at: number }[]; manifest: { patch_sha256: string; size_bytes: number; rows: number };
+  path: string; tx_hash: string; amount: string; scheme: string;
+  /** every knowledge this call paid for, bases first (item 270) */
+  purchases?: { patch_id: string; amount: string; currency: string; scheme: string; tx_hash: string; free?: boolean }[];
+  total?: string; currency?: string;
+  /** the payment was already settled and the seller re-issued the manifest — nothing was charged (item 273) */
+  redeemed?: boolean;
+}
 
-export async function patchBuy(ctx: CliContext, id: string, apply = false): Promise<PurchaseResult> {
-  const r = await new NodeClient(ctx).post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`, { apply }, { timeoutMs: 30 * 60_000 });
+/** `GET /api/patches/:id/quote` — what this purchase costs before anyone pays for it (item 270). */
+export interface PatchQuote {
+  patch_id: string; price: string; currency: string;
+  requires: { id: string; name: string; price: string; currency: string; author: string; author_name?: string | null; depth: number; known: boolean; held: boolean; licensed: boolean; purchased: boolean; mine: boolean }[];
+  missing: string[]; unknown: string[]; total: string; self_contained: boolean;
+  export: 'delta' | 'squash' | null; derivation: string | null;
+}
+
+/** `GET /api/credit/:address` — where local credit comes from and what it is worth (item 364). */
+export interface CreditInfo {
+  address: string; currency: string; balance: number;
+  grant: { amount: string; reason: string; granted_at: number } | null;
+  would_grant: string | null;
+  issued_by: { address: string; name: string | null; url: string };
+  issuance: { cap: number; addresses: number; amount: number; per_address: string; currency: string; issues: boolean };
+  note: string;
+}
+
+export interface BuyArgs {
+  apply?: boolean;
+  /** buy the bases this knowledge needs underneath it too, deepest first */
+  withRequired?: boolean;
+  /** answer the confirmation in advance */
+  yes?: boolean;
+  /** refuse if the TOTAL (this knowledge plus the bases it needs) is above this */
+  maxPrice?: number;
+}
+
+/**
+ * The quote, printed before anything is spent (item 102). Every number here comes from the node: the price on the
+ * record, the bases this knowledge needs underneath it and what they cost (item 270), the balance the money leaves
+ * from, and — on a local-credit node — the fact that the credit was issued by that node and is not money (item 364).
+ */
+async function printQuote(ctx: CliContext, client: NodeClient, detail: PatchDetail, quote: PatchQuote): Promise<{ total: number; balance: number | null }> {
+  const a = detail.anchor;
+  const chain = await client.get<{ kind: string; address: string; balance: number | null }>('/api/chain').catch(() => null);
+  const credit = quote.currency === 'CREDIT' ? await client.get<CreditInfo>('/api/me/credit').catch(() => null) : null;
+  const total = Number(quote.total);
+  const balance = chain?.balance ?? null;
+  const lines: string[] = [];
+  lines.push(`${c.id(a.id)}${a.name && a.name !== a.id ? ` · ${a.name}` : ''}  ${c.bold(`${quote.price} ${quote.currency}`)}`);
+  lines.push(c.dim(`  seller ${a.author_name ? `${a.author_name} ` : ''}${shortAddr(a.author, 8)} · ${a.rows.toLocaleString('en-US')} rows · ${a.model.id_M}`));
+  for (const r of quote.requires) {
+    const state = r.mine ? 'published here' : r.licensed ? 'already paid for on this node' : r.known ? `${r.price} ${r.currency}${r.author_name ? ` from ${r.author_name}` : ''}${r.held ? ' (body already here, not paid for)' : ''}` : 'price unknown — this node has never seen it';
+    lines.push(`  ${c.dim('needs')} ${c.id(r.id)}${r.name && r.name !== r.id ? ` · ${r.name}` : ''}  ${r.licensed || r.mine ? c.dim(state) : c.warn(state)}`);
+  }
+  if (quote.requires.length && !quote.missing.length) lines.push(c.dim('  everything it needs underneath is already here'));
+  if (quote.missing.length) lines.push(`  ${c.head('total')} ${c.bold(`${quote.total} ${quote.currency}`)} ${c.dim(`(this knowledge + ${quote.missing.length} base${quote.missing.length === 1 ? '' : 's'} it cannot work without)`)}`);
+  if (balance !== null) lines.push(c.dim(`  balance ${balance} → ${Math.round((balance - total) * 1e6) / 1e6} ${quote.currency}`));
+  if (credit?.issuance.issues) lines.push(c.dim(`  ${credit.note}`));
+  info(ctx, lines.join('\n'));
+  return { total, balance };
+}
+
+/**
+ * `ainize patch buy <id>` — the quote, the decision, then the money (item 102).
+ *
+ * It used to print `✓ bought <id> for 25 (local-credit)` as its FIRST line: the price was never quoted, no
+ * confirmation existed anywhere in this CLI, and on an AIN node the first keystroke moved real money. Now the
+ * quote is printed, `--max-price` is checked against the family total (not just this item), a terminal is asked,
+ * and a non-terminal without `--yes` is refused instead of taken as a yes.
+ */
+export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | boolean = {}): Promise<PurchaseResult> {
+  const o: BuyArgs = typeof opts === 'boolean' ? { apply: opts } : opts;
+  const client = new NodeClient(ctx);
+  const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`);
+  const quote = await client.get<PatchQuote>(`/api/patches/${encodeURIComponent(id)}/quote`);
+  const { total, balance } = await printQuote(ctx, client, detail, quote);
+  if (o.maxPrice !== undefined && total > o.maxPrice) {
+    throw new CliError(`${id} costs ${quote.total} ${quote.currency}${quote.missing.length ? ` with the ${quote.missing.length} base(s) it needs` : ''} — over --max-price ${o.maxPrice}. Nothing was bought.`);
+  }
+  if (balance !== null && balance < total) {
+    throw new CliError(`this node holds ${balance} ${quote.currency} and the purchase costs ${quote.total} — nothing was bought`);
+  }
+  await confirm(ctx, `Pay ${quote.total} ${quote.currency}${quote.missing.length ? ` for ${quote.missing.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
+  const r = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`,
+    { apply: !!o.apply, with_required: !!o.withRequired, max_total: o.maxPrice }, { timeoutMs: 30 * 60_000 });
+  emit(ctx, r, (x) => {
+    const t0 = x.steps[0]?.at ?? Date.now();
+    const cur = x.currency ?? quote.currency;
+    const head = x.redeemed
+      ? c.ok('✓ ') + `collected ${c.id(x.patch_id)} against the payment already made — nothing was charged  tx ${shortHash(x.tx_hash, 16)}`
+      : c.ok('✓ ') + `bought ${c.id(x.patch_id)} for ${x.total ?? x.amount} ${cur} (${x.scheme})  tx ${shortHash(x.tx_hash, 16)}`;
+    const bought = (x.purchases ?? []).filter((pp) => pp.patch_id !== x.patch_id);
+    return [
+      head,
+      ...bought.map((pp) => c.dim(`  with its base ${pp.patch_id}: ${pp.amount} ${pp.currency}  tx ${shortHash(pp.tx_hash, 12)}`)),
+      ...x.steps.map((s) => `  ${c.dim(`+${String(s.at - t0).padStart(5)}ms`)}  ${c.head(s.step.padEnd(9))} ${s.detail}`),
+      c.dim(`  body: ${x.path}`),
+    ].join('\n');
+  });
+  return r;
+}
+
+/**
+ * `ainize patch download <id>` — collect a knowledge this node has ALREADY paid for, without paying again (item 273).
+ *
+ * The recovery path existed in the node and was invisible: a buyer whose manifest was lost, or whose purchase died
+ * between the transfer and the download (item 274), was told "payment already used" and offered "Buy again".
+ */
+export async function patchDownload(ctx: CliContext, id: string): Promise<PurchaseResult> {
+  const r = await new NodeClient(ctx).post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/collect`, {}, { timeoutMs: 30 * 60_000 });
   emit(ctx, r, (x) => {
     const t0 = x.steps[0]?.at ?? Date.now();
     return [
-      c.ok('✓ ') + `bought ${c.id(x.patch_id)} for ${x.amount} (${x.scheme})  tx ${shortHash(x.tx_hash, 16)}`,
-      ...x.steps.map((s) => `  ${c.dim(`+${String(s.at - t0).padStart(5)}ms`)}  ${c.head(s.step.padEnd(9))} ${s.detail}`),
+      c.ok('✓ ') + `collected ${c.id(x.patch_id)} — no payment (paid ${x.amount}${x.currency ? ` ${x.currency}` : ''}, tx ${shortHash(x.tx_hash, 16)})`,
+      ...x.steps.map((s) => `  ${c.dim(`+${String(s.at - t0).padStart(5)}ms`)}  ${c.head(s.step.padEnd(11))} ${s.detail}`),
       c.dim(`  body: ${x.path}`),
     ].join('\n');
   });
@@ -510,7 +657,7 @@ export async function patchForget(ctx: CliContext, id: string, opts: { allSharin
  * `ainize use <id>` — the one-line consumer path: check it is verified, pay automatically (x402), download,
  * verify the body hash and load it into this node's model. Falls back gracefully when the runtime is off.
  */
-export async function patchUse(ctx: CliContext, id: string, opts: { apply?: boolean } = {}): Promise<PurchaseResult | { already: true }> {
+export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}): Promise<PurchaseResult | { already: true }> {
   const client = new NodeClient(ctx);
   const detail = await client.get<PatchDetail & { purchased: boolean; has_body: boolean; owned: boolean; applied: boolean }>(`/api/patches/${encodeURIComponent(id)}`);
   const apply = opts.apply !== false;
@@ -527,7 +674,14 @@ export async function patchUse(ctx: CliContext, id: string, opts: { apply?: bool
     if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "your question"`));
     return { already: true };
   }
-  const r = await patchBuy(ctx, id, apply);
+  // A knowledge already paid for whose body this node no longer holds is COLLECTED, not bought again (item 273).
+  if (detail.purchased && !detail.has_body) {
+    info(ctx, c.dim(`${id} was already paid for on this node but its body is not here — collecting it again, free`));
+    const back = await patchDownload(ctx, id);
+    if (apply) await patchApply(ctx, id);
+    return back;
+  }
+  const r = await patchBuy(ctx, id, { ...opts, apply });
   if (!ctx.json) ok(ctx, c.dim(apply ? `loaded into the model — try: ainize chat ${id} "your question"` : `downloaded — load with: ainize patch apply ${id}`));
   return r;
 }

@@ -64,7 +64,22 @@ export async function route(ctx: CliContext, pairs: string[]): Promise<{ branch:
 /** One royalty transfer this node owes (node `payouts` table): pending → paid (tx_hash) | failed (last_error, retried every 60 s up to 20 times). */
 export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
 export interface PayoutSummary { pending: number; failed: number; paid: number }
-export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number }[]; royalties: { patch_id: string; amount: string; created_at: number }[]; purchases: number; network: string;
+/**
+ * One creator-share line on THIS node's wallet. `state` is the difference between a promise and a payment (item
+ * 311): `credited` = local play money already in the balance below; `paid` / `pending` / `failed` = what the seller's
+ * own node answered when asked about that settlement; `unconfirmed` = nobody has confirmed anything and the only
+ * evidence is the record the seller wrote.
+ */
+export interface RoyaltyRow { patch_id: string; amount: string; created_at: number;
+  kind?: 'lineage' | 'verification'; state?: 'credited' | 'paid' | 'pending' | 'failed' | 'unconfirmed';
+  seller?: string; seller_name?: string | null; currency?: string; tx_hash?: string | null; days?: number; last_error?: string | null }
+export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number }[]; royalties: RoyaltyRow[]; purchases: number; network: string;
+  /** owed / credited / paid / unconfirmed across every royalty line (pre-311 nodes omit it). */
+  royalty_totals?: { owed: string; credited: string; paid: string; unconfirmed: string };
+  /** The royalty lines this node earned by VERIFYING other people's knowledge (item 325). */
+  verification?: RoyaltyRow[];
+  verification_total?: string;
+  verifier_share?: number;
   /** Unpaid royalty transfers (pre-payouts nodes omit the field). */
   payouts?: PayoutSummary & { items: PayoutRow[] } }
 export interface PayoutsResponse { items: PayoutRow[]; summary: PayoutSummary; max_attempts: number; retry_ms: number; wallet: boolean }
@@ -84,18 +99,40 @@ export function renderPayoutSummary(x: WalletResponse): string[] {
   return [kv([['royalty payouts owed', head]]), ...(unpaid.length ? ['\n' + c.head('unpaid payouts (retry: ainize payouts retry <id>)') + '\n' + payoutTable(unpaid.slice(0, 10))] : [])];
 }
 
+/** `credited` and `paid` are money; `unconfirmed` is a claim by the party that owes it (item 311). */
+const royaltyState = (r: RoyaltyRow) => r.state === 'credited' ? c.ok('credited') : r.state === 'paid' ? c.ok('paid')
+  : r.state === 'failed' ? c.err('transfer failed') : r.state === 'pending' ? c.warn('seller says pending')
+  : c.warn(`unconfirmed${r.days ? ` (${r.days}d)` : ''}`);
+
 export async function wallet(ctx: CliContext): Promise<WalletResponse> {
   const d = await new NodeClient(ctx).get<WalletResponse>('/api/me/wallet');
   emit(ctx, d, (x) => [
     kv([['address', x.address], ['ledger', `${x.kind} · ${x.network}`], ['balance', x.balance === null ? c.warn('unknown (chain unreachable)') : `${x.balance} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'}`],
       ['sales', x.sales.length], ['royalties received', x.royalties.length], ['purchases', x.purchases]]),
+    // The three totals a creator has to be able to reconcile: what the records promise, what is actually in the
+    // balance or on the chain, and what nobody has confirmed (item 311).
+    ...(x.royalty_totals ? [kv([
+      ['creator share owed to you', `${x.royalty_totals.owed} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'} ${c.dim('(what the settle records promise)')}`],
+      ['of that, in your balance', c.ok(x.royalty_totals.credited)],
+      ['of that, transferred', `${x.royalty_totals.paid} ${c.dim("(the seller's node reports the transfer)")}`],
+      ['of that, unconfirmed', (Number(x.royalty_totals.unconfirmed) > 0 ? c.warn : c.dim)(`${x.royalty_totals.unconfirmed} ${c.dim('(promised on the record, nobody has confirmed a transfer)')}`)],
+    ])] : []),
+    // Verifying used to earn nothing anywhere in this product (item 325).
+    ...(x.verification ? [kv([['earned from verifying', x.verification.length
+      ? `${x.verification_total} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'} ${c.dim(`over ${x.verification.length} sale(s) of knowledge you verified`)}`
+      : c.dim(`nothing yet${x.verifier_share ? ` — you are paid ${Math.round(x.verifier_share * 100)}% of the seller's side of every sale of a knowledge your attestation keeps on sale` : ''}`)]])] : []),
     ...renderPayoutSummary(x),
     x.sales.length ? '\n' + c.head('recent sales') + '\n' + table(x.sales.slice(-10), [
       { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => `${s.amount} ${s.currency}`, align: 'right' },
       { key: 'b', title: 'BUYER', get: (s) => shortAddr(s.buyer, 8) }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
     ]) : '',
-    x.royalties.length ? '\n' + c.head('royalties') + '\n' + table(x.royalties.slice(-10), [
-      { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => s.amount, align: 'right' }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
+    x.royalties.length ? '\n' + c.head('creator share (what each sale owes you, and whether it moved)') + '\n' + table(x.royalties.slice(-10), [
+      { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => s.amount, align: 'right' },
+      { key: 'k', title: 'FOR', get: (s) => (s.kind === 'verification' ? 'verifying' : 'lineage') },
+      { key: 'f', title: 'FROM', get: (s) => s.seller_name ?? (s.seller ? shortAddr(s.seller, 8) : '-') },
+      { key: 'st', title: 'STATE', get: (s) => (s.state ? royaltyState(s) : c.dim('—')) },
+      { key: 'x', title: 'TX', get: (s) => (s.tx_hash ? s.tx_hash.slice(0, 14) + '…' : '') },
+      { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
     ]) : '',
   ].filter(Boolean).join('\n'));
   return d;
