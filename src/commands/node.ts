@@ -57,9 +57,20 @@ function startFailed(ctx: CliContext, why: string): never {
 /** Start the node in-process (returns when it is listening; caller keeps the event loop alive) or detached. */
 export async function start(ctx: CliContext, a: StartArgs = {}): Promise<RunningNode | { detached: true; pid: number; log: string }> {
   const cfg = assertUsableConfig(applyArgs(applyEnv(requireConfig(ctx)), a), ctx.home);
+  const existing = runningPid(ctx.home);
+  // (the child `start -d` spawns finds its own pid in node.pid — the parent wrote it before the child ran)
+  if (existing && existing !== process.pid) throw new CliError(`node already running in the background (pid ${existing}) — \`${PROG} stop\` first`);
+  // Whoever already answers the port is not the child about to be spawned. When it is this home's own node —
+  // started in the foreground or by a supervisor, so there is no pid file — the start-up probe below would have
+  // matched the identity and printed the tick for a child that died on EADDRINUSE a moment later (item 118).
+  const probe = new NodeClient({ ...ctx, nodeUrl: `http://localhost:${cfg.port}`, token: null });
+  const holder = await probe.get<InfoResponse>('/api/info', { auth: false, timeoutMs: 2000 }).catch(() => null);
+  if (holder) {
+    throw new CliError(holder.node.address.toLowerCase() === cfg.identity.address.toLowerCase()
+      ? `this node is already serving on http://localhost:${cfg.port} — it was not started by \`${PROG} start -d\` (foreground, or a supervisor), so stop it where it was started before starting it here`
+      : `port ${cfg.port} is already answered by "${holder.node.name}" (${shortAddr(holder.node.address, 8)}), not the node in ${ctx.home} — stop that node, or move this one: \`${PROG} config set port <1-65535>\``);
+  }
   if (a.detach) {
-    const existing = runningPid(ctx.home);
-    if (existing) throw new CliError(`node already running in the background (pid ${existing}) — \`${PROG} stop\` first`);
     mkdirSync(ctx.home, { recursive: true });
     const out = openSync(logFile(ctx.home), 'a');
     const args = [...process.execArgv, binPath(), 'start', '--home', ctx.home];
@@ -75,7 +86,6 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     // Wait for the child to actually answer before claiming it started: a port already in use, a config the node
     // refuses, an unreachable chain — all of those used to print a green tick and a pid that was dead a
     // millisecond later, with the reason in node.log and nothing on screen (item 118).
-    const probe = new NodeClient({ ...ctx, nodeUrl: `http://localhost:${cfg.port}`, token: null });
     const timeoutMs = startTimeoutMs();
     const deadline = Date.now() + timeoutMs;
     for (;;) {

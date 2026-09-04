@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -82,6 +83,40 @@ test('`start -d` waits for the child to answer, and reports node.log when it die
     busy.close();
     rmSync(h, { recursive: true, force: true });
     delete process.env.NGRAM_START_TIMEOUT_MS;
+  }
+});
+
+test('`start` refuses a port that an ainize node already answers — this home\'s own (foreground / supervisor) or a stranger\'s — before spawning anything (item 118)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-start-held-'));
+  // an ainize node on the port, but not one `start -d` spawned: no pid file. The start-up probe used to match its
+  // identity and print the tick for a child that had just died on EADDRINUSE.
+  let answerAs = '';
+  const holder = createHttpServer((req, res) => {
+    if (req.url === '/api/info') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ node: { address: answerAs, name: 'holder' } })); return; }
+    res.statusCode = 404; res.end();
+  });
+  try {
+    const port = await new Promise<number>((res) => holder.listen(0, '127.0.0.1', () => res((holder.address() as { port: number }).port)));
+    const cfg = defaultConfig({ home: h, name: 'held', port, ledger: 'local' });
+    saveConfig(cfg, h);
+    const ctx = buildContext({ home: h, quiet: true });
+    answerAs = cfg.identity.address;
+    for (const detach of [true, false]) {
+      await assert.rejects(() => start(ctx, { detach }), (e: CliError) => {
+        assert.equal(e.message, `this node is already serving on http://localhost:${port} — it was not started by \`ainize start -d\` (foreground, or a supervisor), so stop it where it was started before starting it here`);
+        return true;
+      });
+    }
+    answerAs = '0xF7A9dE49902C95661AC6556D631e2B60a081A1F5';
+    await assert.rejects(() => start(ctx, { detach: true }), (e: CliError) => {
+      assert.equal(e.message, `port ${port} is already answered by "holder" (0xF7A9dE49…A1F5), not the node in ${h} — stop that node, or move this one: \`ainize config set port <1-65535>\``);
+      return true;
+    });
+    assert.equal(existsSync(join(h, 'node.pid')), false, 'nothing was spawned');
+    assert.equal(existsSync(join(h, 'node.log')), false, 'nothing was spawned');
+  } finally {
+    holder.close();
+    rmSync(h, { recursive: true, force: true });
   }
 });
 
