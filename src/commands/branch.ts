@@ -125,6 +125,11 @@ export async function branchSync(ctx: CliContext, name: string): Promise<Subscri
   emit(ctx, r, (x) => (x.acquired.length || x.applied.length || x.removed.length || x.failed.length
     ? renderSubscribe(x, name)
     : c.dim(`${name} is up to date — nothing to buy, load or unload`)));
+  // A track this node is subscribed to that it cannot keep up with is not a success: the caller has to hear about it
+  // in the exit code, not only in the log (item 357's other half — a sync spends money and can fail item by item).
+  if (r.failed.length) {
+    throw new CliError(`${name}: ${r.failed.length} item(s) could not be acquired — this node is subscribed but behind:\n${r.failed.map((f) => `  ${f.patch_id}: ${f.error}`).join('\n')}`, 5);
+  }
   return r;
 }
 
@@ -135,12 +140,15 @@ function renderSubscribe(x: SubscribeResult, name: string): string {
     out.push(c.dim('  the bodies stay on this node and nothing is refunded'));
     return out.join('\n');
   }
-  out.push(c.ok('✓ ') + `${x.action === 'sync' ? 'synced' : 'subscribed'} ${name}`);
+  out.push(x.failed.length
+    ? c.warn('! ') + `${x.action === 'sync' ? 'synced' : 'subscribed'} ${name} — ${x.failed.length} item(s) could not be acquired`
+    : c.ok('✓ ') + `${x.action === 'sync' ? 'synced' : 'subscribed'} ${name}`);
   if (x.acquired.length) out.push(`  bought   ${x.acquired.join(', ')}${x.spent.length ? c.dim(`  (${money(x.spent)})`) : ''}`);
   if (x.applied.length) out.push(`  loaded   ${x.applied.join(' → ')}`);
   if (x.removed.length) out.push(`  unloaded ${x.removed.join(', ')} ${c.dim('(retired by a newer version on this track)')}`);
   for (const s of x.skipped) out.push(c.dim(`  skipped  ${s.patch_id}: ${s.reason}`));
-  if (!x.applied.length && !x.acquired.length) out.push(c.dim('  nothing new to buy or load'));
+  for (const f of x.failed) out.push(c.err(`  FAILED   ${f.patch_id}: ${f.error}`));
+  if (!x.applied.length && !x.acquired.length && !x.failed.length) out.push(c.dim('  nothing new to buy or load'));
   return out.join('\n');
 }
 
