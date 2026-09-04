@@ -87,6 +87,22 @@ export function emit<T>(ctx: CliContext, data: T, render: (d: T) => string | voi
  *  - anything else (a pipe, a cron, a CI job) is REFUSED, because a script that never saw the question has not
  *    agreed to anything. Silence is not consent when the next step spends money.
  */
+/**
+ * A yes/no question whose *no* is not a cancellation (design §13: "also needs {name} ({price}); buy both? [y/N]").
+ *
+ * `confirm` cannot express this: its no throws, and here a no still buys the one thing that was asked for. Nothing
+ * is ever assumed — without a terminal, and when the answer was pre-given with a flag, the default stands and the
+ * caller says so in its own words. It never spends money on its own: the purchase is confirmed by `confirm` after.
+ */
+export async function ask(ctx: CliContext, question: string, opts: { default?: boolean; skip?: boolean } = {}): Promise<boolean> {
+  const def = opts.default ?? false;
+  if (opts.skip || !process.stdin.isTTY || ctx.json || ctx.quiet) return def;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>((res) => rl.question(`${question} `, (a) => { rl.close(); res(a.trim().toLowerCase()); }));
+  if (!answer) return def;
+  return answer === 'y' || answer === 'yes';
+}
+
 export async function confirm(ctx: CliContext, question: string, opts: { yes?: boolean; flag?: string } = {}): Promise<void> {
   const flag = opts.flag ?? '--yes';
   if (opts.yes) { info(ctx, c.dim(`${question} ${flag}`)); return; }

@@ -8,7 +8,7 @@ import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, confirm, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
+import { ask, c, confirm, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
 
@@ -424,16 +424,31 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
     ].join('\n'));
     return done;
   }
-  const { total, balance } = await printQuote(ctx, client, detail, quote);
-  if (o.maxPrice !== undefined && total > o.maxPrice) {
-    throw new CliError(`${id} costs ${quote.total} ${quote.currency}${quote.missing.length ? ` with the ${quote.missing.length} base(s) it needs` : ''} — over --max-price ${o.maxPrice}. Nothing was bought.`);
+  const { balance } = await printQuote(ctx, client, detail, quote);
+  /**
+   * The bases it cannot work without (design §13). The quote's `total` is the FAMILY price, and this command used to
+   * ask "Pay {total} for 2 knowledges?" and then pay for one — the bases were bought only with `--bundle`, and the
+   * prompt never mentioned the flag. So the family is offered here, in the terminal, and whatever is decided is what
+   * the confirmation then quotes: no answer buys a file that answers nothing until its base is under it, and no
+   * answer pays for a base nobody asked for.
+   */
+  const named = quote.requires.filter((r) => quote.missing.includes(r.id));
+  let bundle = !!o.withRequired;
+  if (named.length && !bundle) {
+    const list = named.map((r) => `${r.name || r.id} (${r.known ? `${r.price} ${r.currency}` : 'price unknown'})`).join(', ');
+    bundle = await ask(ctx, `${c.id(id)} also needs ${list}; buy ${named.length === 1 ? 'both' : `all ${named.length + 1}`}? [y/N]`, { skip: !!o.yes });
+    if (!bundle) info(ctx, c.warn(`  buying ${id} alone — it will not answer anything until ${named.map((r) => r.id).join(' and ')} ${named.length === 1 ? 'is' : 'are'} loaded under it (\`${PROG} patch buy ${id} --bundle\` buys the family)`));
   }
-  if (balance !== null && balance < total) {
-    throw new CliError(`this node holds ${balance} ${quote.currency} and the purchase costs ${quote.total} — nothing was bought`);
+  const pay = bundle ? Number(quote.total) : Number(quote.price);
+  if (o.maxPrice !== undefined && pay > o.maxPrice) {
+    throw new CliError(`${id} costs ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && quote.missing.length ? ` with the ${quote.missing.length} base(s) it needs` : ''} — over --max-price ${o.maxPrice}. Nothing was bought.`);
   }
-  await confirm(ctx, `Pay ${quote.total} ${quote.currency}${quote.missing.length ? ` for ${quote.missing.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
+  if (balance !== null && balance < pay) {
+    throw new CliError(`this node holds ${balance} ${quote.currency} and the purchase costs ${bundle ? quote.total : quote.price} — nothing was bought`);
+  }
+  await confirm(ctx, `Pay ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && named.length ? ` for ${named.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
   const r = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`,
-    { apply: !!o.apply, with_required: !!o.withRequired, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 });
+    { apply: !!o.apply, bundle, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 });
   emit(ctx, r, (x) => {
     const t0 = x.steps[0]?.at ?? Date.now();
     const cur = x.currency ?? quote.currency;
@@ -737,7 +752,9 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
   if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
-    if (apply) { await patchApply(ctx, id); }
+    // §8.7 — `use` means the knowledge WORKS afterwards, so an add-on is loaded with the stack it was trained on
+    // top of; without this, `ainize use <child>` on a held child failed with `needs_base` and left nothing loaded.
+    if (apply) { await patchApply(ctx, id, { withBase: true }); }
     if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "your question"`));
     return { already: true };
   }
@@ -745,7 +762,7 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
   if (detail.purchased && !detail.has_body) {
     info(ctx, c.dim(`${id} was already paid for on this node but its body is not here — collecting it again, free`));
     const back = await patchDownload(ctx, id);
-    if (apply) await patchApply(ctx, id);
+    if (apply) await patchApply(ctx, id, { withBase: true });
     return back;
   }
   const r = await patchBuy(ctx, id, { ...opts, apply });

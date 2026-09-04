@@ -538,6 +538,8 @@ export interface TeachPublishOpts extends KeyOpts {
   name: string; price?: string; license?: string; description?: string; payout?: string;
   consentPermanent?: boolean; consentRights?: boolean;
   access?: 'public' | 'derivative' | 'private'; datasetLicense?: string; includeNotes?: boolean;
+  /** where the questions came from (§6.5) — required by the node above `dataset.declarationRows` rows */
+  declare?: 'own' | 'public' | 'licensed';
 }
 
 /**
@@ -579,7 +581,14 @@ export async function teachPublish(ctx: CliContext, jobId: string, opts: TeachPu
     name, price, ...(opts.license ? { license: opts.license } : {}), ...(opts.description ? { description: opts.description } : {}),
     ...(payout !== undefined ? { payout_address: payout } : {}),
     claim_sig, consent: { permanent: true, rights: true },
-    dataset: { access: opts.access ?? 'derivative', ...(opts.datasetLicense ? { license: opts.datasetLicense } : {}), ...(opts.includeNotes ? { include_notes: true } : {}) },
+    dataset: {
+      access: opts.access ?? 'derivative', ...(opts.datasetLicense ? { license: opts.datasetLicense } : {}), ...(opts.includeNotes ? { include_notes: true } : {}),
+      // §6.5 — where the questions come from. The node demands it above `dataset.declarationRows`, so without this
+      // flag a big set could be trained from the terminal and never published from it. `no_pii` is not invented
+      // here: it is the second consent this command already refuses to run without, in the publisher's own words
+      // ("you have the right to share this information, and it is not private or personal data").
+      ...(opts.declare ? { declaration: { source: opts.declare, no_pii: true, ...(opts.datasetLicense ? { license: opts.datasetLicense } : {}) } } : {}),
+    },
     ...(s.key.name ? { contributor: { name: s.key.name } } : {}),
   };
   const result = await s.post<PublishOutcome>(`/api/teach/jobs/${encodeURIComponent(jobId)}/publish`, body);

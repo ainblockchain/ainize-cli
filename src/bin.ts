@@ -266,13 +266,15 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     // non-terminal without it is refused, never taken as a yes. `--max-price` is the FAMILY total (item 270).
     .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
     .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
-    .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it, deepest first' })
+    .option('bundle', { type: 'boolean', default: false, describe: 'buy the bases this knowledge needs underneath it too, deepest first (one payment each). Without it you are asked' })
+    .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
     // Item 271: without this, a knowledge this node has already paid for is collected, not bought a second time.
     .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
     .example('$0 patch buy krx-all-2761', 'quote the price, ask, then pay')
+    .example('$0 patch buy krx-all-2761 --bundle', 'the add-on and the knowledge it needs underneath, in one go')
     .example('$0 patch buy krx-all-2761 --yes --max-price 30', 'unattended, with a budget for the whole family'),
-  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
-    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a['with-base'] })))
+  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
+    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'] })))
   .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
   run((ctx, a: G & { id: string }) => patch.patchDownload(ctx, a.id)))
@@ -440,15 +442,16 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read the training set: anyone, only people who declare they build on this (default), nobody' })
     .option('dataset-license', { type: 'string', describe: 'licence for the questions themselves' })
     .option('include-notes', { type: 'boolean', default: false, describe: 'include your per-row notes in the shared questions' })
+    .option('declare', { choices: ['own', 'public', 'licensed'] as const, describe: 'where the questions came from: your own work, a public source, or licensed to you (the node requires this above a few hundred rows)' })
     .option('consent-permanent', { type: 'boolean', default: false, describe: 'I understand this becomes a permanent public record that cannot be edited or deleted' })
     .option('consent-rights', { type: 'boolean', default: false, describe: 'I have the right to share this information, and it is not private or personal data' })
     .example('$0 teach publish 8f0c… --name "KRX codes" --price 2 --consent-permanent --consent-rights', 'the last line of a nightly bake')
     .example('$0 teach train today.jsonl --wait && $0 teach publish <id> --name … --consent-permanent --consent-rights', 'train, then publish only if the lesson stuck (--wait exits non-zero otherwise)'),
   run((ctx, a: G & { 'job-id': string; key?: string; 'key-file'?: string; name: string; price?: string; license?: string; description?: string; payout?: string;
-    access?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'include-notes': boolean; 'consent-permanent': boolean; 'consent-rights': boolean }) =>
+    access?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'include-notes': boolean; declare?: 'own' | 'public' | 'licensed'; 'consent-permanent': boolean; 'consent-rights': boolean }) =>
     teachData.teachPublish(ctx, a['job-id'], {
       key: a.key, keyFile: a['key-file'], name: a.name, price: a.price, license: a.license, description: a.description, payout: a.payout,
-      access: a.access, datasetLicense: a['dataset-license'], includeNotes: a['include-notes'],
+      access: a.access, datasetLicense: a['dataset-license'], includeNotes: a['include-notes'], declare: a.declare,
       consentPermanent: a['consent-permanent'], consentRights: a['consent-rights'],
     })))
 
@@ -472,12 +475,13 @@ cli.command('use <id>', 'One line to use knowledge: check it is verified → quo
   .option('apply', { type: 'boolean', default: true, describe: 'load into the serving model after download (--no-apply to only download)' })
   .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
   .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
-  .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it' })
+  .option('bundle', { type: 'boolean', default: false, describe: 'buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked' })
+  .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
   .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
   .example('$0 use krx-all-2761', 'quote, ask, pay, download, load')
   .example('$0 use krx-all-2761 --yes --max-price 30', 'unattended, with a budget'),
-run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
-  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a['with-base'] })));
+run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
+  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'] })));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
