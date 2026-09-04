@@ -281,7 +281,12 @@ export async function withProgress<T>(ctx: CliContext, label: string, fn: (p: Pr
   const tty = !!process.stderr.isTTY;
   const silent = ctx.json || ctx.quiet;
   let tail: string | null = null;
-  const p: Progress = { note: (m) => { tail = m; if (!silent && !tty && m) process.stderr.write(c.dim(`… ${m}\n`)); } };
+  let lastLine = 0;
+  const p: Progress = { note: (m) => {
+    tail = m;
+    // a log file gets the queue when it changes and at most every 30 s, not a new line every poll
+    if (!silent && !tty && m && Date.now() - lastLine > 30_000) { lastLine = Date.now(); process.stderr.write(c.dim(`… ${m}\n`)); }
+  } };
   if (silent) return fn(p);
   const t0 = Date.now();
   let frame = 0;
@@ -289,14 +294,15 @@ export async function withProgress<T>(ctx: CliContext, label: string, fn: (p: Pr
   const secs = () => Math.round((Date.now() - t0) / 1000);
   const clear = () => { if (tty && printed) { process.stderr.write('\r' + ' '.repeat(printed) + '\r'); printed = 0; } };
   const draw = () => {
-    const line = `${FRAMES[frame++ % FRAMES.length]} ${label} ${secs()}s${tail ? ` · ${tail}` : ''}`;
+    // one line, never wider than the terminal: a wrapped spinner cannot be erased by a carriage return
+    const line = clip(`${FRAMES[frame++ % FRAMES.length]} ${label} · ${secs()}s${tail ? ` · ${tail}` : ''}`, Math.max(20, (process.stderr.columns || 80) - 1));
     clear();
     process.stderr.write(c.dim(line));
     printed = width(line);
   };
   const timer = tty
     ? setInterval(draw, 100)
-    : setInterval(() => process.stderr.write(c.dim(`… still waiting for ${label} (${secs()}s)${tail ? ` · ${tail}` : ''}\n`)), 30_000);
+    : setInterval(() => { lastLine = Date.now(); process.stderr.write(c.dim(`… still waiting for ${label} (${secs()}s)${tail ? ` · ${tail}` : ''}\n`)); }, 30_000);
   timer.unref?.();
   try {
     if (tty) draw();

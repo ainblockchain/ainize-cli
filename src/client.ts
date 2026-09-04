@@ -2,13 +2,58 @@
  * Thin HTTP client for a marketplace node's API (mirrors ainize-cli's axios calls, on global fetch).
  */
 import { CliError, PROG, type CliContext } from './context.js';
+import { withProgress, type Progress } from './output.js';
 
-export interface RequestOptions { method?: string; body?: unknown; headers?: Record<string, string>; timeoutMs?: number; raw?: boolean; auth?: boolean; }
+export interface RequestOptions { method?: string; body?: unknown; headers?: Record<string, string>; timeoutMs?: number; raw?: boolean; auth?: boolean; progress?: boolean; }
+
+/** A request whose own timeout is a minute or more is one a person sits and waits for (item 105). */
+const SLOW_MS = 60_000;
+
+/**
+ * What the terminal is waiting for, in the words of the thing being waited on (item 105). Every heavy verb was a
+ * single awaited fetch that printed nothing until it finished — up to 30 minutes of blank terminal, indistinguishable
+ * from a hang, on a shared GPU somebody else may be holding.
+ */
+function slowLabel(method: string, path: string): string | null {
+  if (/\/api\/chat$/.test(path)) return 'the live test';
+  if (/\/verify$/.test(path)) return 'verification';
+  if (/\/challenge$/.test(path)) return 'the challenge';
+  if (/\/buy$/.test(path)) return 'the purchase';
+  if (/\/collect$/.test(path)) return 'the download';
+  if (/\/(apply|remove)$/.test(path)) return 'the model';
+  if (/\/subscribe$/.test(path)) return 'the subscription';
+  return `${method} ${path}`;
+}
+
+/** Requests that queue behind the one shared serving model, and can therefore say who is holding it up. */
+const LOCK_BOUND = /\/api\/chat$|\/verify$|\/(apply|remove)$|\/subscribe$/;
+
+/** `GET /api/chat/status` — free, unauthenticated, and it reports the shared model's lock and queue to anyone. */
+interface QueueView { lock: { label: string; owner: string; since: number } | null; waiting: number; now: number }
 
 export class NodeClient {
   constructor(private readonly ctx: CliContext) {}
 
   get baseUrl(): string { return this.ctx.nodeUrl; }
+
+  /**
+   * Ask the node, while a slow request is in flight, what is in front of it. The queue and the lock are node facts
+   * (`GET /api/chat/status`, free and quota-free), so the line the terminal shows is measured, never guessed. A node
+   * that does not answer it leaves the elapsed clock to stand on its own.
+   */
+  private async followQueue(p: Progress, stop: { done: boolean }): Promise<void> {
+    const id = `cli-${Math.random().toString(36).slice(2, 10)}`;
+    for (let i = 0; !stop.done; i++) {
+      await new Promise((r) => setTimeout(r, i === 0 ? 1200 : 3000));
+      if (stop.done) return;
+      try {
+        const q = await this.get<QueueView>(`/api/chat/status?request_id=${id}`, { timeoutMs: 5000, auth: false, progress: false });
+        if (stop.done) return;
+        const held = q.lock ? Math.round((q.now - q.lock.since) / 1000) : 0;
+        p.note(q.lock ? `model busy: ${q.lock.label} (${held}s)${q.waiting ? `, ${q.waiting} ahead` : ''}` : null);
+      } catch { return; }   // an older node has no such route; the clock alone is still better than silence
+    }
+  }
 
   async request<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
     const url = path.startsWith('http') ? path : `${this.ctx.nodeUrl}${path.startsWith('/') ? '' : '/'}${path}`;
@@ -17,12 +62,21 @@ export class NodeClient {
     if (opts.auth !== false && this.ctx.token) headers.authorization = `Bearer ${this.ctx.token}`;
     let res: Response;
     const t0 = Date.now();
+    const method = opts.method ?? (opts.body !== undefined ? 'POST' : 'GET');
+    const send = () => fetch(url, {
+      method,
+      headers,
+      body: opts.body === undefined ? undefined : opts.body instanceof FormData ? opts.body : JSON.stringify(opts.body),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+    });
     try {
-      res = await fetch(url, {
-        method: opts.method ?? (opts.body !== undefined ? 'POST' : 'GET'),
-        headers,
-        body: opts.body === undefined ? undefined : opts.body instanceof FormData ? opts.body : JSON.stringify(opts.body),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+      // Item 105: a request the caller is prepared to wait a minute or more for says so, once a second, on stderr —
+      // with the shared model's own queue when it is what we are waiting for. stdout stays pipe-clean.
+      const label = opts.progress === false || (opts.timeoutMs ?? 0) < SLOW_MS ? null : slowLabel(method, new URL(url).pathname);
+      res = label === null ? await send() : await withProgress(this.ctx, `waiting for ${label}`, async (p) => {
+        const stop = { done: false };
+        if (LOCK_BOUND.test(new URL(url).pathname)) void this.followQueue(p, stop);
+        try { return await send(); } finally { stop.done = true; }
       });
     } catch (e) {
       const msg = (e as Error).message;
