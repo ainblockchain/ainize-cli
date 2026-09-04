@@ -396,7 +396,7 @@ async function assertBasesUsable(s: TeachSession, ids: string[]): Promise<void> 
 async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts): Promise<CreateJobResult> {
   const patchIds = (opts.patch ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   const baseIds = (opts.on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  if (baseIds.length > 1) throw new CliError('--on takes one knowledge — combining two is `ainize patch merge`, which is not on this node yet');
+  if (baseIds.length > 1) throw new CliError(`--on takes one knowledge — combining two is \`${PROG} patch merge ${baseIds[0]} ${baseIds[1]}\``);
   const body = {
     dataset_id: datasetId,
     // `--patch` alone keeps meaning "loaded for comparison"; with `--on` the base is what the lesson is built on and
@@ -620,4 +620,116 @@ export function renderPublished(r: PublishResult): string {
     lines.push('', c.dim(`${v.verifiers} verifier peer(s) reachable — it goes on sale when ${v.quorum} of them agree.`));
   }
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------- patch merge (design §9, §13)
+export interface MergePreview {
+  a: { id: string; name: string; questions: number | null }; b: MergePreview['a'];
+  questions: { a_only: number; b_only: number; same: number; conflicts: { key: string; prompt: string; a_answer: string; b_answer: string }[] } | null;
+  rows: { a_only: number; b_only: number; shared: number; disagree: number; opposing: number; before_differs: number };
+  merged: { rows: number; from_a: number; from_b: number; targets: number } | null;
+  tiers: {
+    union: { allowed: boolean; reason?: string; export?: string };
+    retrain: { allowed: boolean; reason?: string; est_min: number | null };
+    rebuild: { allowed: boolean; reason?: string; est_min: number | null };
+    required: string | null; disagree_ratio: number;
+  };
+  licenses: { a: string | null; b: string | null; child_min: string | null };
+  private_parent?: string;
+}
+export type MergeResolutionInput = 'a' | 'b' | 'drop' | { answer: string };
+export interface MergeResult extends Partial<CreateJobResult> { node: string; preview: MergePreview; a: string; b: string; tier?: string }
+
+const TIERS = ['union', 'retrain', 'rebuild'] as const;
+const TIER_COPY: Record<string, string> = {
+  union: 'just combine — no training', retrain: 'retrain the disagreeing questions on top of both', rebuild: 'rebuild everything from the combined questions',
+};
+
+/**
+ * `ainize patch merge <a> <b>` — combine two knowledges (design §13).
+ *
+ * It always measures first and prints what it measured: how the two training sets overlap, how the two FILES overlap,
+ * and which of the three builds is possible. `--preview` stops there. Without a resolution for every question the two
+ * answer differently the command refuses and prints those questions as JSON on stdout with exit code 3 — that file,
+ * with an answer chosen for each key, is what `--resolve` takes back.
+ */
+export async function patchMerge(ctx: CliContext, a: string, b: string, opts: KeyOpts & { preview?: boolean; resolve?: string; tier?: string; name?: string; wait?: boolean } = {}): Promise<MergeResult> {
+  const s = await TeachSession.open(ctx, opts);
+  await assertBasesUsable(s, [a, b]);
+  const preview = await s.post<MergePreview>('/api/teach/merge/preview', { a, b });
+  const base: MergeResult = { node: s.client.baseUrl, preview, a, b };
+  if (opts.preview) { emit(ctx, base, (d) => renderMergePreview(d.preview)); return base; }
+
+  if (opts.tier && !TIERS.includes(opts.tier as typeof TIERS[number])) throw new CliError(`--tier must be one of ${TIERS.join(' | ')}`);
+  const tier = opts.tier ?? preview.tiers.required ?? (preview.tiers.union.allowed ? 'union' : preview.tiers.retrain.allowed ? 'retrain' : 'rebuild');
+  const resolutions = opts.resolve ? readResolutions(opts.resolve) : {};
+  const open = (preview.questions?.conflicts ?? []).filter((x) => resolutions[x.key] === undefined);
+  if (open.length) {
+    // stdout stays machine-readable on purpose: this file IS the input of `--resolve`
+    process.stdout.write(`${JSON.stringify(Object.fromEntries(open.map((x) => [x.key, { prompt: x.prompt, a_answer: x.a_answer, b_answer: x.b_answer, choose: 'a | b | drop | {"answer": "…"}' }])), null, 1)}\n`);
+    throw new CliError(`${open.length} question(s) are answered differently by ${a} and ${b}. Save the JSON above, put "a", "b", "drop" or {"answer": "…"} in place of each \`choose\`, and run again with --resolve <file>.`, 3, { conflicts: open });
+  }
+  const created = await s.post<CreateJobResult>('/api/teach/jobs', {
+    patch_ids: [], base_ids: [a, b], mode: 'merge', tier, resolutions,
+    ...(opts.name ? { name: opts.name } : {}), ...(s.key.name ? { contributor: { name: s.key.name } } : {}),
+  });
+  let out: MergeResult = { ...base, ...created, tier };
+  if (opts.wait) {
+    const done = await waitForJob(s, created.job.id, ctx);
+    out = { ...out, job: done };
+    process.exitCode = EXIT_FOR_STATUS[done.status] ?? 0;
+  }
+  emit(ctx, out, (d) => [
+    renderMergePreview(d.preview),
+    '',
+    c.ok('✓ ') + `${TIER_COPY[d.tier ?? 'union']}: lesson ${c.id(d.job!.id)} queued`,
+    c.dim(`watch it:   ${PROG} teach status ${d.job!.id}`),
+    c.dim(`publish it: ${PROG} teach publish ${d.job!.id} --dataset-access derivative --dataset-license ${d.preview.licenses.child_min ?? 'CC-BY-4.0'}`),
+  ].join('\n'));
+  return out;
+}
+
+function readResolutions(path: string): Record<string, MergeResolutionInput> {
+  if (!existsSync(path)) throw new CliError(`no such file: ${path}`);
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { throw new CliError(`${path} is not JSON: ${(e as Error).message}`); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new CliError(`${path} must be an object of {"<question key>": "a" | "b" | "drop" | {"answer": "…"}}`);
+  const out: Record<string, MergeResolutionInput> = {};
+  for (const [key, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (v === 'a' || v === 'b' || v === 'drop') { out[key] = v; continue; }
+    const answer = (v as { answer?: unknown })?.answer;
+    if (typeof answer === 'string' && answer.trim()) { out[key] = { answer }; continue; }
+    // a key still carrying the `choose` placeholder is not a choice — say which one, rather than sending it
+    throw new CliError(`no answer chosen for "${(v as { prompt?: string })?.prompt ?? key}" — put "a", "b", "drop" or {"answer": "…"} there`);
+  }
+  return out;
+}
+
+function renderMergePreview(p: MergePreview): string {
+  const tier = (name: 'union' | 'retrain' | 'rebuild') => {
+    const t = p.tiers[name];
+    const est = 'est_min' in t && t.est_min !== null ? c.dim(` ~${t.est_min} min`) : name === 'union' ? '' : c.dim(' (this node has never timed one)');
+    const mark = t.allowed ? c.ok('✓') : c.err('✗');
+    const why = t.allowed ? '' : c.dim(` — ${t.reason}`);
+    return `  ${mark} ${TIER_COPY[name]}${est}${why}${p.tiers.required === name ? c.warn('  ← required') : ''}`;
+  };
+  return [
+    `${c.id(p.a.id)} + ${c.id(p.b.id)}`,
+    p.questions
+      ? kv([
+        ['questions', `${p.questions.a_only} only in ${p.a.id} · ${p.questions.b_only} only in ${p.b.id} · ${p.questions.same} the same · ${p.questions.conflicts.length} same question, different answer`],
+        ['rows', `${p.rows.a_only} only in ${p.a.id} · ${p.rows.b_only} only in ${p.b.id} · ${p.rows.shared} written by both (${p.rows.disagree} disagree)`],
+        ['combined set', p.merged ? `${p.merged.rows} question(s) — ${p.merged.from_a} from ${p.a.id}, ${p.merged.from_b} from ${p.b.id}` : '—'],
+        ['licence', `${p.licenses.a ?? '—'} + ${p.licenses.b ?? '—'} → ${p.licenses.child_min ?? 'your choice'}`],
+      ])
+      : kv([
+        ['questions', c.dim(`${p.private_parent} keeps its questions private — only the rows can be compared`)],
+        ['rows', `${p.rows.a_only} only in ${p.a.id} · ${p.rows.b_only} only in ${p.b.id} · ${p.rows.shared} written by both (${p.rows.disagree} disagree)`],
+      ]),
+    '',
+    tier('union'), tier('retrain'), tier('rebuild'),
+    ...(p.questions?.conflicts.length ? ['', c.warn(`${p.questions.conflicts.length} question(s) need an answer:`),
+      ...p.questions.conflicts.slice(0, 5).map((x) => `  ${x.prompt}\n    ${p.a.id}: ${x.a_answer}\n    ${p.b.id}: ${x.b_answer}`),
+      ...(p.questions.conflicts.length > 5 ? [c.dim(`  … and ${p.questions.conflicts.length - 5} more`)] : [])] : []),
+  ].join('\n');
 }

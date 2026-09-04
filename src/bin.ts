@@ -293,6 +293,19 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .example('$0 patch fork krx-all-2761 --name "KRX + biotech"', 'start from its questions')
     .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
   run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
+  .command('merge <a> <b>', 'Combine two knowledges into one: what overlaps, what they answer differently, and how to build it', (yy: Y) => yy
+    .positional('a', { type: 'string', demandOption: true }).positional('b', { type: 'string', demandOption: true })
+    .option('preview', { type: 'boolean', default: false, describe: 'only measure: questions, rows and which builds are possible' })
+    .option('resolve', { type: 'string', describe: 'JSON file of {"<question key>": "a" | "b" | "drop" | {"answer": "…"}}' })
+    .option('tier', { type: 'string', choices: ['union', 'retrain', 'rebuild'], describe: 'union = just combine (no training) · retrain = teach the disagreeing questions on top of both · rebuild = train everything from the combined questions' })
+    .option('name', { type: 'string', describe: 'name for the combined knowledge' })
+    .option('wait', { type: 'boolean', default: false, describe: 'wait for the build and exit with its status' })
+    .option('key-file', { type: 'string', describe: 'teaching key file (default: <home>/teaching-key.json)' })
+    .option('key', { type: 'string', describe: 'teaching key as hex / json (or NGRAM_TEACH_KEY)' })
+    .example('$0 patch merge krx-all-2761 pixelplus --preview', 'what combining them would mean')
+    .example('$0 patch merge krx-all-2761 pixelplus --resolve answers.json --tier retrain', 'after choosing an answer for each disagreement (unresolved ones print as JSON, exit 3)'),
+  run((ctx, a: G & { a: string; b: string; preview?: boolean; resolve?: string; tier?: string; name?: string; wait?: boolean; key?: string; 'key-file'?: string }) =>
+    teachData.patchMerge(ctx, a.a, a.b, { preview: a.preview, resolve: a.resolve, tier: a.tier, name: a.name, wait: a.wait, key: a.key, keyFile: a['key-file'] })))
   .command('tree <id>', 'The family tree: what this was built on, what was built on it, and what each one added', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
     .option('depth', { type: 'number', default: 4, describe: 'how many hops in each direction (max 8)' })
