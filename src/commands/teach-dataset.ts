@@ -357,7 +357,7 @@ function trainingSpec(opts: TrainOpts): Record<string, unknown> | undefined {
  * that reads like an internal validation tag and names no remedy. The refusal now happens before the upload and says
  * which of the two problems it is: this node has never heard of that id, or it is listed here and its file is not.
  */
-interface BaseCheck { id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held'; price?: string; currency?: string; status?: string }
+interface BaseCheck { id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held' | 'not_licensed'; price?: string; currency?: string; status?: string }
 
 async function assertBasesUsable(s: TeachSession, ids: string[]): Promise<void> {
   for (const id of ids) {
@@ -371,6 +371,14 @@ async function assertBasesUsable(s: TeachSession, ids: string[]): Promise<void> 
       throw err;
     }
     if (e.usable) continue;
+    // Item 327: the file is here, but only because this node verified it — scoring is not a licence to build on it.
+    if (e.reason === 'not_licensed') {
+      const price = e.price && Number(e.price) > 0 ? `${e.price} ${e.currency ?? ''}`.trim() : 'free';
+      throw new CliError([
+        `${e.name ?? id} is on ${s.client.baseUrl}, but this node has not bought it — its file is here because this node verified it, and scoring a knowledge is not a licence to teach on top of it.`,
+        `Buy it first: \`${PROG} patch buy ${id}\` (${price}), then run this again.`,
+      ].join('\n'), 2);
+    }
     if (e.reason === 'not_held') {
       const price = e.price && Number(e.price) > 0 ? `${e.price} ${e.currency ?? ''}`.trim() : 'free';
       throw new CliError([
