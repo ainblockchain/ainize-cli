@@ -12,6 +12,12 @@ import { ask, c, confirm, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shor
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
 
+/** Position in the serving model's stack, by knowledge id (`GET /api/runtime/stack`) — item 216. */
+export async function loadedPositions(client: NodeClient): Promise<Map<string, number>> {
+  const r = await client.get<{ stack: StackLayer[] }>('/api/runtime/stack').catch(() => null);
+  return new Map((r?.stack ?? []).map((l, i) => [l.patch_id, i + 1]));
+}
+
 export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogEntry[]> {
   const client = new NodeClient(ctx);
   let items: CatalogEntry[];
@@ -21,20 +27,32 @@ export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogE
     const d = await client.get<{ items: CatalogEntry[]; total: number }>(`/api/catalog${query({ status: a.status, model: a.model, schema: a.schema, branch: a.branch, author: a.author, q: a.q, sort: a.sort ?? 'latest', limit: a.limit ?? 100, include_drafts: a.drafts })}`);
     items = d.items;
   }
+  const loaded = await loadedPositions(client);
+  // Item 114: `--name` is the field the publisher chooses and the web renders as the card title, and this listing —
+  // the one place a publisher tells their own drafts apart — did not have it. MODEL goes when every row shares one.
+  const oneModel = new Set(items.map((e) => e.anchor.model.id_M)).size <= 1;
+  const filtered = !!(a.status || a.model || a.schema || a.branch || a.author || a.q);
+  const empty = a.mine
+    ? `you have not published anything on this node yet — \`${PROG} publish <file.npz> --name "<name>" --model <id_M> --benchmark <bench.json>\``
+    : filtered ? 'no knowledge matches those filters'
+      : `no knowledge on this node yet — publish one with \`${PROG} publish <file.npz> --name "<name>" --model <id_M> --benchmark <bench.json>\`, or add a peer that sells some (\`${PROG} peers add <node url>\`)`;
   emit(ctx, items, (rows) => table(rows, [
     { key: 'id', title: 'ID', get: (e) => c.id(e.anchor.id) },
+    { key: 'name', title: 'NAME', get: (e) => e.anchor.name },
     { key: 'status', title: 'STATUS', get: (e) => statusColor(e.status) },
+    // Item 216 — "what is loaded here, in what order" was answerable from no listing at all.
+    { key: 'loaded', title: 'LOADED', get: (e) => (loaded.has(e.anchor.id) ? c.ok(`#${loaded.get(e.anchor.id)}`) : c.dim('-')), align: 'right' },
     { key: 'author', title: 'AUTHOR', get: (e) => (!e.anchor.author.startsWith('0x') ? e.anchor.author : e.anchor.author_name ? `${e.anchor.author_name} ${c.dim(shortAddr(e.anchor.author, 4))}` : shortAddr(e.anchor.author, 6)) },
-    { key: 'model', title: 'MODEL', get: (e) => e.anchor.model.id_M },
-    { key: 'rows', title: 'ROWS', get: (e) => e.anchor.rows.toLocaleString('en-US'), align: 'right' },
-    { key: 'size', title: 'SIZE', get: (e) => fmtBytes(e.anchor.size_bytes), align: 'right' },
-    { key: 'price', title: 'PRICE', get: (e) => `${e.anchor.price} ${e.anchor.currency}`, align: 'right' },
+    ...(oneModel ? [] : [{ key: 'model', title: 'MODEL', get: (e: CatalogEntry) => e.anchor.model.id_M }]),
+    { key: 'rows', title: 'ROWS', get: (e) => e.anchor.rows.toLocaleString('en-US'), align: 'right' as const },
+    { key: 'size', title: 'SIZE', get: (e) => fmtBytes(e.anchor.size_bytes), align: 'right' as const },
+    { key: 'price', title: 'PRICE', get: (e) => `${e.anchor.price} ${e.anchor.currency}`, align: 'right' as const },
     // The numerator never exceeds the quorum (`3/2` is not a fraction anyone can read); extra independent
     // attestations are shown as `2/2+1`, and self-checks by the author are never in this count at all.
-    { key: 'att', title: 'ATTEST', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s) : c.warn(s); }, align: 'right' },
-    { key: 'dl', title: 'SOLD', get: (e) => String(e.downloads), align: 'right' },
+    { key: 'att', title: 'ATTEST', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s) : c.warn(s); }, align: 'right' as const },
+    { key: 'dl', title: 'SOLD', get: (e) => String(e.downloads), align: 'right' as const },
     { key: 'schema', title: 'BENCHMARK', get: (e) => e.anchor.benchmark.schema },
-  ], 'no patches match'));
+  ], empty) + (loaded.size ? '\n' + c.dim(`loaded in the serving model, in order: ${[...loaded.entries()].sort((x, y) => x[1] - y[1]).map(([id, n]) => `${n} ${id}`).join(' → ')} (${PROG} patch stack)`) : ''));
   return items;
 }
 
@@ -77,19 +95,60 @@ export interface PatchDetail extends CatalogEntry {
   } | null;
 }
 
+/**
+ * Holding a file is not owning the knowledge (items 173, 343).
+ *
+ * A verifier fetches every body it scores, so `body on this node: yes` was true on knowledge nobody had bought and
+ * nobody was licensed to use, teach on, or subscribe with — and `patch buy` then charged for it and reported
+ * "body already present", which reads as "nothing happened". The node has known the difference all along
+ * (`licenseOf(e).source === 'verification'`); this is that fact, in the buyer's words.
+ */
+export function licenceLine(e: { owned: boolean; purchased: boolean; has_body: boolean }, tx?: string | null): string {
+  if (e.owned) return c.ok('yours — you published it');
+  if (e.purchased) return c.ok(`bought by this node${tx ? ` · tx ${shortHash(tx, 14)}` : ''}`);
+  if (e.has_body) return c.warn('NOT bought — the file is here because this node verified it, and verifying is not a licence to use, teach on or subscribe with');
+  return 'not bought';
+}
+
+/** Names for the addresses a settlement pays, so the ROYALTY column is not a column of hex (item 198). */
+async function royaltyNames(client: NodeClient, d: PatchDetail): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const put = (addr?: string | null, name?: string | null) => { if (addr && name) names.set(addr.toLowerCase(), name); };
+  put(d.anchor.author, d.anchor.author_name);
+  for (const cn of d.anchor.contributors ?? []) put(cn.address, cn.name ?? null);
+  for (const r of d.requires ?? []) put(r.author, r.author_name ?? null);
+  const owed = new Set(d.settlements.flatMap((s) => Object.keys(s.royalty)).map((x) => x.toLowerCase()));
+  if ([...owed].every((x) => names.has(x))) return names;
+  // The tree endpoint resolves every recipient of the family's split, lineage and contributors alike.
+  const tree = await client.get<TreeView>(`/api/patches/${encodeURIComponent(d.anchor.id)}/tree${query({ depth: 4 })}`).catch(() => null);
+  for (const r of tree?.money.recipients ?? []) put(r.address, r.name);
+  return names;
+}
+
 export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail> {
-  const d = await new NodeClient(ctx).get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`);
+  const client = new NodeClient(ctx);
+  const d = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`);
+  // The receipt for a knowledge this node bought (operator-only; a visitor simply gets no tx hash).
+  const tx = d.purchased && !d.owned
+    ? (await client.get<{ items: { patch_id: string; tx_hash: string }[] }>('/api/me/purchases').catch(() => null))?.items.find((p) => p.patch_id === d.anchor.id)?.tx_hash ?? null
+    : null;
+  const names = d.settlements.length ? await royaltyNames(client, d) : new Map<string, string>();
+  const who = (addr: string) => names.get(addr.toLowerCase()) ?? shortAddr(addr, 4);
   emit(ctx, d, (e) => {
     const a = e.anchor;
     const lines = [
       c.bold(a.name) + '  ' + statusColor(e.status) + (e.owned ? c.dim('  (yours)') : '') + (e.purchased ? c.ok('  purchased') : '') + (e.applied ? c.ok('  applied') : ''),
       kv([
         ['id', a.id], ['author', `${a.author_name ?? ''} ${a.author}`.trim()], ['model', `${a.model.id_M}${a.model.checkpoint_hash ? ` (${a.model.checkpoint_hash})` : ''}`],
+        // Item 198 — a lesson's data provider was on the record and on the web page, and in no terminal output.
+        ...(a.contributors?.length ? [['taught by', a.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} (${Math.round(x.share * 100)}% of this node's share of each sale${x.proof === 'signed' ? ', signed' : ''})`).join(', ')] as [string, unknown]] : []),
         ['rows / size', `${a.rows.toLocaleString('en-US')} rows · ${fmtBytes(a.size_bytes)}`], ['sha256', a.patch_sha256],
         ['price', `${a.price} ${a.currency} · ${a.billing}`], ['benchmark', `${a.benchmark.schema} · ${a.benchmark.queries} queries · ${a.benchmark.format.join('/')}${a.benchmark.collateral_bound_nat ? ` · collateral ≤ ${a.benchmark.collateral_bound_nat} nat` : ''}`],
         ['benchmark hash', a.benchmark_hash], ['topic', a.topic_path], ['branch', a.branch ?? '-'], ['gateway', e.gateway_url ?? '-'],
         ['verification', verificationLine(e)], ['sold', `${e.downloads} · revenue ${e.revenue} ${a.currency}`],
-        ['created', fmtTime(a.created_at)], ['body on this node', e.has_body ? 'yes' : 'no'],
+        ['created', fmtTime(a.created_at)],
+        // Items 173 / 343: what this node may DO with it, before the line that says whether the file is here.
+        ['licence', licenceLine(e, tx)], ['body on this node', e.has_body ? 'yes' : 'no'],
       ]),
       '', a.description ? a.description : c.dim('(no description)'),
     ];
@@ -144,7 +203,8 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
       lines.push('', c.head('settlements'), table(e.settlements.slice(-10), [
         { key: 'b', title: 'BUYER', get: (s) => shortAddr(s.buyer, 8) }, { key: 'a', title: 'AMOUNT', get: (s) => `${s.amount} ${s.currency}`, align: 'right' },
         { key: 'sch', title: 'SCHEME', get: (s) => s.scheme }, { key: 'tx', title: 'TX', get: (s) => shortHash(s.tx_hash, 14) },
-        { key: 'r', title: 'ROYALTY', get: (s) => Object.entries(s.royalty).map(([k, v]) => `${shortAddr(k, 4)}:${v}`).join(' ') }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
+        // Item 198 — `0x1111…1111:0.75` named nobody. The recipients are resolved from the record itself.
+        { key: 'r', title: 'ROYALTY', get: (s) => Object.entries(s.royalty).map(([k, v]) => `${who(k)}:${v}`).join(' ') }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
       ]));
     }
     return lines.filter((l) => l !== '').join('\n');
@@ -360,8 +420,32 @@ export async function patchRetire(ctx: CliContext, id: string, opts: { reason?: 
   return r;
 }
 
+/**
+ * A Python traceback from the model container, turned into one English line (item 160).
+ *
+ * `Runtime.verify` rethrows the applier's stderr verbatim, so a failed verification reached the operator as eight
+ * lines of `scripts/patch.py` and `engram/live.py` internals ending in a Korean sentence — a stack trace from a file
+ * they do not own, in a language the rest of the product does not use, with no statement of what failed or where to
+ * look. The trace is not hidden (its last line is the container's own words, quoted as such); it is framed.
+ */
+export function runtimeFailure(err: unknown, nodeUrl: string, what: string): unknown {
+  const e = err as CliError;
+  const msg = String(e?.message ?? '');
+  if (!/Traceback \(most recent call last\)|^apply failed:|patch hook reported failure/m.test(msg)) return err;
+  const lines = msg.trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] ?? msg;
+  const frames = [...msg.matchAll(/File "([^"]+)", line (\d+)/g)].map((m) => `${m[1]}:${m[2]}`);
+  return new CliError([
+    `cannot load ${what} into the model served by ${nodeUrl} — the patch hook in the model container refused the write.`,
+    `  the container said: ${last}`,
+    ...(frames.length ? [c.dim(`  it stopped in ${frames[frames.length - 1]}; the whole trace is in the node's own log (${PROG} logs --limit 50)`)] : [c.dim(`  the whole trace is in the node's own log (${PROG} logs --limit 50)`)]),
+    c.dim(`  nothing was attested and nothing about the knowledge changed; this node's verifier loop tries again on its own (${PROG} logs --kind verifier).`),
+  ].join('\n'), e?.exitCode ?? 1, e?.details);
+}
+
 export async function patchVerify(ctx: CliContext, id: string): Promise<unknown> {
-  const r = await new NodeClient(ctx).post<{ attestation: { passed: boolean; score: Record<string, unknown>; verified_on: string } }>(`/api/patches/${encodeURIComponent(id)}/verify`, {}, { timeoutMs: 30 * 60_000 });
+  const r = await new NodeClient(ctx).post<{ attestation: { passed: boolean; score: Record<string, unknown>; verified_on: string } }>(`/api/patches/${encodeURIComponent(id)}/verify`, {}, { timeoutMs: 30 * 60_000 })
+    .catch((err) => { throw runtimeFailure(err, ctx.nodeUrl, id); });
   emit(ctx, r, (x) => `${x.attestation.passed ? c.ok('PASS') : c.err('FAIL')} ${id} on ${x.attestation.verified_on}  ${c.dim(JSON.stringify(x.attestation.score))}`);
   return r;
 }
@@ -480,6 +564,16 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
     ].join('\n'));
     return done;
   }
+  /*
+   * Items 173 / 343 — the file is already here because this node VERIFIED it, and the purchase is about the licence,
+   * not the bytes. Said before the money moves (the node's own timeline then prints "body already present", which on
+   * its own reads as "nothing happened"), and said again afterwards, naming what the payment actually bought.
+   */
+  const heldUnlicensed = detail.has_body && !detail.purchased && !detail.owned;
+  if (heldUnlicensed) {
+    info(ctx, c.warn('! ') + `this node already holds the file for ${c.id(id)} — it fetched it to verify it, which is not a licence to use, teach on or subscribe with.`);
+    info(ctx, c.dim(`  buying records the licence on the ledger and pays ${detail.anchor.author_name ?? shortAddr(detail.anchor.author, 8)} ${quote.price} ${quote.currency}; nothing is downloaded twice.`));
+  }
   const { balance } = await printQuote(ctx, client, detail, quote);
   /**
    * The bases it cannot work without (design §13). The quote's `total` is the FAMILY price, and this command used to
@@ -502,9 +596,13 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   if (balance !== null && balance < pay) {
     throw new CliError(`this node holds ${balance} ${quote.currency} and the purchase costs ${bundle ? quote.total : quote.price} — nothing was bought`);
   }
-  await confirm(ctx, `Pay ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && named.length ? ` for ${named.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
+  await confirm(ctx, heldUnlicensed
+    ? `Pay ${quote.price} ${quote.currency} to license ${id} (the file is already here)? [y/N]`
+    : `Pay ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && named.length ? ` for ${named.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
+  const seller = detail.anchor.author_name ?? shortAddr(detail.anchor.author, 8);
   const r = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`,
-    { apply: !!o.apply, bundle, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 });
+    { apply: !!o.apply, bundle, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 })
+    .catch((err) => { throw refusalError(err, { seller, id, price: bundle ? quote.total : quote.price, currency: quote.currency, balance }); });
   emit(ctx, r, (x) => {
     const t0 = x.steps[0]?.at ?? Date.now();
     const cur = x.currency ?? quote.currency;
@@ -516,10 +614,40 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
       head,
       ...bought.map((pp) => c.dim(`  with its base ${pp.patch_id}: ${pp.amount} ${pp.currency}  tx ${shortHash(pp.tx_hash, 12)}`)),
       ...x.steps.map((s) => `  ${c.dim(`+${String(s.at - t0).padStart(5)}ms`)}  ${c.head(s.step.padEnd(9))} ${s.detail}`),
+      // Item 343: the node's own timeline says "body already present"; what the money bought is said here.
+      ...(heldUnlicensed ? [c.dim(`  the file was already on this node (fetched to verify it) — what ${x.total ?? x.amount} ${cur} bought is the licence: settlement ${shortHash(x.tx_hash, 16)}, and ${id} may now be used, taught on and subscribed with here`)] : []),
       c.dim(`  body: ${x.path}`),
     ].join('\n');
   });
   return r;
+}
+
+/**
+ * A seller's refusal, as a sentence (item 293).
+ *
+ * `market.buy` throws `payment rejected: 402 {"error":"insufficient credit: 2 < 5"}` and every surface printed it
+ * verbatim: at the moment a purchase fails, the buyer was shown a status code and a JSON blob. The seller's reasons
+ * are readable sentences on the other side; this unwraps them and names the seller, the balance and the price.
+ */
+export function refusalError(err: unknown, ctxInfo: { seller: string; id: string; price: string; currency: string; balance: number | null }): unknown {
+  const e = err as CliError;
+  const msg = String(e?.message ?? '');
+  const m = /^payment rejected: (\d{3}) ([\s\S]*)$/.exec(msg);
+  if (!m) return err;
+  let detail = m[2].trim();
+  try { const j = JSON.parse(detail) as { error?: string; message?: string }; detail = String(j.error ?? j.message ?? detail); } catch { /* the seller answered prose */ }
+  const credit = /insufficient credit:\s*([\d.]+)\s*<\s*([\d.]+)/.exec(detail);
+  const line = credit
+    ? `${ctxInfo.seller} refused the payment: this node has ${credit[1]} ${ctxInfo.currency} and ${ctxInfo.id} costs ${credit[2]}.`
+    : /transfer (not found|not executed)|no such transfer/i.test(detail)
+      ? `${ctxInfo.seller} could not confirm the payment on the chain (${detail}) — nothing was delivered; the transfer, if it went through, is on your wallet.`
+      : /does not sell|not for sale|unknown patch/i.test(detail)
+        ? `${ctxInfo.seller} does not sell ${ctxInfo.id} (${detail}) — \`${PROG} patch get ${ctxInfo.id}\` shows where it is sold today.`
+        : `${ctxInfo.seller} refused the payment (HTTP ${m[1]}): ${detail}`;
+  const next = credit && ctxInfo.balance !== null
+    ? `\n  this node's balance is ${ctxInfo.balance} ${ctxInfo.currency}; ${PROG} wallet shows where it comes from.`
+    : '';
+  return new CliError(line + next, e?.exitCode ?? 1, e?.details);
 }
 
 /**
@@ -577,7 +705,8 @@ async function runRuntimeJob(ctx: CliContext, kind: 'apply' | 'remove', id: stri
   let said = false;
   for (;;) {
     if (job.state === 'done') { ok(ctx, `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${job.result ?? ''}`); return job.result ?? ''; }
-    if (job.state === 'failed') throw new CliError(job.error ?? `${kind} failed`, job.status === 409 ? 5 : 1);
+    // A refusal from the model container arrives here as its own Python trace too (item 160).
+    if (job.state === 'failed') throw runtimeFailure(new CliError(job.error ?? `${kind} failed`, job.status === 409 ? 5 : 1), ctx.nodeUrl, id);
     if (!said && job.state === 'queued') {
       const holder = job.queue?.running ?? (job.queue?.lock ? { label: job.queue.lock.label, since: job.queue.lock.since } : null);
       info(ctx, c.dim(holder
@@ -598,17 +727,44 @@ export async function patchRemove(ctx: CliContext, id: string, opts: { cascade?:
   return runRuntimeJob(ctx, 'remove', id, { cascade: !!opts.cascade });
 }
 
-/** `ainize patch stack` — what is loaded in the serving model, bottom first, and what each layer sits on. */
+/** Why a layer is on the table, in the operator's words (`applied.reason`). */
+function layerReason(reason: string): string {
+  if (reason === 'manual') return 'loaded by hand';
+  if (reason.startsWith('subscription:')) return `loaded by the track ${reason.slice('subscription:'.length)}`;
+  if (reason.startsWith('chat:')) return 'loaded for a live test';
+  return `loaded: ${reason}`;
+}
+
+/**
+ * `ainize patch stack` — what is loaded in the serving model, bottom first, and what each layer sits on.
+ *
+ * Item 216: the position, why the layer is there and when it was loaded were all in the answer and none of them on
+ * screen, and the rows two neighbouring layers share — the thing that decides which of them the model actually
+ * answers from — were nowhere at all. Positions are 1-based here and in `patch ls`'s LOADED column, so the two
+ * listings cannot disagree about where a knowledge sits.
+ */
 export async function patchStack(ctx: CliContext): Promise<StackLayer[]> {
-  const r = await new NodeClient(ctx).get<{ stack: StackLayer[]; journal_dir: string | null }>('/api/runtime/stack');
+  const client = new NodeClient(ctx);
+  const r = await client.get<{ stack: StackLayer[]; journal_dir: string | null }>('/api/runtime/stack');
+  // What each layer shares with the one directly under it (the pair that decides an answer).
+  const shared = new Map<string, number>();
+  for (const [i, l] of r.stack.entries()) {
+    if (i === 0) continue;
+    const below = r.stack[i - 1].patch_id;
+    const conf = await client.get<{ conflicts: { patch_id: string; overlap_rows: number }[] }>(`/api/patches/${encodeURIComponent(l.patch_id)}/conflicts`).catch(() => null);
+    const hit = conf?.conflicts.find((x) => x.patch_id === below);
+    if (hit?.overlap_rows) shared.set(l.patch_id, hit.overlap_rows);
+  }
   emit(ctx, r.stack, () => {
     if (!r.stack.length) return c.dim('nothing is loaded in the serving model');
     return [
       ...r.stack.map((l, i) => [
-        `${String(i).padStart(2)}  ${l.patch_id}${l.name ? c.dim(` — ${l.name}`) : ''}`,
-        c.dim(`     ${l.rows !== null ? `${l.rows.toLocaleString()} rows · ` : ''}${l.export === 'delta' ? `add-on, needs ${l.base_stack.join(', ')} underneath` : l.export === 'squash' ? 'stand-alone build' : 'published before add-ons existed'}`),
+        `${`#${i + 1}`.padStart(3)}  ${l.patch_id}${l.name ? c.dim(` — ${l.name}`) : ''}`,
+        c.dim(`     ${l.rows !== null ? `${l.rows.toLocaleString()} rows · ` : ''}${layerReason(l.reason)} · ${fmtTime(l.applied_at)}`),
+        c.dim(`     ${l.export === 'delta' ? `add-on, needs ${l.base_stack.join(', ')} underneath` : l.export === 'squash' ? 'stand-alone build' : 'published before add-ons existed'}`),
+        shared.has(l.patch_id) ? c.warn(`     shares ${shared.get(l.patch_id)!.toLocaleString('en-US')} entries with ${r.stack[i - 1].patch_id} below it — this one answers on them`) : '',
         c.dim(`     ${l.journal ? 'can be unloaded without disturbing what is under it' : 'no journal — unloading it writes the model\'s own rows back'}${l.body_present ? '' : ' · body no longer on this node'}`),
-      ].join('\n')),
+      ].filter(Boolean).join('\n')),
       c.dim(`\nthe last line is on top: it wins on any row two of them share`),
     ].join('\n');
   });
@@ -732,13 +888,74 @@ export async function patchSignals(ctx: CliContext, id: string): Promise<{ netwo
   return { network: r.network, node: r.node };
 }
 
+/**
+ * `ainize patch conflicts <id>` — the bodies that write the same memory rows, and which of them is winning (item 216).
+ *
+ * The table used to print an overlap and stop, leaving the only question that matters — whose answer does the model
+ * actually give on those rows — unanswerable from any surface. An overlap decides nothing until both are loaded;
+ * when they are, the one loaded later wins, and that is what the row says.
+ */
 export async function patchConflicts(ctx: CliContext, id: string): Promise<PatchDetail['conflicts']> {
-  const r = await new NodeClient(ctx).get<{ conflicts: PatchDetail['conflicts'] }>(`/api/patches/${encodeURIComponent(id)}/conflicts`);
+  const client = new NodeClient(ctx);
+  const r = await client.get<{ conflicts: PatchDetail['conflicts'] }>(`/api/patches/${encodeURIComponent(id)}/conflicts`);
+  const loaded = await loadedPositions(client);
+  const mine = loaded.get(id) ?? null;
+  const verdict = (x: PatchDetail['conflicts'][number]) => {
+    const theirs = loaded.get(x.patch_id) ?? null;
+    if (theirs === null && mine === null) return c.dim('neither is loaded — nothing is overridden');
+    if (theirs === null) return c.dim(`only ${id} is loaded — its answers stand`);
+    if (mine === null) return c.warn(`${x.patch_id} is loaded and ${id} is not — the model answers from ${x.patch_id}`);
+    return theirs > mine
+      ? c.warn(`loaded above (#${theirs} > #${mine}): its answers win on the ${x.overlap_rows.toLocaleString('en-US')} shared rows`)
+      : c.ok(`loaded below (#${theirs} < #${mine}): ${id} wins on the ${x.overlap_rows.toLocaleString('en-US')} shared rows`);
+  };
   emit(ctx, r.conflicts, (rows) => table(rows, [
-    { key: 'p', title: 'PATCH', get: (x) => x.patch_id }, { key: 'o', title: 'SHARED ROWS', get: (x) => x.overlap_rows.toLocaleString('en-US'), align: 'right' },
+    { key: 'p', title: 'PATCH', get: (x) => x.patch_id },
+    { key: 'l', title: 'LOADED', get: (x) => (loaded.has(x.patch_id) ? c.ok(`#${loaded.get(x.patch_id)}`) : c.dim('-')), align: 'right' },
+    { key: 'o', title: 'SHARED ROWS', get: (x) => x.overlap_rows.toLocaleString('en-US'), align: 'right' },
     { key: 's', title: 'SAME SCHEMA', get: (x) => (x.same_schema ? c.warn('yes') : 'no') }, { key: 'st', title: 'STATUS', get: (x) => statusColor(x.status) },
-  ], 'no address-set overlap with any patch body held by this node'));
+    { key: 'w', title: 'WHICH ONE ANSWERS', get: verdict },
+  ], 'no address-set overlap with any patch body held by this node')
+    + `\n${c.dim(mine === null ? `${id} is not loaded in the serving model (${PROG} patch apply ${id})` : `${id} is loaded at #${mine} (${PROG} patch stack shows the whole stack)`)}`);
   return r.conflicts;
+}
+
+// ---------------------------------------------------------------- `ainize purchases` (items 216, 289)
+/** One purchase this node made, as `GET /api/me/purchases` reports it (the row plus the anchor it belongs to). */
+export interface PurchaseRowView {
+  patch_id: string; sha256: string; tx_hash: string; scheme: string; amount: string;
+  path: string | null; created_at: number; applied?: boolean;
+  entry?: (CatalogEntry & { anchor: PatchAnchor }) | null;
+}
+
+/**
+ * `ainize purchases` — what this node bought, from whom, for how much, and whether it is loaded.
+ *
+ * `patch ls --mine` is "knowledge I registered" and hid every purchase (item 216), so a buyer's own node could not
+ * list what it owned; and the purchase row itself names no counterparty (item 289), which is the first thing anyone
+ * needs for a refund, a dispute or an audit. The seller is resolved here from the anchor the same call returns.
+ */
+export async function purchasesLs(ctx: CliContext): Promise<PurchaseRowView[]> {
+  const client = new NodeClient(ctx);
+  const r = await client.get<{ items: PurchaseRowView[] }>('/api/me/purchases');
+  const loaded = await loadedPositions(client);
+  const seller = (p: PurchaseRowView) => {
+    const a = p.entry?.anchor;
+    if (!a) return c.dim('unknown — this node no longer holds that anchor');
+    return a.author_name ? `${a.author_name} ${c.dim(shortAddr(a.author, 4))}` : shortAddr(a.author, 8);
+  };
+  emit(ctx, r.items, (rows) => table(rows, [
+    { key: 'id', title: 'KNOWLEDGE', get: (p) => c.id(p.patch_id) },
+    { key: 'n', title: 'NAME', get: (p) => p.entry?.anchor.name ?? c.dim('-') },
+    { key: 'a', title: 'PAID', get: (p) => `${p.amount}${p.entry ? ` ${p.entry.anchor.currency}` : ''}`, align: 'right' },
+    { key: 'to', title: 'PAID TO', get: seller },
+    { key: 's', title: 'HOW', get: (p) => p.scheme },
+    { key: 'tx', title: 'TX', get: (p) => shortHash(p.tx_hash, 14) },
+    { key: 'l', title: 'LOADED', get: (p) => (loaded.has(p.patch_id) ? c.ok(`#${loaded.get(p.patch_id)}`) : c.dim('-')), align: 'right' },
+    { key: 'f', title: 'FILE', get: (p) => (p.path ? c.ok('here') : c.warn(`gone — ${PROG} patch download ${p.patch_id}`)) },
+    { key: 't', title: 'BOUGHT', get: (p) => fmtTime(p.created_at) },
+  ], `this node has not bought anything yet — \`${PROG} patch ls\` is the catalogue, \`${PROG} use <id>\` buys and loads one`));
+  return r.items;
 }
 
 export async function patchRecords(ctx: CliContext, id: string): Promise<LedgerRecord[]> {
@@ -751,9 +968,33 @@ export async function patchRecords(ctx: CliContext, id: string): Promise<LedgerR
   return r.records;
 }
 
-export async function patchRm(ctx: CliContext, id: string): Promise<void> {
-  await new NodeClient(ctx).delete(`/api/patches/${encodeURIComponent(id)}`);
-  ok(ctx, `draft ${id} deleted`);
+/**
+ * `ainize patch rm <id>` — delete a draft, after saying what goes (item 168).
+ *
+ * The friction was inverted twice over: the console makes you type the full id to delete a draft, while this
+ * command did it on one keystroke — no prompt, no `--yes`, no report of what was deleted, and no undo. The draft
+ * may be the only record of a lesson trained somewhere else, whose recipe the operator no longer has.
+ */
+export async function patchRm(ctx: CliContext, id: string, opts: { yes?: boolean } = {}): Promise<void> {
+  const client = new NodeClient(ctx);
+  const d = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
+  if (d && d.status !== 'DRAFT') {
+    throw new CliError(`${id} is ${d.status}, not a draft — a published knowledge cannot be deleted (its anchor is on the permanent record). Take it off sale with \`${PROG} patch retire ${id}\`, or stop serving the file with \`${PROG} patch forget ${id}\`.`);
+  }
+  if (d) {
+    const a = d.anchor;
+    info(ctx, [
+      `${c.id(id)} · ${a.name}`,
+      c.dim(`  ${a.rows.toLocaleString('en-US')} rows · ${fmtBytes(a.size_bytes)} · ${a.model.id_M} · benchmark ${a.benchmark.schema} (${a.benchmark.queries} questions)`),
+      c.dim(`  deleting it removes the name, the benchmark, the lineage and the price from this node — nothing was ever written to the ledger, and there is no undo.`),
+      d.has_body
+        ? c.dim(`  the knowledge FILE itself stays in this node's blob store (sha256 ${shortHash(a.patch_sha256, 12)}, \`${PROG} blobs ls\`); \`${PROG} patch forget\` is what deletes that.`)
+        : c.warn('  its body is not on this node'),
+    ].join('\n'));
+  }
+  await confirm(ctx, `Delete draft ${id}? [y/N]`, { yes: opts.yes });
+  await client.delete(`/api/patches/${encodeURIComponent(id)}`);
+  ok(ctx, `draft ${id} deleted${d ? c.dim(`  (${d.anchor.rows.toLocaleString('en-US')} rows, ${fmtBytes(d.anchor.size_bytes)}; the file is still in the blob store)`) : ''}`);
 }
 
 export interface SharedBody { id: string; name: string; status: string; sales: number }
@@ -804,7 +1045,22 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
     const ch = detail.open_challenge;
     throw new CliError(`${id} is CHALLENGED — a verifier disputes it, so it is not for sale until it is re-verified${ch ? `\n  ${shortAddr(ch.challenger, 8)}: "${ch.reason}" (${fmtTime(ch.created_at)})` : ''}\n  see the dispute: ainize patch get ${id}`);
   }
-  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet; try \`ainize patch get ${id}\``);
+  /*
+   * Item 263 — every non-LISTED status used to be reported as "not verified yet", so a finished, FAILED verification
+   * read as one still in progress and a script keyed on that sentence retried a rejected bake forever. A verification
+   * that is over says so, with what the verifiers answered, and exits 6 (the same code `teach train --wait` uses for
+   * REJECTED) so a cron line can tell "wait" from "this will never work".
+   */
+  if (detail.status === 'REJECTED') {
+    const fails = detail.attestations.filter((x) => !x.passed).length;
+    throw new CliError(`${id} FAILED verification — ${detail.passed}/${detail.quorum} passed, ${fails} verifier${fails === 1 ? '' : 's'} answered FAIL. It is not for sale and retrying will not change it: the network measured this build and rejected it.\n`
+      + `  what they answered:  ${PROG} patch get ${id}\n`
+      + `  ${detail.superseded_by.length ? `a newer build of the same subject: ${detail.superseded_by.join(', ')}` : 'wait for its publisher to bake a new one'}`, 6);
+  }
+  if (detail.status === 'RETIRED') {
+    throw new CliError(`${id} was withdrawn by its publisher${detail.retire_reason ? ` ("${detail.retire_reason}")` : ''} — off sale for good; everyone who already bought it keeps their copy.`, 6);
+  }
+  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet, so it cannot be bought here; the verifiers usually answer within a few minutes. Watch it with \`${PROG} patch get ${id}\``);
   if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
