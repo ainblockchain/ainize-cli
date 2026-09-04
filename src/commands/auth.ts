@@ -2,9 +2,14 @@
  * `ainize login|logout` — operator session (bearer token stored in NGRAM_HOME/cli.json).
  */
 import { createInterface } from 'node:readline';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { hashPassword, loadConfig, saveConfig } from '@ngram/core';
+import { Store } from '@ngram/node';
 import { NodeClient } from '../client.js';
-import { CliError, readState, writeState, type CliContext } from '../context.js';
-import { c, ok, shortAddr } from '../output.js';
+import { CliError, PROG, readState, writeState, type CliContext } from '../context.js';
+import { runningPid } from '../pid.js';
+import { c, info, ok, shortAddr, warn } from '../output.js';
 
 export async function promptPassword(question: string): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -39,11 +44,22 @@ export async function promptLine(question: string): Promise<string> {
   });
 }
 
-export interface LoginArgs { password?: string; }
+export interface LoginArgs { password?: string; setupToken?: string; }
+
+/**
+ * The one-time claim token `startNode` writes while a node has no operator password (item 121). A node is claimed
+ * from its own machine over loopback; from anywhere else this file — readable only by the user the node runs as —
+ * is the proof of ownership. Read it from this home automatically so the local operator never has to.
+ */
+function localSetupToken(home: string): string | null {
+  try { const p = join(home, 'setup-token'); if (!existsSync(p)) return null; const t = readFileSync(p, 'utf8').trim(); return t || null; } catch { return null; }
+}
 
 export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token: string; nodeUrl: string; setup: boolean }> {
   const client = new NodeClient({ ...ctx, token: null });
-  const me = await client.get<{ signedIn: boolean; needsSetup: boolean; name: string; address: string }>('/api/auth/me', { auth: false });
+  const setupToken = a.setupToken ?? process.env.NGRAM_SETUP_TOKEN ?? localSetupToken(ctx.home) ?? undefined;
+  const me = await client.get<{ signedIn: boolean; needsSetup: boolean; name: string; address: string }>('/api/auth/me',
+    { auth: false, headers: setupToken ? { 'x-setup-token': setupToken } : {} });
   // Setting the password claims the node for good. Only ever do that to this home's own node, or to a URL the
   // user named on this command line — never to whatever happens to answer the port in the config (item 101).
   if (me.needsSetup && ctx.nodeSource !== 'flag' && ctx.nodeSource !== 'env'
@@ -63,12 +79,65 @@ export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token
     }
   }
   if (!password) throw new CliError('password required (or set NGRAM_PASSWORD)');
-  const r = await client.post<{ ok: boolean; token: string }>(me.needsSetup ? '/api/auth/setup' : '/api/auth/login', { password }, { auth: false });
+  const r = await client.post<{ ok: boolean; token: string }>(me.needsSetup ? '/api/auth/setup' : '/api/auth/login', { password },
+    { auth: false, headers: setupToken ? { 'x-setup-token': setupToken } : {} });
   const state = readState(ctx.home);
   writeState(ctx.home, { ...state, token: r.token, nodeUrl: ctx.nodeUrl });
   ctx.token = r.token;
   ok(ctx, `${me.needsSetup ? 'operator password set and ' : ''}logged in to ${ctx.nodeUrl} ${c.dim(`(token saved in ${ctx.home}/cli.json)`)}`);
   return { token: r.token, nodeUrl: ctx.nodeUrl, setup: me.needsSetup };
+}
+
+/**
+ * `ainize password` — change the operator password, and the way back when it is forgotten (item 121; review-1 item 34
+ * had no route at all, so a claimed node could never be un-claimed).
+ *
+ * Running node  → `POST /api/auth/password` with the current password; every other session is signed out.
+ * `--reset`     → the node must be stopped, and the new hash is written straight into config.json. Being able to
+ *                 write that file IS the proof of ownership — it is the file holding the node's private key.
+ */
+export async function password(ctx: CliContext, a: { password?: string; current?: string; reset?: boolean } = {}): Promise<{ reset: boolean }> {
+  const cfg = ctx.cfg ?? loadConfig(ctx.home);
+  if (!cfg) throw new CliError(`no node config in ${ctx.home} — run \`${PROG} init\` first`);
+  const client = new NodeClient(ctx);
+  const live = await client.alive(2000);
+  if (a.reset) {
+    if (live || runningPid(ctx.home)) {
+      throw new CliError(`--reset rewrites config.json, and the node in ${ctx.home} is running with the old password in memory — stop it first (\`${PROG} stop\`), reset, then \`${PROG} start -d\``);
+    }
+  } else if (!live) {
+    throw new CliError(`no node is answering at ${ctx.nodeUrl}. Start it (\`${PROG} start -d\`) to change the password, or — if you have forgotten it — stop the node and run \`${PROG} password --reset\`, which rewrites the hash in ${ctx.home}/config.json`, 2);
+  }
+  let current = a.current ?? process.env.NGRAM_PASSWORD;
+  if (!a.reset && !current) current = await promptPassword(`Current operator password for ${cfg.name}: `);
+  let next = a.password ?? process.env.NGRAM_NEW_PASSWORD;
+  if (!next) {
+    next = await promptPassword('New operator password: ');
+    const again = await promptPassword('Confirm new password: ');
+    if (again !== next) throw new CliError('passwords do not match');
+  }
+  if (!next || next.length < 4) throw new CliError('the new password must be at least 4 characters');
+  if (a.reset) {
+    cfg.operatorPasswordHash = hashPassword(next);
+    saveConfig(cfg, ctx.home);
+    const state = readState(ctx.home);
+    delete state.token;
+    writeState(ctx.home, state);
+    // Drop the sessions too, or a console tab signed in with the old password outlives the reset. The node is
+    // stopped (checked above), so its SQLite file is ours to open.
+    let dropped = 0;
+    try { const store = new Store(join(cfg.dataDir, 'node.sqlite')); dropped = store.deleteAllSessions(); store.close(); }
+    catch (e) { warn(ctx, `could not sign existing sessions out (${(e as Error).message}) — sign out in the web console by hand`); }
+    ok(ctx, `operator password reset in ${ctx.home}/config.json ${c.dim(`(start the node and run \`${PROG} login\`)`)}`);
+    if (dropped) info(ctx, c.dim(`${dropped} existing session(s) signed out`));
+    return { reset: true };
+  }
+  const r = await client.post<{ ok: boolean; token: string }>('/api/auth/password', { current, password: next });
+  const state = readState(ctx.home);
+  writeState(ctx.home, { ...state, token: r.token, nodeUrl: ctx.nodeUrl });
+  ctx.token = r.token;
+  ok(ctx, `operator password changed ${c.dim('(every other session was signed out; this terminal stays signed in)')}`);
+  return { reset: false };
 }
 
 export async function logout(ctx: CliContext): Promise<void> {
