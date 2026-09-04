@@ -448,16 +448,54 @@ export interface StackLayer {
   journal: boolean; journal_path: string | null; stack_sha256: string | null; body_present: boolean;
 }
 
+/** A queued apply/remove on the node (`GET /api/runtime/jobs/:id`). */
+export interface RuntimeJob {
+  id: string; kind: 'apply' | 'remove'; patch_id: string;
+  state: 'queued' | 'running' | 'done' | 'failed';
+  queued_at: number; started_at: number | null; finished_at: number | null;
+  result: string | null; error: string | null; status?: number;
+  queue?: { running: { label: string; since: number } | null; waiting: number; lock: { label: string; owner: string; since: number; mine: boolean } | null };
+}
+
+/**
+ * Apply/remove as a JOB (item 212). The shared model lock has no upper bound — another node's live test or a
+ * verification can hold it for minutes — and the synchronous POST used to die on the HTTP client's own header
+ * timeout: `cannot reach node … (fetch failed)`, exit 2, five minutes before the node ran the operation anyway.
+ * The node answers 202 with a job now; this prints where it is in the queue and waits for the real answer.
+ */
+async function runRuntimeJob(ctx: CliContext, kind: 'apply' | 'remove', id: string, body: Record<string, unknown>): Promise<string> {
+  const client = new NodeClient(ctx);
+  const path = `/api/patches/${encodeURIComponent(id)}/${kind === 'apply' ? 'apply' : 'remove'}`;
+  const first = await client.post<{ job?: RuntimeJob; result?: string; stack?: StackLayer[] }>(path, { ...body, async: true }, { timeoutMs: 120_000 });
+  // A node from before jobs existed answers synchronously; keep working with it.
+  if (!first.job) {
+    const result = String(first.result ?? '');
+    ok(ctx, `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${result}`);
+    return result;
+  }
+  let job = first.job;
+  let said = false;
+  for (;;) {
+    if (job.state === 'done') { ok(ctx, `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${job.result ?? ''}`); return job.result ?? ''; }
+    if (job.state === 'failed') throw new CliError(job.error ?? `${kind} failed`, job.status === 409 ? 5 : 1);
+    if (!said && job.state === 'queued') {
+      const holder = job.queue?.running ?? (job.queue?.lock ? { label: job.queue.lock.label, since: job.queue.lock.since } : null);
+      info(ctx, c.dim(holder
+        ? `queued behind ${holder.label} (started ${fmtTime(holder.since)}) — Ctrl-C leaves it queued on the node; \`${PROG} patch stack\` shows the result`
+        : `queued on the node — Ctrl-C leaves it queued; \`${PROG} patch stack\` shows the result`));
+      said = true;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+    job = (await client.get<{ job: RuntimeJob }>(`/api/runtime/jobs/${job.id}`, { timeoutMs: 30_000 })).job;
+  }
+}
+
 export async function patchApply(ctx: CliContext, id: string, opts: { withBase?: boolean } = {}): Promise<string> {
-  const r = await new NodeClient(ctx).post<{ result: string; stack: StackLayer[] }>(`/api/patches/${encodeURIComponent(id)}/apply`, { with_base: !!opts.withBase }, { timeoutMs: 10 * 60_000 });
-  ok(ctx, `applied ${id}: ${r.result}`);
-  return r.result;
+  return runRuntimeJob(ctx, 'apply', id, { with_base: !!opts.withBase });
 }
 
 export async function patchRemove(ctx: CliContext, id: string, opts: { cascade?: boolean } = {}): Promise<string> {
-  const r = await new NodeClient(ctx).post<{ result: string; stack: StackLayer[] }>(`/api/patches/${encodeURIComponent(id)}/remove`, { cascade: !!opts.cascade }, { timeoutMs: 10 * 60_000 });
-  ok(ctx, `removed ${id}: ${r.result}`);
-  return r.result;
+  return runRuntimeJob(ctx, 'remove', id, { cascade: !!opts.cascade });
 }
 
 /** `ainize patch stack` — what is loaded in the serving model, bottom first, and what each layer sits on. */
@@ -760,6 +798,9 @@ export async function patchImport(ctx: CliContext, a: ImportArgs): Promise<Impor
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: d.id, name: d.name, model_id: d.model_id, benchmark: JSON.stringify(d.benchmark), description: d.description, price: a.price, license: a.license,
     parents: parents.join(',') || undefined, path: file, contributors: d.contributors ? JSON.stringify(d.contributors) : undefined,
+    // An import is a PRIVATE draft of a lesson someone else trained, not a publish: the model mismatch is stated in
+    // words above (it is the whole point of the warning) rather than refused the way `publish` refuses it (item 154).
+    force: true,
   });
   let anchor = r.anchor;
   try { anchor = (await client.patch<{ anchor: PatchAnchor }>(`/api/patches/${encodeURIComponent(anchor.id)}`, { origin: 'teach' })).anchor; } catch { /* older node without origin — the draft is still usable */ }
