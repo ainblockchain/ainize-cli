@@ -177,6 +177,19 @@ cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if p
   .option('announce', { type: 'boolean', default: true }),
 run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a), false, true));
 cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
+cli.command('blobs', 'Knowledge files this node holds on disk, and what they cost', (y: Y) => fail(y)
+  .command(['ls', 'list'], 'List every knowledge file with its size and why it is held', (yy: Y) => yy, run((ctx) => node.blobsLs(ctx)))
+  .demandCommand(1, 'Subcommand is required (ls).'), () => undefined);
+cli.command('gc', 'Delete knowledge files this node neither published nor bought (verification copies)', (y: Y) => fail(y)
+  .option('dry-run', { type: 'boolean', default: false, describe: 'list what would go and delete nothing' })
+  .option('keep-purchased', { type: 'boolean', default: true, describe: 'keep bodies bought through the market (--no-keep-purchased includes them)' })
+  .option('older-than', { type: 'string', describe: 'only files fetched longer ago than this (30d, 12h, 90m)' })
+  .option('allow-sole-copy', { type: 'boolean', default: false, describe: 'also delete bodies no peer advertises (this node may be the last copy)' })
+  .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'do not ask for confirmation' })
+  .example('$0 gc --dry-run', 'what would be freed')
+  .example('$0 gc --older-than 30d', 'verification copies older than a month'),
+  run((ctx, a: G & { 'dry-run': boolean; 'keep-purchased': boolean; 'older-than'?: string; 'allow-sole-copy': boolean; yes: boolean }) =>
+    node.gc(ctx, { dryRun: a['dry-run'], keepPurchased: a['keep-purchased'], olderThan: a['older-than'], allowSoleCopy: a['allow-sole-copy'], yes: a.yes })));
 
 // ---------------------------------------------------------------- auth
 cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y).option('password', { type: 'string', describe: 'or NGRAM_PASSWORD env' })
@@ -248,8 +261,19 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }).option('reason', { type: 'string', demandOption: true }),
     run((ctx, a: G & { id: string; reason: string }) => patch.patchChallenge(ctx, a.id, a.reason)))
   .command('buy <id>', 'Buy a listed patch via HTTP 402 (x402) and download its body', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
-    .option('apply', { type: 'boolean', default: false, describe: 'apply to the serving runtime after download' }),
-  run((ctx, a: G & { id: string; apply: boolean }) => patch.patchBuy(ctx, a.id, a.apply)))
+    .option('apply', { type: 'boolean', default: false, describe: 'apply to the serving runtime after download' })
+    // Item 102: the price is quoted and confirmed before anything is spent. `--yes` answers in advance; a
+    // non-terminal without it is refused, never taken as a yes. `--max-price` is the FAMILY total (item 270).
+    .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
+    .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
+    .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it, deepest first' })
+    .example('$0 patch buy krx-all-2761', 'quote the price, ask, then pay')
+    .example('$0 patch buy krx-all-2761 --yes --max-price 30', 'unattended, with a budget for the whole family'),
+  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
+    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], withRequired: a['with-base'] })))
+  .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+    .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
+  run((ctx, a: G & { id: string }) => patch.patchDownload(ctx, a.id)))
   .command('apply <id>', 'Apply a held patch to the serving runtime (no restart)',
     (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
       .option('with-base', { type: 'boolean', default: false, describe: 'also load everything this knowledge was trained on top of, underneath it' }),
@@ -377,7 +401,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('on', { type: 'string', describe: 'the knowledge this lesson is trained ON TOP OF: its questions are kept as known answers, it is recorded as the base, and buyers need it too' })
     .option('inherit', { type: 'boolean', describe: '--no-inherit checks against the base without keeping its questions as known answers' })
     .option('yes-change', { type: 'boolean', default: false, describe: 'my answers are meant to replace the base\'s where they differ' })
-    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage)' })
+    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage). Exit code says what happened: 0 ready · 4 did not stick (NEEDS_MORE) · 5 failed/cancelled/expired · 6 declined by the operator · 7 still running when the wait ran out · 8 ready but never measured on the live model' })
     .example('$0 teach train 6f2c1b2a-…', 'train an uploaded dataset')
     .example('$0 teach train ./questions.csv --effort quick --wait', 'file → lesson in one line')
     .example('$0 teach train 6f2c1b2a-… --on krx-all-2761', 'teach it on top of someone else\'s knowledge')
@@ -389,7 +413,31 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),
   run((ctx, a: G & { key?: string; 'key-file'?: string; dataset?: string }) => teachData.teachJobs(ctx, { key: a.key, keyFile: a['key-file'], dataset: a.dataset })))
 
-  .demandCommand(1, 'Subcommand is required (status|dataset|train|jobs).'), () => undefined);
+  // ---- item 238: the last step of the loop, which only the browser could do. The consents are the publisher's own
+  // and are never defaulted: without both flags the command refuses and quotes what is being consented to.
+  .command('publish <job-id>', 'Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)', (yy: Y) => keyOpts(yy)
+    .positional('job-id', { type: 'string', demandOption: true, describe: 'lesson id (`$0 teach jobs`)' })
+    .option('name', { type: 'string', demandOption: true, describe: 'what buyers see, 2-80 characters' })
+    .option('price', { type: 'string', describe: 'price per download in this node\'s currency (default 0 = free)' })
+    .option('license', { type: 'string', describe: 'licence for the knowledge (CC-BY-4.0, CC0-1.0, Proprietary, …)' })
+    .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+    .option('payout', { type: 'string', describe: 'AIN address to be paid at, or `none` for credit without payment (default: this teaching key)' })
+    .option('access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read the training set: anyone, only people who declare they build on this (default), nobody' })
+    .option('dataset-license', { type: 'string', describe: 'licence for the questions themselves' })
+    .option('include-notes', { type: 'boolean', default: false, describe: 'include your per-row notes in the shared questions' })
+    .option('consent-permanent', { type: 'boolean', default: false, describe: 'I understand this becomes a permanent public record that cannot be edited or deleted' })
+    .option('consent-rights', { type: 'boolean', default: false, describe: 'I have the right to share this information, and it is not private or personal data' })
+    .example('$0 teach publish 8f0c… --name "KRX codes" --price 2 --consent-permanent --consent-rights', 'the last line of a nightly bake')
+    .example('$0 teach train today.jsonl --wait && $0 teach publish <id> --name … --consent-permanent --consent-rights', 'train, then publish only if the lesson stuck (--wait exits non-zero otherwise)'),
+  run((ctx, a: G & { 'job-id': string; key?: string; 'key-file'?: string; name: string; price?: string; license?: string; description?: string; payout?: string;
+    access?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'include-notes': boolean; 'consent-permanent': boolean; 'consent-rights': boolean }) =>
+    teachData.teachPublish(ctx, a['job-id'], {
+      key: a.key, keyFile: a['key-file'], name: a.name, price: a.price, license: a.license, description: a.description, payout: a.payout,
+      access: a.access, datasetLicense: a['dataset-license'], includeNotes: a['include-notes'],
+      consentPermanent: a['consent-permanent'], consentRights: a['consent-rights'],
+    })))
+
+  .demandCommand(1, 'Subcommand is required (status|dataset|train|publish|jobs).'), () => undefined);
 
 // ---------------------------------------------------------------- dataset (the questions behind a published knowledge)
 cli.command('dataset', 'Training sets: the questions a published knowledge was taught from (lineage design §13)', (y: Y) => fail(y)
@@ -404,11 +452,16 @@ cli.command('dataset', 'Training sets: the questions a published knowledge was t
     dataset.datasetGetPublished(ctx, a.id, { key: a.key, keyFile: a['key-file'], out: a.out, manifest: a.manifest, includeNotes: a['include-notes'] })))
   .demandCommand(1, 'Subcommand is required (get).'), () => undefined);
 
-cli.command('use <id>', 'One line to use knowledge: check it is verified → pay automatically → download → load into your model', (y: Y) => fail(y)
+cli.command('use <id>', 'One line to use knowledge: check it is verified → quote the price → pay → download → load into your model', (y: Y) => fail(y)
   .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })
   .option('apply', { type: 'boolean', default: true, describe: 'load into the serving model after download (--no-apply to only download)' })
-  .example('$0 use krx-all-2761', ''),
-run((ctx, a: G & { id: string; apply: boolean }) => patch.patchUse(ctx, a.id, { apply: a.apply })));
+  .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
+  .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
+  .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it' })
+  .example('$0 use krx-all-2761', 'quote, ask, pay, download, load')
+  .example('$0 use krx-all-2761 --yes --max-price 30', 'unattended, with a budget'),
+run((ctx, a: G & { id: string; apply: boolean; yes: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
+  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], withRequired: a['with-base'] })));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
@@ -464,10 +517,18 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
     .option('patch', { type: 'string', array: true, describe: 'patch id(s) in the branch' })
     .example('$0 branch create law/KR --context jurisdiction=KR --patch law-kr-2025', ''),
   run((ctx, a: G & { name: string; description?: string; context?: string[]; patch?: string[] }) => branch.branchCreate(ctx, a.name, a)))
-  .command('add <name> <patchId>', 'Add a patch to a branch you own', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }).positional('patchId', { type: 'string', demandOption: true }),
-    run((ctx, a: G & { name: string; patchId: string }) => branch.branchAdd(ctx, a.name, a.patchId)))
-  .command('subscribe <name>', 'Subscribe this node (acquire + apply the branch\'s patches)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'subscribe')))
-  .command('unsubscribe <name>', 'Unsubscribe (restore rows)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'unsubscribe')))
+  .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }).positional('patchId', { type: 'string', demandOption: true })
+    .option('force', { type: 'boolean', default: false, describe: 'add it even though it is not LISTED — every subscriber will buy and load it' }),
+    run((ctx, a: G & { name: string; patchId: string; force?: boolean }) => branch.branchAdd(ctx, a.name, a.patchId, { force: a.force })))
+  .command('quote <name>', 'What subscribing to this track would spend, item by item, before anything is spent', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { name: string }) => branch.branchQuote(ctx, a.name)))
+  .command('subscribe <name>', 'Subscribe this node: buy the track\'s current knowledge, load it, and keep it up to date', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true })
+    .option('yes', { type: 'boolean', default: false, describe: 'answer the spend confirmation in advance' })
+    .example('$0 branch subscribe daily/krx --yes', ''),
+    run((ctx, a: G & { name: string; yes?: boolean }) => branch.branchSubscribe(ctx, a.name, 'subscribe', { yes: a.yes })))
+  .command('sync <name>', 'Bring a subscribed track up to date now (buy and load what it added, unload what it retired)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { name: string }) => branch.branchSync(ctx, a.name)))
+  .command('unsubscribe <name>', 'Unsubscribe (unload the track\'s knowledge; nothing is refunded)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'unsubscribe')))
   .demandCommand(1, 'Subcommand is required.'), () => undefined);
 cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));

@@ -2,16 +2,18 @@
  * `ainize start|stop|status|logs|seed` — node lifecycle.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEnv, type NodeConfig } from '@ngram/core';
-import { startNode, seedDemo, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
+import { startNode, seedDemo, humanBytes, type DiskReport, type GcCandidate, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { logFile, pidFile, runningPid } from '../pid.js';
 import { c, emit, fmtTime, info, kv, ok, shortAddr, table, warn } from '../output.js';
+import { ledgerMismatchLines, type PeerStatus } from './peers.js';
 import { assertUsableConfig, requireConfig } from './init.js';
+import { promptLine } from './auth.js';
 
 export { runningPid };
 
@@ -37,6 +39,28 @@ function applyArgs(cfg: NodeConfig, a: StartArgs): NodeConfig {
 const startTimeoutMs = () => Number(process.env.NGRAM_START_TIMEOUT_MS ?? 20_000);
 /** How long `stop` waits for a SIGTERMed node to exit before escalating to SIGKILL. */
 const stopGraceMs = () => Number(process.env.NGRAM_STOP_GRACE_MS ?? 10_000);
+
+/** Above this, `start -d` rolls node.log aside before appending (item 128: nothing ever rotated it). */
+export const LOG_MAX_BYTES = Number(process.env.NGRAM_LOG_MAX_BYTES ?? 32 * 1000 ** 2);
+/** How many rolled generations are kept (node.log.1 … node.log.N). */
+export const LOG_GENERATIONS = 2;
+
+/**
+ * Roll node.log when it has grown past `LOG_MAX_BYTES`, keeping `LOG_GENERATIONS` older copies (item 128).
+ * `start -d` opened the file with 'a' and nothing ever truncated it, so a long-lived node's only crash log was
+ * also an unbounded consumer of the same volume as the blob store.
+ */
+export function rotateLog(home: string): boolean {
+  const file = logFile(home);
+  let size = 0;
+  try { size = statSync(file).size; } catch { return false; }
+  if (size < LOG_MAX_BYTES) return false;
+  try { unlinkSync(`${file}.${LOG_GENERATIONS}`); } catch { /* there may be none */ }
+  for (let i = LOG_GENERATIONS - 1; i >= 1; i--) {
+    try { renameSync(`${file}.${i}`, `${file}.${i + 1}`); } catch { /* there may be none */ }
+  }
+  try { renameSync(file, `${file}.1`); return true; } catch { return false; }
+}
 
 /** Last `n` lines of the node log — the only place a failed start ever wrote its reason. */
 export function logTail(home: string, n = 20): string {
@@ -72,6 +96,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
   }
   if (a.detach) {
     mkdirSync(ctx.home, { recursive: true });
+    rotateLog(ctx.home);
     const out = openSync(logFile(ctx.home), 'a');
     const args = [...process.execArgv, binPath(), 'start', '--home', ctx.home];
     if (a.port) args.push('--port', String(a.port));
@@ -166,7 +191,32 @@ export interface InfoResponse {
   ledger: { kind: string; network: string; height?: number; records: number; provider?: string; head?: string };
   runtime: { available: boolean; api: string | null; model: string | null; hook: boolean; repo: string | null; error?: string };
   quorum: number; currency: string; peers: number; counts: { patches: number; listed: number };
+  /** item 170: how many peers ANSWERED, how many of those verify, and which are on a ledger this node cannot read. */
+  peer_status?: PeerStatus;
+  /** item 128: bytes held on disk, and what is free on the volume. Absent on nodes older than this CLI. */
+  disk?: DiskReport;
 }
+
+/** `1.1 GB (bodies 932 MB · sets 0 B · uploads 115 MB · db 9 MB) · 12 GB free` — item 128. */
+export function diskLine(d: DiskReport | undefined, showReclaimable = true): string {
+  if (!d) return c.dim('not reported by this node (older build)');
+  const parts = `bodies ${humanBytes(d.blobs)} · sets ${humanBytes(d.datasets)} · uploads ${humanBytes(d.uploads)} · db ${humanBytes(d.db)}${d.log ? ` · log ${humanBytes(d.log)}` : ''}`;
+  const tight = d.free !== null && d.size !== null && (d.free < 2 * 1000 ** 3 || d.free / d.size < 0.05);
+  const free = d.free === null ? '' : `${c.dim(' · ')}${tight ? c.warn(`${humanBytes(d.free)} free`) : `${humanBytes(d.free)} free`}`;
+  const reclaim = showReclaimable && d.reclaimable_bytes > 0
+    ? c.dim(`\n${humanBytes(d.reclaimable_bytes)} in ${d.reclaimable_files} verification cop${d.reclaimable_files === 1 ? 'y' : 'ies'} — \`${PROG} gc\` frees it`) : '';
+  return `${humanBytes(d.total)} ${c.dim(`(${parts})`)}${free}${reclaim}`;
+}
+
+/** `2 published here, 1 bought, 1 fetched too recently` — why the bodies that stayed, stayed. */
+const keptLine = (kept: Record<string, number>): string => {
+  const label: Record<string, string> = {
+    authored: 'published by this node', purchased: 'bought', applied: 'loaded in the model', draft: 'unpublished drafts',
+    unlisted: 'not on the record', too_new: 'fetched too recently', sole_copy: 'the only copy left',
+  };
+  const parts = Object.entries(kept).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${label[k] ?? k.replace(/_/g, ' ')}`);
+  return parts.length ? c.dim(`kept: ${parts.join(', ')}`) : '';
+};
 
 /** What build is actually running — with the config's own version only when it differs (item 141). */
 export function nodeVersion(n: InfoResponse['node']): string {
@@ -205,6 +255,15 @@ export async function statusCheck(ctx: CliContext): Promise<ReadyResponse> {
   return d;
 }
 
+/** `3 known · 3 answered · 2 verifiers` — the peer count alone said nothing about whether anyone was there (item 170). */
+export function peersLine(st: PeerStatus | undefined, fallback: number): string {
+  if (!st) return String(fallback);
+  const parts = [`${st.known} known`, st.reachable === st.known ? c.ok(`${st.reachable} answered`) : c.warn(`${st.reachable} answered`)];
+  parts.push(st.verifiers ? `${st.verifiers} verifier${st.verifiers === 1 ? '' : 's'}` : c.warn('0 verifiers'));
+  if (st.ledger_mismatch) parts.push(c.warn(`${st.ledger_mismatch} on another ledger`));
+  return parts.join(c.dim(' · '));
+}
+
 export async function status(ctx: CliContext): Promise<InfoResponse> {
   const client = new NodeClient(ctx);
   const d = await client.get<InfoResponse>('/api/info', { auth: false });
@@ -222,10 +281,12 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
       ['address', x.node.address], ['roles', x.node.roles.join(', ')], ['version', nodeVersion(x.node)],
       ['ledger', `${x.ledger.kind} · ${x.ledger.network}${x.ledger.provider ? ` · ${x.ledger.provider}` : ''} · ${x.ledger.records} records${x.ledger.height !== undefined ? ` · height ${x.ledger.height}` : ''}`],
       ['runtime', x.runtime.available ? c.ok(`available · ${x.runtime.model} · hook ok`) : c.warn(`unavailable${x.runtime.error ? ` (${x.runtime.error})` : ''}`)],
-      ['peers', x.peers], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],
-      ['branches', x.node.branches.join(', ') || '-'], ['blobs held', x.node.blobs.length],
+      ['peers', peersLine(x.peer_status, x.peers)], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],
+      ['branches', x.node.branches.join(', ') || '-'], ['blobs held', `${x.node.blobs.length}${x.disk ? c.dim(` of ${x.disk.blob_files} files on disk`) : ''}`],
+      ['disk', diskLine(x.disk)],
     ]),
-  ].join('\n'));
+    ...ledgerMismatchLines(x.peer_status),
+  ].filter(Boolean).join('\n'));
   // exit 2 = "the node you asked about is not there" — the same code the client uses for an unreachable node,
   // so a health check built on `ainize status` fails when this home's node is down and a stranger holds its port.
   if (stranger) process.exitCode = 2;
@@ -283,19 +344,114 @@ export async function seed(ctx: CliContext, opts: SeedOptions = {}): Promise<See
   }
 }
 
+// ---------------------------------------------------------------- disk: what is held, and what may go (item 128)
+
+export interface BlobRowView {
+  sha256: string; path: string; size_bytes: number; rows: number; imported_at: number;
+  patch_id: string | null; name: string | null; status: string | null;
+  mine: boolean; purchased: boolean; applied: boolean; reclaimable: boolean; holders: number;
+}
+
+/** Why this node is holding a body — the column that decides whether `gc` may take it. */
+const heldFor = (b: BlobRowView): string =>
+  b.mine ? c.ok('published here') : b.applied ? c.ok('loaded') : b.purchased ? c.ok('bought') : b.reclaimable ? c.warn('verification') : c.dim('verification (sole copy)');
+
+export async function blobsLs(ctx: CliContext): Promise<{ items: BlobRowView[]; disk: DiskReport; kept: Record<string, number> }> {
+  const d = await new NodeClient(ctx).get<{ items: BlobRowView[]; disk: DiskReport; reclaimable_bytes: number; kept: Record<string, number> }>('/api/me/blobs');
+  emit(ctx, d, (x) => [
+    table(x.items, [
+      { key: 'id', title: 'KNOWLEDGE', get: (b) => b.name ?? c.dim(b.sha256.slice(0, 12)) },
+      { key: 'sha', title: 'SHA256', get: (b) => c.dim(b.sha256.slice(0, 12)) },
+      { key: 'size', title: 'SIZE', get: (b) => humanBytes(b.size_bytes), align: 'right' },
+      { key: 'rows', title: 'ROWS', get: (b) => String(b.rows), align: 'right' },
+      { key: 'held', title: 'HELD FOR', get: heldFor },
+      { key: 'holders', title: 'PEERS', get: (b) => String(b.holders), align: 'right' },
+      { key: 'when', title: 'FETCHED', get: (b) => fmtTime(b.imported_at) },
+    ], 'no knowledge files on this node yet'),
+    '',
+    kv([['disk', diskLine(x.disk, false)]]),
+    x.reclaimable_bytes > 0
+      ? c.dim(`\`${PROG} gc --dry-run\` lists what would go; every one of them is re-fetchable from a peer that holds it.`)
+      : x.items.length ? c.dim('nothing here is reclaimable: every body is published here, bought, loaded, or the only copy left.') : '',
+    keptLine(x.kept),
+  ].filter(Boolean).join('\n'));
+  return d;
+}
+
+export interface GcArgs { dryRun?: boolean; keepPurchased?: boolean; olderThan?: string; allowSoleCopy?: boolean; yes?: boolean }
+
+/** `--older-than 30d` / `12h` / `90` (days). */
+export function parseAge(v: string | undefined): number | undefined {
+  if (!v) return undefined;
+  const m = /^(\d+(?:\.\d+)?)\s*([smhdw]?)$/i.exec(v.trim());
+  if (!m) throw new CliError(`--older-than must be a duration like 30d, 12h or 90m — got ${JSON.stringify(v)}`);
+  const mult: Record<string, number> = { s: 1000, m: 60_000, h: 3600_000, d: 86_400_000, w: 7 * 86_400_000, '': 86_400_000 };
+  return Math.round(Number(m[1]) * mult[m[2].toLowerCase()]);
+}
+
+export interface GcResponse {
+  candidates: GcCandidate[]; removed: GcCandidate[]; freed: number; bytes: number; dry_run: boolean;
+  kept: Record<string, number>; disk: DiskReport;
+}
+
+/**
+ * `ainize gc` — give back the disk that verification duty cost (item 128). A dry run first, always: the operator
+ * sees every body and its size before anything is deleted, and `--yes` is what turns the plan into a deletion.
+ */
+export async function gc(ctx: CliContext, a: GcArgs = {}): Promise<GcResponse> {
+  const client = new NodeClient(ctx);
+  const body = {
+    keep_purchased: a.keepPurchased !== false,
+    older_than_ms: parseAge(a.olderThan) ?? null,
+    allow_sole_copy: !!a.allowSoleCopy,
+  };
+  const plan = await client.post<GcResponse>('/api/me/blobs/gc', { ...body, dry_run: true });
+  const listPlan = (x: GcResponse) => [
+    table(x.candidates, [
+      { key: 'id', title: 'KNOWLEDGE', get: (b) => b.name },
+      { key: 'pid', title: 'ID', get: (b) => c.id(b.patch_id) },
+      { key: 'size', title: 'SIZE', get: (b) => humanBytes(b.bytes), align: 'right' },
+      { key: 'peers', title: 'PEERS HOLDING', get: (b) => String(b.holders), align: 'right' },
+      { key: 'when', title: 'FETCHED', get: (b) => fmtTime(b.imported_at) },
+    ], 'nothing to reclaim with these filters'),
+    keptLine(x.kept),
+  ].filter(Boolean).join('\n');
+
+  if (!plan.candidates.length || a.dryRun) {
+    emit(ctx, plan, (x) => [listPlan(x), '', kv([['would free', humanBytes(x.bytes)], ['disk', diskLine(x.disk, false)]])].join('\n'));
+    return plan;
+  }
+  if (!a.yes) {
+    info(ctx, listPlan(plan));
+    info(ctx, `\nthis removes ${plan.candidates.length} knowledge file(s) and frees ${humanBytes(plan.bytes)}.`);
+    const typed = await promptLine('Type "yes" to delete them (anything else cancels): ');
+    if (typed.toLowerCase() !== 'yes') throw new CliError('cancelled — nothing was deleted');
+  }
+  const done = await client.post<GcResponse>('/api/me/blobs/gc', { ...body, dry_run: false });
+  emit(ctx, done, (x) => [
+    c.ok('✓ ') + `removed ${x.removed.length} knowledge file(s), freed ${humanBytes(x.freed)}`,
+    ...(x.removed.length < x.candidates.length ? [c.warn(`${x.candidates.length - x.removed.length} could not be deleted — they are still on disk`)] : []),
+    kv([['disk', diskLine(x.disk, false)]]),
+    c.dim('every one of them is re-fetchable from a peer that holds it; verification will fetch it again if it is needed.'),
+  ].join('\n'));
+  return done;
+}
+
 export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; peers: unknown[]; self: string }> {
   const client = new NodeClient(ctx);
-  const d = await client.get<{ nodes: InfoResponse['node'][] & { last_seen?: number }[]; peers: { endpoint: string; address: string | null; last_seen: number; failures: number }[]; self: string }>('/api/nodes', { auth: false });
+  const d = await client.get<{ nodes: (InfoResponse['node'] & { last_seen?: number; blobs_advertised?: number; ledger_mismatch?: boolean })[]; peers: { endpoint: string; address: string | null; last_seen: number; failures: number; ledger?: string | null; ledger_mismatch?: boolean }[]; self: string; peer_status?: PeerStatus }>('/api/nodes', { auth: false });
   emit(ctx, d, (x) => [
     c.head('known nodes'),
-    table(x.nodes as (InfoResponse['node'] & { last_seen?: number })[], [
+    table(x.nodes, [
       { key: 'name', title: 'NAME', get: (n) => (n.address === x.self ? c.bold(n.name + ' (self)') : n.name) },
       { key: 'addr', title: 'ADDRESS', get: (n) => shortAddr(n.address, 8) },
       { key: 'ep', title: 'ENDPOINT', get: (n) => n.endpoint },
       { key: 'roles', title: 'ROLES', get: (n) => n.roles.join(',') },
-      { key: 'ledger', title: 'LEDGER', get: (n) => n.ledger },
+      { key: 'ledger', title: 'LEDGER', get: (n) => (n.ledger_mismatch ? c.warn(`${n.ledger} ≠ ours`) : n.ledger) },
       { key: 'branches', title: 'BRANCHES', get: (n) => n.branches.join(',') || '-' },
-      { key: 'blobs', title: 'BLOBS', get: (n) => String(n.blobs.length), align: 'right' },
+      // what the node ITSELF says it holds: `blobs` is filtered through this node's catalogue, so a peer on another
+      // ledger showed 0 while holding four (item 170)
+      { key: 'blobs', title: 'BLOBS', get: (n) => String(n.blobs_advertised ?? n.blobs.length), align: 'right' },
       { key: 'seen', title: 'LAST SEEN', get: (n) => fmtTime(n.last_seen) },
     ]),
     '', c.head('configured peers'),
@@ -303,8 +459,10 @@ export async function nodesTable(ctx: CliContext): Promise<{ nodes: unknown[]; p
       { key: 'ep', title: 'ENDPOINT', get: (p) => p.endpoint },
       { key: 'addr', title: 'ADDRESS', get: (p) => shortAddr(p.address, 8) },
       { key: 'seen', title: 'LAST SEEN', get: (p) => fmtTime(p.last_seen) },
+      { key: 'ledger', title: 'LEDGER', get: (p) => (p.ledger ? (p.ledger_mismatch ? c.warn(`${p.ledger} ≠ ours`) : p.ledger) : '-') },
       { key: 'fail', title: 'FAILURES', get: (p) => (p.failures ? c.warn(String(p.failures)) : '0'), align: 'right' },
     ]),
+    ...ledgerMismatchLines(x.peer_status),
   ].join('\n'));
   return d;
 }
