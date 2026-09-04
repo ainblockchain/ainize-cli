@@ -216,16 +216,40 @@ export async function patchBuy(ctx: CliContext, id: string, apply = false): Prom
   return r;
 }
 
-export async function patchApply(ctx: CliContext, id: string): Promise<string> {
-  const r = await new NodeClient(ctx).post<{ result: string }>(`/api/patches/${encodeURIComponent(id)}/apply`, {}, { timeoutMs: 10 * 60_000 });
+/** One layer of the runtime stack as the node reports it (design §5.4). */
+export interface StackLayer {
+  patch_id: string; name: string | null; sha256: string; position: number; applied_at: number; reason: string;
+  rows: number | null; export: 'delta' | 'squash' | null; base_stack: string[];
+  journal: boolean; journal_path: string | null; stack_sha256: string | null; body_present: boolean;
+}
+
+export async function patchApply(ctx: CliContext, id: string, opts: { withBase?: boolean } = {}): Promise<string> {
+  const r = await new NodeClient(ctx).post<{ result: string; stack: StackLayer[] }>(`/api/patches/${encodeURIComponent(id)}/apply`, { with_base: !!opts.withBase }, { timeoutMs: 10 * 60_000 });
   ok(ctx, `applied ${id}: ${r.result}`);
   return r.result;
 }
 
-export async function patchRemove(ctx: CliContext, id: string): Promise<string> {
-  const r = await new NodeClient(ctx).post<{ result: string }>(`/api/patches/${encodeURIComponent(id)}/remove`, {}, { timeoutMs: 10 * 60_000 });
+export async function patchRemove(ctx: CliContext, id: string, opts: { cascade?: boolean } = {}): Promise<string> {
+  const r = await new NodeClient(ctx).post<{ result: string; stack: StackLayer[] }>(`/api/patches/${encodeURIComponent(id)}/remove`, { cascade: !!opts.cascade }, { timeoutMs: 10 * 60_000 });
   ok(ctx, `removed ${id}: ${r.result}`);
   return r.result;
+}
+
+/** `ainize patch stack` — what is loaded in the serving model, bottom first, and what each layer sits on. */
+export async function patchStack(ctx: CliContext): Promise<StackLayer[]> {
+  const r = await new NodeClient(ctx).get<{ stack: StackLayer[]; journal_dir: string | null }>('/api/runtime/stack');
+  emit(ctx, r.stack, () => {
+    if (!r.stack.length) return c.dim('nothing is loaded in the serving model');
+    return [
+      ...r.stack.map((l, i) => [
+        `${String(i).padStart(2)}  ${l.patch_id}${l.name ? c.dim(` — ${l.name}`) : ''}`,
+        c.dim(`     ${l.rows !== null ? `${l.rows.toLocaleString()} rows · ` : ''}${l.export === 'delta' ? `add-on, needs ${l.base_stack.join(', ')} underneath` : l.export === 'squash' ? 'stand-alone build' : 'published before add-ons existed'}`),
+        c.dim(`     ${l.journal ? 'can be unloaded without disturbing what is under it' : 'no journal — unloading it writes the model\'s own rows back'}${l.body_present ? '' : ' · body no longer on this node'}`),
+      ].join('\n')),
+      c.dim(`\nthe last line is on top: it wins on any row two of them share`),
+    ].join('\n');
+  });
+  return r.stack;
 }
 
 export async function patchConflicts(ctx: CliContext, id: string): Promise<PatchDetail['conflicts']> {

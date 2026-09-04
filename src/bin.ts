@@ -227,8 +227,15 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('buy <id>', 'Buy a listed patch via HTTP 402 (x402) and download its body', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .option('apply', { type: 'boolean', default: false, describe: 'apply to the serving runtime after download' }),
   run((ctx, a: G & { id: string; apply: boolean }) => patch.patchBuy(ctx, a.id, a.apply)))
-  .command('apply <id>', 'Apply a held patch to the serving runtime (no restart)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchApply(ctx, a.id)))
-  .command('remove <id>', 'Restore original rows (un-apply)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRemove(ctx, a.id)))
+  .command('apply <id>', 'Apply a held patch to the serving runtime (no restart)',
+    (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+      .option('with-base', { type: 'boolean', default: false, describe: 'also load everything this knowledge was trained on top of, underneath it' }),
+    run((ctx, a: G & { id: string; withBase?: boolean }) => patch.patchApply(ctx, a.id, { withBase: a.withBase })))
+  .command('remove <id>', 'Unload it, putting back whatever was underneath',
+    (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+      .option('cascade', { type: 'boolean', default: false, describe: 'also unload everything that is loaded on top of it' }),
+    run((ctx, a: G & { id: string; cascade?: boolean }) => patch.patchRemove(ctx, a.id, { cascade: a.cascade })))
+  .command('stack', 'What is loaded in the serving model, bottom first', (yy: Y) => yy, run((ctx) => patch.patchStack(ctx)))
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
