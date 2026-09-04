@@ -246,7 +246,7 @@ test('publish --contributor addr:name:share parses and lands on the draft anchor
 });
 
 // ---------------------------------------------------------------- lineage L1: `ainize dataset get <knowledge>`
-test('dataset get: the training set behind a published knowledge — public downloads to the exact bytes, derivative goes through a derive intent, private is refused with a reason (exit 3)', async () => {
+test('AZ-248 dataset get: the training set behind a published knowledge — public downloads to the exact bytes, derivative goes through a derive intent, private is refused with a reason (exit 3)', async () => {
   const questions = [
     { prompt: 'Who runs Freedonia?', answer: 'Rufus T. Firefly' },
     { prompt: 'What is the capital of Freedonia?', answer: 'Fredville' },
