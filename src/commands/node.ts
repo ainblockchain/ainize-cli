@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { applyEnv, type NodeConfig } from '@ngram/core';
 import { startNode, seedDemo, humanBytes, type DiskReport, type GcCandidate, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
@@ -295,6 +296,42 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
 
 export interface EventRow { seq: number; ts: number; level: string; kind: string; patch_id: string | null; message: string; data: unknown; }
 
+/** warn is "warnings and worse", the question an operator asks — the same floor `/api/events` applies. */
+const LEVELS = ['debug', 'info', 'warn', 'error'];
+
+/**
+ * The event table read straight from `<dataDir>/node.sqlite` (item 131).
+ *
+ * `ainize logs` fetched `/api/events` over HTTP, so it worked only while the node was up — and a crash is precisely
+ * when the log is needed. The rows are in the node's own database either way; this reads them with no node. Opened
+ * read-only when SQLite allows it (a WAL left behind by a kill needs a writable open to be replayed).
+ */
+export function offlineEvents(dataDir: string, a: { limit?: number; kind?: string; level?: string; patch?: string } = {}): EventRow[] {
+  const file = join(dataDir, 'node.sqlite');
+  if (!existsSync(file)) throw new CliError(`no node database at ${file} — no node has ever run in this home`, 2);
+  let db: DatabaseSync;
+  try { db = new DatabaseSync(file, { readOnly: true }); }
+  catch { db = new DatabaseSync(file); }
+  try {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (a.patch) { where.push('patch_id = ?'); args.push(a.patch); }
+    if (a.kind) { where.push('kind = ?'); args.push(a.kind); }
+    if (a.level && LEVELS.includes(a.level)) {
+      const wanted = LEVELS.slice(LEVELS.indexOf(a.level));
+      where.push(`level IN (${wanted.map(() => '?').join(', ')})`);
+      args.push(...wanted);
+    }
+    const sql = `SELECT seq, ts, level, kind, patch_id, message, data FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY seq DESC LIMIT ${Number(a.limit ?? 100)}`;
+    const rows = db.prepare(sql).all(...args) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      seq: r.seq as number, ts: r.ts as number, level: r.level as string, kind: r.kind as string,
+      patch_id: (r.patch_id as string) ?? null, message: r.message as string,
+      data: r.data ? (() => { try { return JSON.parse(r.data as string); } catch { return null; } })() : null,
+    })).sort((x, y) => x.seq - y.seq);
+  } finally { db.close(); }
+}
+
 export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: string; limit?: number; kind?: string; level?: string } = {}): Promise<EventRow[]> {
   const client = new NodeClient(ctx);
   const fetchEvents = async (since?: number) => {
@@ -312,7 +349,20 @@ export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: strin
   }).join('\n');
   const filters = [a.patch && `patch ${a.patch}`, a.kind && `kind '${a.kind}'`, a.level && `level ${a.level} or worse`].filter(Boolean).join(', ');
   const empty = () => c.dim(filters ? `(no events match ${filters}${ctx.token ? '' : ` — and you are not logged in, so teach and draft lines are hidden; run \`${PROG} login\``})` : '(no events yet)');
-  let rows = await fetchEvents();
+  let rows: EventRow[];
+  try {
+    rows = await fetchEvents();
+  } catch (e) {
+    // exit 2 from the client is "nothing answered at that URL" — the post-mortem case. The events are still in the
+    // node's own database, so read them from there rather than leaving the operator with a fetch error (item 131).
+    const dataDir = ctx.cfg?.dataDir;
+    if (!(e instanceof CliError) || e.exitCode !== 2 || !dataDir) throw e;
+    const offline = offlineEvents(dataDir, { limit: a.limit ?? 100, kind: a.kind, level: a.level, patch: a.patch });
+    info(ctx, c.dim(`node is not running — reading ${join(dataDir, 'node.sqlite')}`));
+    emit(ctx, offline, (r) => (r.length ? render(r) : empty()));
+    if (a.follow) warn(ctx, `--follow needs a running node; showing what is on disk (\`${PROG} start -d\` to bring it back)`);
+    return offline;
+  }
   if (!a.follow) { emit(ctx, rows, (r) => (r.length ? render(r) : empty())); return rows; }
   emit(ctx, rows, render);
   let since = rows.length ? rows[rows.length - 1].ts : Date.now();
