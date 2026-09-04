@@ -1,8 +1,9 @@
 /**
  * Terminal output helpers: tables, key/value blocks, status colours, JSON mode.
  */
+import { createInterface } from 'node:readline';
 import chalk from 'chalk';
-import type { CliContext } from './context.js';
+import { CliError, type CliContext } from './context.js';
 
 export const c = {
   ok: chalk.green, warn: chalk.yellow, err: chalk.red, dim: chalk.gray, bold: chalk.bold, head: chalk.magenta, id: chalk.cyan, num: chalk.white,
@@ -77,6 +78,22 @@ export function emit<T>(ctx: CliContext, data: T, render: (d: T) => string | voi
   const s = render(data);
   if (typeof s === 'string') process.stdout.write(s + (s.endsWith('\n') ? '' : '\n'));
   return data;
+}
+
+/**
+ * Ask before doing something irreversible (item 102). Three answers, and none of them is a guess:
+ *  - a terminal gets the question and must answer `y`;
+ *  - `--yes` is the answer given in advance;
+ *  - anything else (a pipe, a cron, a CI job) is REFUSED, because a script that never saw the question has not
+ *    agreed to anything. Silence is not consent when the next step spends money.
+ */
+export async function confirm(ctx: CliContext, question: string, opts: { yes?: boolean; flag?: string } = {}): Promise<void> {
+  const flag = opts.flag ?? '--yes';
+  if (opts.yes) { info(ctx, c.dim(`${question} ${flag}`)); return; }
+  if (!process.stdin.isTTY) throw new CliError(`refusing to continue without an answer: stdin is not a terminal, so nobody can be asked. Pass ${flag} to answer in advance.`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>((res) => rl.question(`${question} `, (a) => { rl.close(); res(a.trim().toLowerCase()); }));
+  if (answer !== 'y' && answer !== 'yes') throw new CliError('cancelled — nothing was bought, nothing was charged', 130);
 }
 
 export function info(ctx: CliContext, msg: string) { if (!ctx.quiet && !ctx.json) process.stdout.write(msg + '\n'); }
