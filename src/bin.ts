@@ -267,10 +267,12 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
     .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
     .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it, deepest first' })
+    // Item 271: without this, a knowledge this node has already paid for is collected, not bought a second time.
+    .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
     .example('$0 patch buy krx-all-2761', 'quote the price, ask, then pay')
     .example('$0 patch buy krx-all-2761 --yes --max-price 30', 'unattended, with a budget for the whole family'),
-  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
-    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], withRequired: a['with-base'] })))
+  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
+    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a['with-base'] })))
   .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
   run((ctx, a: G & { id: string }) => patch.patchDownload(ctx, a.id)))
@@ -458,10 +460,11 @@ cli.command('use <id>', 'One line to use knowledge: check it is verified → quo
   .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
   .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
   .option('with-base', { type: 'boolean', default: false, describe: 'also buy the bases this knowledge needs underneath it' })
+  .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
   .example('$0 use krx-all-2761', 'quote, ask, pay, download, load')
   .example('$0 use krx-all-2761 --yes --max-price 30', 'unattended, with a budget'),
-run((ctx, a: G & { id: string; apply: boolean; yes: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
-  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], withRequired: a['with-base'] })));
+run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; 'with-base'?: boolean }) =>
+  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a['with-base'] })));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)

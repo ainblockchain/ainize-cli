@@ -354,6 +354,8 @@ export interface BuyArgs {
   yes?: boolean;
   /** refuse if the TOTAL (this knowledge plus the bases it needs) is above this */
   maxPrice?: number;
+  /** pay a second time for something this node has already bought (item 271) — off, so a retry never charges twice */
+  again?: boolean;
 }
 
 /**
@@ -395,6 +397,18 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   const client = new NodeClient(ctx);
   const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`);
   const quote = await client.get<PatchQuote>(`/api/patches/${encodeURIComponent(id)}/quote`);
+  // Item 271: this node has already paid for it. Collect on that receipt instead of running the 402 loop again —
+  // no quote, no confirmation, no charge. `--again` is the deliberate second purchase.
+  if (detail.purchased && !o.again) {
+    info(ctx, c.dim(`${id} was already paid for by this node — collecting the body on that receipt (nothing will be charged; \`--again\` buys a second time on purpose)`));
+    const done = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`, { apply: !!o.apply }, { timeoutMs: 30 * 60_000 });
+    emit(ctx, done, (x) => [
+      c.ok('✓ ') + `collected ${c.id(x.patch_id)} — nothing was charged (paid ${x.amount}${x.currency ? ` ${x.currency}` : ''} already, tx ${shortHash(x.tx_hash, 16)})`,
+      ...x.steps.map((st) => `  ${c.head(st.step.padEnd(11))} ${st.detail}`),
+      c.dim(`  body: ${x.path}`),
+    ].join('\n'));
+    return done;
+  }
   const { total, balance } = await printQuote(ctx, client, detail, quote);
   if (o.maxPrice !== undefined && total > o.maxPrice) {
     throw new CliError(`${id} costs ${quote.total} ${quote.currency}${quote.missing.length ? ` with the ${quote.missing.length} base(s) it needs` : ''} — over --max-price ${o.maxPrice}. Nothing was bought.`);
@@ -404,7 +418,7 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   }
   await confirm(ctx, `Pay ${quote.total} ${quote.currency}${quote.missing.length ? ` for ${quote.missing.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
   const r = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`,
-    { apply: !!o.apply, with_required: !!o.withRequired, max_total: o.maxPrice }, { timeoutMs: 30 * 60_000 });
+    { apply: !!o.apply, with_required: !!o.withRequired, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 });
   emit(ctx, r, (x) => {
     const t0 = x.steps[0]?.at ?? Date.now();
     const cur = x.currency ?? quote.currency;
