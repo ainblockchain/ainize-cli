@@ -68,6 +68,13 @@ export interface PatchDetail extends CatalogEntry {
   /** The bases this knowledge needs underneath it, deepest first, with their prices (item 270). */
   requires?: { id: string; name: string; held: boolean; price: string | null; currency?: string; author?: string; author_name?: string | null; depth?: number; known?: boolean; purchased?: boolean; mine?: boolean }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null;
+  /** Why an announced knowledge has not been verified yet — null while it is still within its normal wait (item 154). */
+  stalled?: {
+    patch_id: string; since: number; waited_minutes: number; counted: number; quorum: number; hash_only: number;
+    needs_benchmark: boolean; model: string;
+    verifiers: { name: string | null; endpoint: string; address: string | null; model: string | null; attested: 'no' | 'hash-only' | 'executed' }[];
+    reason: string;
+  } | null;
 }
 
 export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail> {
@@ -86,6 +93,14 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
       ]),
       '', a.description ? a.description : c.dim('(no description)'),
     ];
+    // Item 154: an anchor stuck at 0/2 used to say nothing at all on the author's own machine — the retry warnings
+    // are events on the VERIFIERS' nodes. Print what this node knows, and who it asked.
+    if (e.stalled) {
+      lines.push('', c.warn(`not verified after ${e.stalled.waited_minutes} minutes — ${e.stalled.counted}/${e.stalled.quorum}`), `  ${e.stalled.reason}`);
+      if (e.stalled.verifiers.length) {
+        lines.push(...e.stalled.verifiers.map((v) => c.dim(`    ${v.name ?? v.endpoint} — serves ${v.model ?? 'no model'}; attested: ${v.attested}`)));
+      }
+    }
     if (e.attestations.length) {
       lines.push('', c.head('attestations'), table(e.attestations, [
         { key: 'v', title: 'VERIFIER', get: (x) => `${x.verifier_name ?? ''} ${c.dim(shortAddr(x.verifier, 6))}`.trim() },
