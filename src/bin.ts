@@ -150,12 +150,12 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .option('host', { type: 'string', describe: 'interface to bind (default 127.0.0.1 — this machine only)' })
   .option('public', { type: 'boolean', default: false, describe: 'bind 0.0.0.0 (every interface) — only behind a firewall or proxy' })
   .option('password', { type: 'string', describe: 'operator password, set now so nobody else can claim this node (or NGRAM_PASSWORD)' })
-  .option('no-password', { type: 'boolean', default: false, describe: 'leave the node unclaimed; `$0 login` claims it later (loopback only)' })
+  .option('no-password', { type: 'boolean', default: false, describe: `leave the node unclaimed; \`${PROG} login\` claims it later (loopback only)` })
   .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)', default: false })
   .option('new-identity', { type: 'boolean', describe: 'with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)', default: false })
   .example('$0 init --name alice --port 3402', 'local ledger node')
   .example('$0 init --name alice --password "…" --host 0.0.0.0', 'a node others can reach, claimed before it listens')
-  .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `$0 chain up`)'),
+  .example('$0 init --ledger ain --ain-provider http://localhost:8081', `AIN blockchain ledger (see \`${PROG} chain up\`)`),
 run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean; 'no-password'?: boolean }) =>
   init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'], noPassword: a['no-password'] }), false, true));
 
@@ -193,8 +193,10 @@ cli.command('keys', 'Node identity: the key that owns everything this node publi
 
 // ---------------------------------------------------------------- lifecycle
 cli.command('start', 'Start the node (foreground unless --detach)', (y: Y) => fail(y)
-  .option('port', { type: 'number' }).option('peer', { type: 'string', array: true, describe: 'extra peer URL(s)' })
-  .option('roles', { type: 'string' }).option('public-url', { type: 'string' })
+  .option('port', { type: 'number', describe: 'HTTP port for this run (default: the port in config.json)' })
+  .option('peer', { type: 'string', array: true, describe: 'extra peer URL(s)' })
+  .option('roles', { type: 'string', describe: 'comma list of seller,verifier,serving,gateway for this run (default: the config value)' })
+  .option('public-url', { type: 'string', describe: 'URL peers should reach this node at — an address on this machine is useless to them (default: the config value)' })
   .option('detach', { alias: 'd', type: 'boolean', default: false, describe: 'run in the background (pid in NGRAM_HOME/node.pid)' })
   .example('$0 start', '').example('$0 start -d --peer http://localhost:3402', 'second node joining the first'),
 run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
@@ -209,10 +211,11 @@ cli.command('status', 'Show node / ledger / runtime status', (y: Y) => fail(y)
   .example('$0 status --check', 'for a monitor or a deploy script'),
 run((ctx, a: G & { check: boolean }) => (a.check ? node.statusCheck(ctx) : node.status(ctx))));
 cli.command('logs', 'Show node events', (y: Y) => fail(y)
-  .option('follow', { alias: 'f', type: 'boolean', default: false }).option('patch', { type: 'string', describe: 'only events of a patch' })
+  .option('follow', { alias: 'f', type: 'boolean', default: false, describe: 'keep printing events as they happen (Ctrl-C to stop)' })
+  .option('patch', { type: 'string', describe: 'only events of a patch' })
   .option('kind', { choices: EVENT_KINDS, describe: 'only this kind of event' })
   .option('level', { choices: EVENT_LEVELS, describe: 'this level and worse (warn shows warn + error)' })
-  .option('limit', { type: 'number', default: 100 })
+  .option('limit', { type: 'number', default: 100, describe: 'how many past events to print, newest last' })
   .example('$0 logs --level warn', 'everything that went wrong, newest last')
   .example('$0 logs --kind trade --limit 20', ''),
 run((ctx, a: G & { follow: boolean; patch?: string; kind?: string; level?: string; limit: number }) => node.logs(ctx, a), true));
@@ -220,7 +223,7 @@ cli.command('seed', 'Seed demo data (prototype ledger, real Qwen3.8 patches if p
   .option('real', { type: 'boolean', default: true, describe: 'register real patches from the runtime repo' })
   .option('synthetic', { type: 'boolean', default: false, describe: 'create synthetic law/KR vs law/US demo patches' })
   .option('prototype', { type: 'boolean', default: false, describe: 'import the reference prototype ledger' })
-  .option('announce', { type: 'boolean', default: true }),
+  .option('announce', { type: 'boolean', default: true, describe: 'announce the seeded knowledge on the ledger (--no-announce leaves drafts)' }),
 run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announce: boolean }) => node.seed(ctx, a), false, true));
 cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
 cli.command('blobs', 'Knowledge files this node holds on disk, and what they cost', (y: Y) => fail(y)
@@ -261,21 +264,29 @@ cli.command('peers', 'Manage peers', (y: Y) => fail(y)
 cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
     .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
-    .option('model', { type: 'string' }).option('schema', { type: 'string', describe: 'benchmark schema' }).option('branch', { type: 'string' })
-    .option('author', { type: 'string' }).option('q', { type: 'string', describe: 'text search' })
-    .option('sort', { choices: ['latest', 'popular', 'price', 'rows'] as const, default: 'latest' })
-    .option('limit', { type: 'number', default: 100 }).option('mine', { type: 'boolean', default: false, describe: 'only my patches (needs login)' })
+    .option('model', { type: 'string', describe: 'only knowledge for this model id_M (e.g. Qwen3.8-Flash-Next)' })
+    .option('schema', { type: 'string', describe: 'benchmark schema' })
+    .option('branch', { type: 'string', describe: `only knowledge on this track (see \`${PROG} branch ls\`)` })
+    .option('author', { type: 'string', describe: 'only knowledge published by this node address' })
+    .option('q', { type: 'string', describe: 'text search' })
+    .option('sort', { choices: ['latest', 'popular', 'price', 'rows'] as const, default: 'latest', describe: 'newest first, most sold, cheapest, or biggest' })
+    .option('limit', { type: 'number', default: 100, describe: 'how many rows' }).option('mine', { type: 'boolean', default: false, describe: 'only my patches (needs login)' })
     .option('drafts', { type: 'boolean', default: false, describe: 'include my drafts (needs login)' }),
   run((ctx, a: G & patch.LsArgs) => patch.patchLs(ctx, a)))
   .command('get <id>', 'Show a patch in detail', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchGet(ctx, a.id)))
   .command('publish <file>', 'Register a .npz patch body as a draft (and optionally announce it)', (yy: Y) => yy
     .positional('file', { type: 'string', demandOption: true, describe: 'path to .npz on the node machine' })
-    .option('name', { type: 'string', demandOption: true }).option('model', { type: 'string', demandOption: true, describe: 'target model id_M' })
+    .option('name', { type: 'string', demandOption: true, describe: 'what buyers see in the catalogue' })
+    .option('model', { type: 'string', demandOption: true, describe: 'target model id_M' })
     .option('benchmark', { type: 'string', demandOption: true, describe: 'benchmark JSON file or inline JSON ({schema, queries, format, samples})' })
-    .option('id', { type: 'string' }).option('price', { type: 'string' }).option('description', { type: 'string' })
-    .option('parents', { type: 'string', describe: 'comma list of parent patch ids (lineage/royalty)' }).option('branch', { type: 'string' })
-    .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx)' }).option('license', { type: 'string' })
-    .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const })
+    .option('id', { type: 'string', describe: 'catalog id — permanent (default: a slug of --name)' })
+    .option('price', { type: 'string', describe: `price per download in this node's currency (default: \`${PROG} config get market.defaultPrice\`); editable while it is a draft, fixed for good at announce` })
+    .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+    .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) of every sale of this one` })
+    .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
+    .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
+    .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
+    .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const, describe: 'how buyers are charged (default: per_download)' })
     .option('contributor', { type: 'string', array: true, describe: 'data provider credited on the record: addr:name:share (repeatable, ≤ 4, Σ share ≤ 1)' })
     .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
     .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
@@ -289,10 +300,13 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('import <file>', 'Import a downloaded lesson (.npz + recipe.json) as a PRIVATE draft: no announce, no ledger record', (yy: Y) => yy
     .positional('file', { type: 'string', demandOption: true, describe: 'lesson-<slug>.npz on the node machine (stays in place)' })
     .option('recipe', { type: 'string', demandOption: true, describe: 'recipe.json downloaded with the lesson (benchmark, model, facts)' })
-    .option('id', { type: 'string', describe: 'draft id (default: the lesson\'s draft id, taught-<slug>)' }).option('name', { type: 'string' })
-    .option('model', { type: 'string', describe: 'target model id_M when the recipe names none' }).option('price', { type: 'string' }).option('license', { type: 'string' })
-    .option('description', { type: 'string' })
-    .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', 'then: $0 patch apply taught-pixelplus-1a2b3c'),
+    .option('id', { type: 'string', describe: 'draft id (default: the lesson\'s draft id, taught-<slug>)' })
+    .option('name', { type: 'string', describe: 'name for the draft (default: the lesson\'s own name)' })
+    .option('model', { type: 'string', describe: 'target model id_M when the recipe names none' })
+    .option('price', { type: 'string', describe: `price if you later publish it (default: this node's market.defaultPrice)` })
+    .option('license', { type: 'string', describe: 'licence for the draft: an SPDX id or free text' })
+    .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+    .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', `then: ${PROG} patch apply taught-pixelplus-1a2b3c`),
   run((ctx, a: G & patch.ImportArgs) => patch.patchImport(ctx, a)))
   .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this announce may retire — it refuses until every one of them is named' })
@@ -304,7 +318,8 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .example('$0 patch retire krx-codes-2026-08 --reason "the source feed changed; use krx-codes-2026-09"', ''),
   run((ctx, a: G & { id: string; reason?: string }) => patch.patchRetire(ctx, a.id, { reason: a.reason })))
   .command('verify <id>', 'Run this node\'s verifier on a patch and publish an attestation', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchVerify(ctx, a.id)))
-  .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }).option('reason', { type: 'string', demandOption: true }),
+  .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+    .option('reason', { type: 'string', demandOption: true, describe: 'why, in one line — it goes on the public record next to your address' }),
     run((ctx, a: G & { id: string; reason: string }) => patch.patchChallenge(ctx, a.id, a.reason)))
   .command('buy <id>', 'Buy a listed patch via HTTP 402 (x402) and download its body', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .option('apply', { type: 'boolean', default: false, describe: 'apply to the serving runtime after download' })
@@ -342,7 +357,8 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
   run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
   .command('merge <a> <b>', 'Combine two knowledges into one: what overlaps, what they answer differently, and how to build it', (yy: Y) => yy
-    .positional('a', { type: 'string', demandOption: true }).positional('b', { type: 'string', demandOption: true })
+    .positional('a', { type: 'string', demandOption: true, describe: 'the first knowledge' })
+    .positional('b', { type: 'string', demandOption: true, describe: 'the second one — where they disagree, this one is the alternative answer' })
     .option('preview', { type: 'boolean', default: false, describe: 'only measure: questions, rows and which builds are possible' })
     .option('resolve', { type: 'string', describe: 'JSON file of {"<question key>": "a" | "b" | "drop" | {"answer": "…"}}' })
     .option('tier', { type: 'string', choices: ['union', 'retrain', 'rebuild'], describe: 'union = just combine (no training) · retrain = teach the disagreeing questions on top of both · rebuild = train everything from the combined questions' })
@@ -364,7 +380,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .positional('id', { type: 'string', demandOption: true })
     .option('kind', { type: 'string', choices: ['own_miss', 'preflight', 'free_wrong', 'request', 'gap'], describe: 'only one source' })
     .option('all', { type: 'boolean', default: false, describe: 'include the ones a later knowledge already answered' })
-    .option('limit', { type: 'number', default: 50 })
+    .option('limit', { type: 'number', default: 50, describe: 'how many questions to print' })
     .example('$0 patch missing krx-all-2761', 'what to add on top of it'),
   run((ctx, a: G & { id: string; kind?: string; all?: boolean; limit?: number }) => patch.patchMissing(ctx, a.id, { kind: a.kind, all: a.all, limit: a.limit })))
   .command('signals <id>', 'How a knowledge is doing: network facts, and this node\'s last 30 days', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }),
@@ -384,9 +400,13 @@ cli.command('publish <file>', 'One line to sell knowledge: register a .npz + ben
   .option('name', { type: 'string', demandOption: true, describe: 'human name of the knowledge' })
   .option('model', { type: 'string', demandOption: true, describe: 'target model id_M (e.g. Qwen3.8-Flash-Next)' })
   .option('benchmark', { type: 'string', demandOption: true, describe: 'bench.json path or inline JSON {schema, queries, format, samples:[{prompt,expect}]}' })
-  .option('price', { type: 'string', describe: 'price in the node currency (AIN or node credit)' })
-  .option('id', { type: 'string' }).option('description', { type: 'string' }).option('parents', { type: 'string', describe: 'comma list of source knowledge ids (creators get a revenue share)' })
-  .option('branch', { type: 'string' }).option('topic', { type: 'string' }).option('license', { type: 'string' })
+  .option('price', { type: 'string', describe: `price per download in the node currency, AIN or node credit (default: \`${PROG} config get market.defaultPrice\`); it can be changed while it is a draft and is fixed for good at announce` })
+  .option('id', { type: 'string', describe: 'catalog id — permanent (default: a slug of --name)' })
+  .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+  .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) out of every sale of this one` })
+  .option('branch', { type: 'string', describe: 'knowledge track to publish it on (see `ainize branch ls`)' })
+  .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
+  .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
   .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
   .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this publish may retire (required when it would retire any)' })
   .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
@@ -454,8 +474,8 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .demandCommand(1, 'Give a dataset file, or a subcommand (ls|get|rm).'), () => undefined)
 
   .command('train <target>', 'Teach a lesson from a dataset id or a dataset file', (yy: Y) => keyOpts(yy)
-    .positional('target', { type: 'string', demandOption: true, describe: 'dataset id (`$0 teach dataset ls`) or a dataset file, which is uploaded first' })
-    .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'how hard to train (see `$0 teach status <node>`)' })
+    .positional('target', { type: 'string', demandOption: true, describe: `dataset id (\`${PROG} teach dataset ls\`) or a dataset file, which is uploaded first` })
+    .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: `how hard to train (see \`${PROG} teach status <node>\`)` })
     .option('check', { type: 'boolean', describe: '--no-check skips the side-effect check on the live model (publishing then stays blocked until a recheck)' })
     .option('alt', { type: 'boolean', describe: '--no-alt trains only the wording in the file, not the second phrasing' })
     .option('rows', { type: 'number', describe: 'train only the first N questions of the dataset' })
@@ -479,7 +499,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
   // ---- item 238: the last step of the loop, which only the browser could do. The consents are the publisher's own
   // and are never defaulted: without both flags the command refuses and quotes what is being consented to.
   .command('publish <job-id>', 'Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)', (yy: Y) => keyOpts(yy)
-    .positional('job-id', { type: 'string', demandOption: true, describe: 'lesson id (`$0 teach jobs`)' })
+    .positional('job-id', { type: 'string', demandOption: true, describe: `lesson id (\`${PROG} teach jobs\`)` })
     .option('name', { type: 'string', demandOption: true, describe: 'what buyers see, 2-80 characters' })
     .option('price', { type: 'string', describe: 'price per download in this node\'s currency (default 0 = free)' })
     .option('license', { type: 'string', describe: 'licence for the knowledge (CC-BY-4.0, CC0-1.0, Proprietary, …)' })
@@ -506,8 +526,8 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
 // ---------------------------------------------------------------- dataset (the questions behind a published knowledge)
 cli.command('dataset', 'Training sets: the questions a published knowledge was taught from (lineage design §13)', (y: Y) => fail(y)
   .command(['get <id>', 'download <id>'], 'The training set of a knowledge — what it is, and with -o the questions themselves', (yy: Y) => keyOpts(yy)
-    .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (`$0 patch ls`) or the sha256 of the training set' })
-    .option('out', { alias: 'o', type: 'string', describe: 'write the questions to this file (.jsonl — re-uploadable with `$0 teach dataset <file>`)' })
+    .positional('id', { type: 'string', demandOption: true, describe: `knowledge id (\`${PROG} patch ls\`) or the sha256 of the training set` })
+    .option('out', { alias: 'o', type: 'string', describe: `write the questions to this file (.jsonl — re-uploadable with \`${PROG} teach dataset <file>\`)` })
     .option('manifest', { type: 'boolean', default: false, describe: 'also print the manifest: row origin, licence, benchmark hash, PII scan, declaration' })
     .option('include-notes', { type: 'boolean', default: false, describe: 'keep the publisher’s per-row notes in the written file (they are left out by default)' })
     .example('$0 dataset get krx-all-2761', 'access, licence, where it came from, and the first questions')
@@ -517,7 +537,7 @@ cli.command('dataset', 'Training sets: the questions a published knowledge was t
   .demandCommand(1, 'Subcommand is required (get).'), () => undefined);
 
 cli.command('use <id>', 'One line to use knowledge: check it is verified → quote the price → pay → download → load into your model', (y: Y) => fail(y)
-  .positional('id', { type: 'string', demandOption: true, describe: 'knowledge id (see `$0 patch ls`)' })
+  .positional('id', { type: 'string', demandOption: true, describe: `knowledge id (see \`${PROG} patch ls\`)` })
   .option('apply', { type: 'boolean', default: true, describe: 'load into the serving model after download (--no-apply to only download)' })
   .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
   .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
@@ -568,7 +588,7 @@ run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; pat
 
 // ---------------------------------------------------------------- ledger
 cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
-  .command('ls', 'List records', (yy: Y) => yy.option('kind', { choices: RECORD_KINDS, describe: 'only this kind of record' }).option('limit', { type: 'number', default: 50 }),
+  .command('ls', 'List records', (yy: Y) => yy.option('kind', { choices: RECORD_KINDS, describe: 'only this kind of record' }).option('limit', { type: 'number', default: 50, describe: 'how many records, newest last' }),
     run((ctx, a: G & { kind?: RecordKind; limit: number }) => ledger.ledgerLs(ctx, a)))
   .command('verify', 'Verify hashes, signatures and chain linkage', (yy: Y) => yy, run((ctx) => ledger.ledgerVerify(ctx)))
   .command('graph', 'ASCII lineage tree', (yy: Y) => yy, run((ctx) => ledger.ledgerGraph(ctx)))
@@ -579,11 +599,14 @@ cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
 cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patch sets)', (y: Y) => fail(y)
   .command('ls', 'List branches', (yy: Y) => yy, run((ctx) => branch.branchLs(ctx)))
   .command('create <name>', 'Create a branch', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true })
-    .option('description', { type: 'string' }).option('context', { type: 'string', array: true, describe: 'k=v routing attributes (e.g. jurisdiction=KR)' })
+    .option('description', { type: 'string', describe: 'what this track is for, in one line' })
+    .option('context', { type: 'string', array: true, describe: 'k=v routing attributes (e.g. jurisdiction=KR)' })
     .option('patch', { type: 'string', array: true, describe: 'patch id(s) in the branch' })
     .example('$0 branch create law/KR --context jurisdiction=KR --patch law-kr-2025', ''),
   run((ctx, a: G & { name: string; description?: string; context?: string[]; patch?: string[] }) => branch.branchCreate(ctx, a.name, a)))
-  .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }).positional('patchId', { type: 'string', demandOption: true })
+  .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy
+    .positional('name', { type: 'string', demandOption: true, describe: `the track (see \`${PROG} branch ls\`)` })
+    .positional('patchId', { type: 'string', demandOption: true, describe: 'the knowledge to add — every subscriber buys and loads it' })
     .option('force', { type: 'boolean', default: false, describe: 'add it even though it is not LISTED — every subscriber will buy and load it' }),
     run((ctx, a: G & { name: string; patchId: string; force?: boolean }) => branch.branchAdd(ctx, a.name, a.patchId, { force: a.force })))
   .command('quote <name>', 'What subscribing to this track would spend, item by item, before anything is spent', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
@@ -600,15 +623,15 @@ cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a re
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
 cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
 cli.command('payouts', 'Royalty transfers this node owes creators and data providers (AIN ledger)', (y: Y) => fail(y)
-  .command(['ls', '$0'], 'List payouts', (yy: Y) => yy.option('status', { type: 'string', choices: ['pending', 'paid', 'failed'] }).option('address', { type: 'string', describe: 'only this recipient' }).option('limit', { type: 'number' })
+  .command(['ls', '$0'], 'List payouts', (yy: Y) => yy.option('status', { type: 'string', choices: ['pending', 'paid', 'failed'], describe: 'only payouts in this state' }).option('address', { type: 'string', describe: 'only this recipient' }).option('limit', { type: 'number', describe: 'how many rows (default: all of them)' })
     .example('$0 payouts ls --status failed', ''),
   run((ctx, a: G & { status?: string; address?: string; limit?: number }) => branch.payoutsLs(ctx, a)))
-  .command('retry <id>', 'Retry one failed / pending payout now', (yy: Y) => yy.positional('id', { type: 'number', demandOption: true }), run((ctx, a: G & { id: number }) => branch.payoutRetry(ctx, a.id))),
+  .command('retry <id>', 'Retry one failed / pending payout now', (yy: Y) => yy.positional('id', { type: 'number', demandOption: true, describe: `the payout row id (\`${PROG} payouts ls\`)` }), run((ctx, a: G & { id: number }) => branch.payoutRetry(ctx, a.id))),
   () => undefined);
 
 // ---------------------------------------------------------------- drive
 cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => fail(y)
-  .command('status', 'Drive status (pairing, agent, files)', (yy: Y) => yy.option('files', { type: 'boolean', default: false }), run((ctx, a: G & { files: boolean }) => drive.driveStatus(ctx, a)))
+  .command('status', 'Drive status (pairing, agent, files)', (yy: Y) => yy.option('files', { type: 'boolean', default: false, describe: 'also list the files in the drive folder' }), run((ctx, a: G & { files: boolean }) => drive.driveStatus(ctx, a)))
   .command('up', 'Start the aindrive agent for the node\'s drive folder', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'up')))
   .command('stop', 'Stop the aindrive agent', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'stop')))
   .command('sync', 'Rewrite the drive mirror from the current market state', (yy: Y) => yy, run((ctx) => drive.driveAction(ctx, 'sync')))
@@ -621,8 +644,11 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
 cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) => fail(y)
   .command('up', 'Start (or attach to) a local 1-node AIN chain on :8081', (yy: Y) => yy.option('wait', { type: 'number', default: 90, describe: 'seconds to wait for SERVING' }), run((ctx, a: G & { wait: number }) => chain.chainUp(ctx, a), false, true))
   .command('down', 'Remove the local chain container', (yy: Y) => yy, run((ctx) => chain.chainDown(ctx), false, true))
-  .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider), false, true))
-  .command('fund <address> [amount]', 'Transfer AIN from the local genesis account (local chain only)', (yy: Y) => yy.positional('address', { type: 'string', demandOption: true }).positional('amount', { type: 'number', default: 1000 }).option('provider', { type: 'string' }),
+  .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to ask (default: the one in config.json)' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider), false, true))
+  .command('fund <address> [amount]', 'Transfer AIN from the local genesis account (local chain only)', (yy: Y) => yy
+    .positional('address', { type: 'string', demandOption: true, describe: `the AIN address to credit (\`${PROG} keys show\`)` })
+    .positional('amount', { type: 'number', default: 1000, describe: 'how much AIN' })
+    .option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to send it through (default: the one in config.json)' }),
     run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider), false, true))
   .command('setup', 'Register the knowledge app + market rules on-chain (funds the node identity first on a local chain)', (yy: Y) => yy.option('fund', { type: 'number', describe: 'AIN to fund the node identity with' }),
     run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a), false, true))
