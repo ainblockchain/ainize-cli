@@ -2,7 +2,7 @@
  * `ainize patch …` — publish, inspect, verify, buy and apply knowledge patches.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
@@ -194,13 +194,63 @@ export function parseContributors(list: string[] | undefined): Contributor[] | u
   return out;
 }
 
+/** The node's own id rule (`market.createDraft`), mirrored so the CLI can say what will happen before it happens. */
+export const slugForId = (name: string): string => name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+/** …and the shape the node then demands of it. */
+const NODE_SLUG = /^[a-z0-9][a-z0-9._-]{1,63}$/;
+
+/**
+ * The id of a knowledge whose publisher did not choose one (item 158).
+ *
+ * The node derives it from the name by dropping everything outside `a-z 0-9 . _ -`, so every Korean, Japanese or
+ * Chinese name collapsed to the empty string and the publisher was told `invalid patch id (use 2-64 chars …)` —
+ * a rule about a flag they never passed, on the product's own flagship subject. A name with no usable ASCII gets a
+ * derived, stable id here instead, and the command says so; `--id` still wins over everything.
+ */
+export function idFromName(name: string): { id: string; from: 'name' | 'hash' } {
+  const slug = slugForId(name);
+  if (NODE_SLUG.test(slug)) return { id: slug, from: 'name' };
+  return { id: `patch-${createHash('sha256').update(name).digest('hex').slice(0, 8)}`, from: 'hash' };
+}
+
+/** The benchmark, from a path or from inline JSON — with the three mistakes told apart (item 159). */
+export function readBenchmarkArg(value: string): unknown {
+  const raw = (value ?? '').trim();
+  if (raw.startsWith('{')) {
+    try { return JSON.parse(raw); } catch (e) {
+      throw new CliError(`--benchmark was read as inline JSON (it starts with "{") and could not be parsed: ${(e as Error).message}\n`
+        + `  it must be an object like {"schema":"krx-ticker-codes","queries":2761,"format":["template"],"samples":[{"prompt":"…","expect":"…"}]}`);
+    }
+  }
+  const p = resolve(raw);
+  if (!existsSync(p)) throw new CliError(`benchmark file not found: ${p}\n  --benchmark takes a path to a JSON file, or inline JSON starting with "{"`);
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch (e) {
+    throw new CliError(`${p} is not valid JSON: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * A knowledge body is a numpy archive, which is a ZIP (item 159). Publishing something else used to reach the npz
+ * reader on the node and come back as `npz: end of central directory not found` — a ZIP structure term, with no
+ * filename, that gives no hint the file is simply the wrong kind.
+ */
+export function assertNpzBody(file: string): void {
+  const head = Buffer.alloc(4);
+  const fd = openSync(file, 'r');
+  let n = 0;
+  try { n = readSync(fd, head, 0, 4, 0); } finally { closeSync(fd); }
+  if (n === 4 && head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) return;
+  throw new CliError(`${file} is not a valid .npz — a knowledge body is a numpy archive (a ZIP holding the addrs / before / after arrays), and this file does not start with one.\n`
+    + `  ${statSync(file).size} bytes, first bytes ${[...head.subarray(0, n)].map((x) => x.toString(16).padStart(2, '0')).join(' ') || '(empty file)'}.\n`
+    + `  Export it again from the trainer, or pass the file the lesson produced (\`lesson-*.npz\`).`);
+}
+
 export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ anchor: PatchAnchor; announced: boolean }> {
   const file = resolve(a.file);
   if (!existsSync(file)) throw new CliError(`file not found: ${file}`);
   if (!file.endsWith('.npz')) throw new CliError('patch body must be a .npz (addrs/before/after arrays)');
-  let benchmark: unknown;
-  if (existsSync(a.benchmark)) benchmark = JSON.parse(readFileSync(a.benchmark, 'utf8'));
-  else { try { benchmark = JSON.parse(a.benchmark); } catch { throw new CliError('--benchmark must be a JSON file path or inline JSON'); } }
+  assertNpzBody(file);
+  const benchmark = readBenchmarkArg(a.benchmark);
   const b = benchmark as { schema?: string; queries?: number; format?: string[] };
   if (!b.schema) throw new CliError('benchmark.schema is required (e.g. "krx-ticker-codes")');
   if (!b.queries) b.queries = 0;
@@ -209,8 +259,14 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   const client = new NodeClient(ctx);
   const datasetFile = a.dataset ? resolve(a.dataset) : undefined;
   if (datasetFile && !existsSync(datasetFile)) throw new CliError(`training set not found: ${datasetFile}`);
+  // Item 158 — an id derived from a name that has no ASCII at all.
+  const derived = a.id ? { id: a.id, from: 'name' as const } : idFromName(a.name);
+  if (derived.from === 'hash') {
+    warn(ctx, `no id could be made from the name ${JSON.stringify(a.name)} — an id is a-z 0-9 . _ - and that name has none of them, so this draft is ${c.id(derived.id)}.`);
+    info(ctx, c.dim(`  choose your own instead: ${PROG} patch rm ${derived.id} && ${PROG} publish ${a.file} --id <your-slug> --name ${JSON.stringify(a.name)} …`));
+  }
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
-    id: a.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
+    id: derived.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
     contributors: contributors ? JSON.stringify(contributors) : undefined,
     // past `duplicate_body` / `model_mismatch` only — the node never lets --force publish another author's bytes
