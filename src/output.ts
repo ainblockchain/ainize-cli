@@ -102,7 +102,7 @@ export interface Column<T> { key: string; title: string; get: (row: T) => string
  * shrunk. Piped output and `--wide` skip the whole mechanism.
  */
 export function table<T>(rows: T[], cols: Column<T>[], empty = '(none)'): string {
-  if (!rows.length) return c.dim(empty);
+  if (!rows.length) return c.dim(fitLine(empty));
   const cells = rows.map((r) => cols.map((col) => col.get(r) ?? ''));
   const natural = cols.map((col, i) => Math.max(width(col.title), ...cells.map((r) => width(r[i]))));
   const GAP = 2;
@@ -139,7 +139,7 @@ export function table<T>(rows: T[], cols: Column<T>[], empty = '(none)'): string
     c.dim(show.map((i) => '─'.repeat(widths[i])).join(' '.repeat(GAP))),
     ...cells.map((r) => line(r)),
   ];
-  if (dropped) out.push(c.dim(`(${dropped} more column${dropped === 1 ? '' : 's'} not shown: ${cols.slice(show.length).map((x) => x.title).join(', ')} — --wide, or a wider terminal, shows them)`));
+  if (dropped) out.push(c.dim(fitLine(`(${dropped} more column${dropped === 1 ? '' : 's'} not shown: ${cols.slice(show.length).map((x) => x.title).join(', ')} — --wide, or a wider terminal, shows ${dropped === 1 ? 'it' : 'them'})`)));
   return out.join('\n');
 }
 
@@ -150,16 +150,16 @@ export function table<T>(rows: T[], cols: Column<T>[], empty = '(none)'): string
 export function fitLine(s: string, indent = 2): string {
   const max = budget();
   if (max === Infinity || width(s) <= max) return s;
-  const words = s.split(' ');
-  const lines: string[] = [];
-  let cur = '';
-  for (const w of words) {
-    const pad = lines.length ? ' '.repeat(indent) : '';
-    if (cur && width(cur) + 1 + width(w) > max) { lines.push(cur); cur = pad + w; continue; }
-    cur = cur ? `${cur} ${w}` : pad + w;
-  }
-  if (cur) lines.push(cur);
-  return lines.join('\n');
+  return s.split('\n').map((one) => {
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of one.split(' ')) {
+      if (cur && width(cur) + 1 + width(w) > max) { lines.push(cur); cur = ' '.repeat(indent) + w; continue; }
+      cur = cur ? `${cur} ${w}` : w;
+    }
+    if (cur) lines.push(cur);
+    return lines.join('\n');
+  }).join('\n');
 }
 
 export function kv(pairs: [string, unknown][]): string {

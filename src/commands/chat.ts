@@ -12,7 +12,7 @@ import { verificationCount } from '@ngram/core';
 import type { CatalogEntry, RuntimeStatus } from '@ngram/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, emit, info, statusColor, table } from '../output.js';
+import { c, emit, fitLine, info, statusColor, table } from '../output.js';
 
 export type ChatMode = 'base' | 'patched' | 'compare';
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
@@ -173,7 +173,9 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
     const dimIf = (r: PickerRowView, s: string) => (retired(r) ? c.dim(s) : s);
     const superseded = rows.filter((r) => r.e.superseded_by.length);
     const sameModel = new Set(rows.map((r) => r.e.anchor.model.id_M)).size <= 1;
-    return [head, lock, pinned, dirty, overlaps, table(rows, [
+    // Item 115 — the widest thing on this screen was never the table but the prose around it (the overlaps line
+    // measured 293 display columns). Tables fit themselves; these are wrapped to the same budget.
+    return [...[head, lock, pinned, dirty, overlaps].map((l) => (l ? fitLine(l) : l)), table(rows, [
       { key: 'id', title: 'ID', get: (r) => (retired(r) ? c.dim(r.e.anchor.id) : c.id(r.e.anchor.id)) },
       { key: 'name', title: 'NAME', get: (r) => dimIf(r, r.e.anchor.name) },
       { key: 'status', title: 'STATUS', get: (r) => statusColor(r.e.status) + (r.draft ? c.dim(' (yours)') : '') },
@@ -188,9 +190,9 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
       }, align: 'right' as const },
       { key: 'sample', title: 'TRY', get: (r) => { const s = r.e.anchor.benchmark.samples?.[0]; return s ? dimIf(r, `${JSON.stringify(s.prompt.trim())} → ${s.expect}`) : c.dim('-'); } },
     ], emptyPicker(x)),
-    ...superseded.map((r) => c.dim(`  ${r.e.anchor.id} → superseded by ${r.e.superseded_by.join(', ')} (a newer version of the same subject — test that one unless you need this exact version)`)),
-    drafts.length ? c.dim(`  ${drafts.length} DRAFT row(s) are your own knowledge, not announced: only this node can test them (\`${PROG} patch announce <id>\` publishes one).`) : '',
-    rows.length ? c.dim(`\n${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`) : '',
+    ...superseded.map((r) => c.dim(fitLine(`  ${r.e.anchor.id} → superseded by ${r.e.superseded_by.join(', ')} (a newer version of the same subject — test that one unless you need this exact version)`, 4))),
+    drafts.length ? c.dim(fitLine(`  ${drafts.length} DRAFT row(s) are your own knowledge, not announced: only this node can test them (\`${PROG} patch announce <id>\` publishes one).`, 4)) : '',
+    rows.length ? '\n' + c.dim(fitLine(`${PROG} chat <ID> "<question>"   or   ${PROG} chat <ID>   for an interactive session   (${PROG} chat --patch a,b loads up to ${MAX_CHAT_PATCHES} together)`)) : '',
     elsewhere ? '\n' + elsewhere : ''].filter(Boolean).join('\n');
   });
   return d;
