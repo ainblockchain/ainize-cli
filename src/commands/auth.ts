@@ -11,25 +11,41 @@ import { CliError, PROG, readState, writeState, type CliContext } from '../conte
 import { runningPid } from '../pid.js';
 import { c, info, ok, shortAddr, warn } from '../output.js';
 
+/** What a password prompt says when there is nobody to answer it — the same sentence on both paths (item 109). */
+const noAnswer = (): CliError => new CliError(
+  `no password given and stdin is not a terminal, so nobody can be asked — pass --password, set NGRAM_PASSWORD, or pipe one in (\`echo "…" | ${PROG} login\`). It must be at least 4 characters.`);
+
 export async function promptPassword(question: string): Promise<string> {
   if (!process.stdin.isTTY) {
+    // A pipe or a file: `echo "…" | ainize login` is read here. What was never handled is EOF — `ainize login
+    // < /dev/null`, an ssh command, a cron line — where the readline callback never fires, the promise never
+    // settles, and Node printed its own "Detected unsettled top-level await" and exited 13 (item 109).
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((res) => rl.question(question, (a) => { rl.close(); res(a.trim()); }));
+    return new Promise<string>((resolve, reject) => {
+      let done = false;
+      rl.question(question, (a) => { if (!done) { done = true; rl.close(); resolve(a.trim()); } });
+      rl.once('close', () => { if (!done) { done = true; reject(noAnswer()); } });
+    });
   }
-  return new Promise((resolve) => {
+  return new Promise<string>((resolve, reject) => {
     process.stdout.write(question);
     const stdin = process.stdin;
     stdin.setRawMode(true); stdin.resume(); stdin.setEncoding('utf8');
     let buf = '';
+    const stop = () => { stdin.setRawMode(false); stdin.pause(); stdin.off('data', onData); stdin.off('end', onEnd); };
     const onData = (ch: string) => {
       for (const k of ch) {
-        if (k === '\r' || k === '\n') { stdin.setRawMode(false); stdin.pause(); stdin.off('data', onData); process.stdout.write('\n'); resolve(buf); return; }
-        if (k === '') { process.stdout.write('\n'); process.exit(130); }
+        if (k === '\r' || k === '\n') { stop(); process.stdout.write('\n'); resolve(buf); return; }
+        if (k === '') { stop(); process.stdout.write('\n'); process.exit(130); }
+        // Ctrl-D on an empty line is the terminal's own end of input, and is answered like a closed stdin
+        if (k === '' && !buf) { stop(); process.stdout.write('\n'); reject(noAnswer()); return; }
         if (k === '' || k === '\b') { buf = buf.slice(0, -1); continue; }
         buf += k;
       }
     };
+    const onEnd = () => { stop(); process.stdout.write('\n'); reject(noAnswer()); };
     stdin.on('data', onData);
+    stdin.once('end', onEnd);
   });
 }
 
@@ -73,7 +89,9 @@ export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token
   let password = a.password ?? process.env.NGRAM_PASSWORD;
   if (!password) {
     password = await promptPassword(me.needsSetup ? `Set an operator password for ${me.name} (${me.address.slice(0, 10)}…): ` : `Operator password for ${me.name}: `);
-    if (me.needsSetup) {
+    // Typing a new password twice catches a typo in the one thing that cannot be typed back; a password PIPED in
+    // has no second line to confirm against, so asking for one would make the setup impossible to script (item 109).
+    if (me.needsSetup && process.stdin.isTTY) {
       const again = await promptPassword('Confirm password: ');
       if (again !== password) throw new CliError('passwords do not match');
     }

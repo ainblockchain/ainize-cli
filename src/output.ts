@@ -256,7 +256,11 @@ export function info(ctx: CliContext, msg: string) {
   if (ctx.json) { jsonNotes.push(msg.replace(ANSI, '')); return; }
   if (!ctx.quiet) process.stdout.write(msg + '\n');
 }
-export function ok(ctx: CliContext, msg: string) { info(ctx, c.ok('✓ ') + msg); }
+/** The tick is decoration for a terminal; a JSON note keeps the sentence and nothing else. */
+export function ok(ctx: CliContext, msg: string) {
+  if (ctx.json) { jsonNotes.push(msg.replace(ANSI, '')); return; }
+  info(ctx, c.ok('✓ ') + msg);
+}
 export function warn(ctx: CliContext, msg: string) { if (!ctx.quiet) process.stderr.write(c.warn('! ') + msg + '\n'); }
 
 // ---------------------------------------------------------------- the wait (item 105)

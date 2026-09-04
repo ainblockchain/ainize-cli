@@ -241,11 +241,15 @@ cli.command('gc', 'Delete knowledge files this node neither published nor bought
     node.gc(ctx, { dryRun: a['dry-run'], keepPurchased: a['keep-purchased'], olderThan: a['older-than'], allowSoleCopy: a['allow-sole-copy'], yes: a.yes })));
 
 // ---------------------------------------------------------------- auth
-cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y).option('password', { type: 'string', describe: 'or NGRAM_PASSWORD env' })
-  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)' }),
+cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y)
+  .option('password', { type: 'string', describe: 'the operator password, at least 4 characters — or NGRAM_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in' })
+  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)' })
+  .example('$0 login', 'asks for the password (it is not echoed)')
+  .example('NGRAM_PASSWORD="…" $0 login', 'in a script, a cron line or over ssh — as does --password, and so does piping it in')
+  .example('$0 login --setup-token "$(ssh host cat ~/.ngram/setup-token)"', 'claim a node that has no password yet, from another machine'),
   run((ctx, a: G & { password?: string; 'setup-token'?: string }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'] })));
 cli.command('password', 'Change the operator password (--reset rewrites it in config.json when you have forgotten it)', (y: Y) => fail(y)
-  .option('password', { type: 'string', describe: 'the new password (or NGRAM_NEW_PASSWORD)' })
+  .option('password', { type: 'string', describe: 'the new password, at least 4 characters (or NGRAM_NEW_PASSWORD)' })
   .option('current', { type: 'string', describe: 'the current password (or NGRAM_PASSWORD)' })
   .option('reset', { type: 'boolean', default: false, describe: 'forgotten password: write a new hash into config.json (the node must be stopped)' })
   .example('$0 password', 'change it on the running node')
