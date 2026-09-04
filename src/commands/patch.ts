@@ -8,7 +8,7 @@ import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { c, emit, fmtBytes, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } from '../output.js';
+import { c, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
 
@@ -48,7 +48,9 @@ export function verificationLine(e: CatalogEntry): string {
 
 export interface PatchDetail extends CatalogEntry {
   lineage: { parents: { id: string; name: string; author: string; status: string }[]; children: { id: string; name: string; author: string; status: string }[] };
-  conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string }[];
+  conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; cross_branch?: boolean; same_author?: boolean; author?: string; author_name?: string | null; created_at?: number; sales?: number }[];
+  retired_at?: number | null;
+  retire_reason?: string | null;
   branches: { name: string; context: Record<string, string> }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null;
 }
@@ -123,6 +125,10 @@ export interface PublishArgs {
   dataset?: string;
   datasetAccess?: 'public' | 'derivative' | 'private';
   datasetLicense?: string;
+  /** publish past `duplicate_body` (your own bytes, same subject) and `model_mismatch` — never past another author's bytes */
+  force?: boolean;
+  /** the listings this announce is allowed to retire — required when there are any (item 150) */
+  supersede?: string[];
 }
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -169,6 +175,8 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
     id: a.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
     contributors: contributors ? JSON.stringify(contributors) : undefined,
+    // past `duplicate_body` / `model_mismatch` only — the node never lets --force publish another author's bytes
+    ...(a.force ? { force: true } : {}),
     // the questions this knowledge was made from, published under the access level the operator chose (§6.1)
     ...(datasetFile ? { dataset_file: datasetFile, dataset_access: a.datasetAccess ?? 'derivative', dataset_license: a.datasetLicense } : {}),
   });
@@ -176,16 +184,86 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
   let announced = false;
-  if (a.announce) { await patchAnnounce(ctx, r.anchor.id); announced = true; }
+  if (a.announce) { await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede }); announced = true; }
   else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ainize patch announce ${r.anchor.id}`));
   if (ctx.json) emit(ctx, { anchor: r.anchor, announced }, () => '');
   return { anchor: r.anchor, announced };
 }
 
-export async function patchAnnounce(ctx: CliContext, id: string): Promise<LedgerRecord> {
-  const r = await new NodeClient(ctx).post<{ record: LedgerRecord }>(`/api/patches/${encodeURIComponent(id)}/announce`);
-  ok(ctx, `announced ${c.id(id)} → ledger record ${shortHash(r.record.hash, 16)} ${c.dim('(verifiers will now attest; quorum lists it)')}`);
+/** What the node's `verifierReach()` reports back with an announce (item 147). */
+export interface VerifierReach { known: number; reachable: number; verifiers: number; quorum: number; self_attest: boolean; endpoints: string[] }
+
+/**
+ * The overlaps an announce would RETIRE: same subject, same branch, still tradeable, and published by this same node
+ * — the node's own rule (market.supersedable). A cross-author overlap is not in this list any more: it coexists.
+ */
+export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
+  return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
+}
+
+/**
+ * DRAFT → ANNOUNCED, with the two things the publisher was never told (items 147, 150):
+ *  - what this announce retires, listed with each item's status and sales, and refused until every one of them is
+ *    named with `--supersede` — the same friction the console demands before the same, permanent, irreversible write;
+ *  - whether any reachable peer on this network actually verifies. Below the quorum nothing announced here can ever
+ *    be LISTED, so the old unconditional "verifiers will now attest" was a promise the node could not keep.
+ */
+export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[] } = {}): Promise<LedgerRecord> {
+  const client = new NodeClient(ctx);
+  const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
+  if (detail) {
+    const retires = retiredByAnnounce(detail);
+    const named = new Set((opts.supersede ?? []).flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean));
+    const missing = retires.filter((x) => !named.has(x.patch_id));
+    if (retires.length && !ctx.json) {
+      process.stderr.write([
+        c.warn('! ') + `announcing ${c.id(id)} retires ${retires.length} of your listing(s) on the same subject (${detail.anchor.benchmark.schema}) — permanently:`,
+        table(retires, [
+          { key: 'id', title: 'RETIRED BY THIS ANNOUNCE', get: (x) => c.id(x.patch_id) },
+          { key: 'st', title: 'STATUS', get: (x) => statusColor(x.status) },
+          { key: 'sales', title: 'SALES', get: (x) => String(x.sales ?? 0), align: 'right' },
+          { key: 'ov', title: 'SHARED ENTRIES', get: (x) => (x.overlap_rows ?? 0).toLocaleString('en-US'), align: 'right' },
+        ]),
+        c.dim('  buyers of each one will see "Newer version available"; there is no undo.'),
+      ].join('\n') + '\n');
+    }
+    if (missing.length) {
+      throw new CliError(
+        `${id} would retire ${missing.map((x) => x.patch_id).join(', ')} — name them to go ahead:\n`
+        + `  ${PROG} patch announce ${id} ${missing.map((x) => `--supersede ${x.patch_id}`).join(' ')}\n`
+        + c.dim(`  the draft is untouched; nothing was written to the ledger.`), 1, { retires: missing },
+      );
+    }
+    const coexisting = detail.conflicts.filter((x) => x.same_schema && (x.cross_branch || x.same_author === false));
+    if (coexisting.length && !ctx.json) info(ctx, c.dim(`  ${coexisting.length} other overlap(s) on the same subject stay as they are (another branch, or another node's knowledge — those are never retired by your publish).`));
+  }
+  const r = await client.post<{ record: LedgerRecord; verifiers?: VerifierReach; visibility?: string }>(`/api/patches/${encodeURIComponent(id)}/announce`);
+  const v = r.verifiers;
+  const enough = !v || v.verifiers >= v.quorum;
+  ok(ctx, `announced ${c.id(id)} → ledger record ${shortHash(r.record.hash, 16)}${enough && v ? c.dim(` (${v.verifiers} verifier node(s) can attest; quorum is ${v.quorum})`) : ''}`);
+  if (v && !enough) {
+    warn(ctx, `this node knows ${v.verifiers} reachable verifier${v.verifiers === 1 ? '' : 's'} and the quorum is ${v.quorum}${v.known ? ` (${v.known} peer(s) known, ${v.reachable} answering)` : ''} — nothing announced here can be LISTED or sold until that changes.`);
+    process.stderr.write([
+      c.dim(`  join a network:   ${PROG} peers add <node url>`),
+      c.dim(`  or verify alone:  ${PROG} config set verifier.quorum 1 && ${PROG} config set verifier.allowSelfAttest true`),
+    ].join('\n') + '\n');
+  }
+  if (r.visibility === 'test') warn(ctx, `${id} was published as a TEST listing: it is hidden from every public catalogue, and only this node can see it.`);
   return r.record;
+}
+
+/**
+ * `ainize patch retire <id>` — the exit (item 148). `patch forget` deletes this node's copy of the file and keeps
+ * selling it; this writes an author-signed `retire` record: off the catalogue, 410 at the gateway, permanent.
+ */
+export async function patchRetire(ctx: CliContext, id: string, opts: { reason?: string } = {}): Promise<{ patch_id: string; retired_at: number; reason: string }> {
+  const r = await new NodeClient(ctx).post<{ patch_id: string; retired_at: number; reason: string }>(`/api/patches/${encodeURIComponent(id)}/retire`, { reason: opts.reason ?? '' });
+  emit(ctx, r, (x) => [
+    c.ok('✓ ') + `retired ${c.id(x.patch_id)} — off sale from now on${x.reason ? c.dim(` ("${x.reason}")`) : ''}`,
+    c.dim('  the anchor stays on the permanent record, and everyone who already bought it keeps their copy.'),
+    c.dim(`  its gateway now answers 410 Gone; ${PROG} patch ls --status RETIRED still shows it to you.`),
+  ].join('\n'));
+  return r;
 }
 
 export async function patchVerify(ctx: CliContext, id: string): Promise<unknown> {
@@ -422,6 +500,8 @@ export async function patchForget(ctx: CliContext, id: string, opts: { allSharin
   }
   emit(ctx, r, (x) => c.ok('✓ ') + `forgot ${c.id(x.patch_id)} body ${c.dim(shortHash(x.sha256, 12))} — ${x.deleted_file ? 'file deleted' : 'file left in place'}, no longer served from this node`
     + (x.also_affects.length ? `\n${c.warn('! ')}same body as ${x.also_affects.map((a) => a.id).join(', ')} — those are no longer served from here either` : ''));
+  // Forgetting is not a takedown (item 148): the listing is still on the record and the gateway still charges for it.
+  info(ctx, c.dim(`  this changes nothing on the public record: ${r.patch_id} stays listed and its gateway keeps taking payments. To take it off sale for good: ${PROG} patch retire ${r.patch_id}`));
   return r;
 }
 

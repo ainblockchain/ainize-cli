@@ -14,6 +14,8 @@ export function statusColor(status: string): string {
     case 'VERIFYING': case 'ANNOUNCED': return chalk.yellow(status);
     case 'REJECTED': case 'CHALLENGED': return chalk.red(status);
     case 'SUPERSEDED': return chalk.gray(status);
+    // The author took it off sale themselves (item 148) — not a failure, not a dispute.
+    case 'RETIRED': return chalk.gray(status);
     case 'DRAFT': return chalk.blue(status);
     default: return status;
   }

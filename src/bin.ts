@@ -101,12 +101,17 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .option('runtime-api', { type: 'string', describe: 'serving API (OpenAI-compatible) URL' })
   .option('private-key', { type: 'string', describe: 'import an existing AIN private key (hex)' })
   .option('public-url', { type: 'string', describe: 'URL peers can reach this node at' })
+  .option('host', { type: 'string', describe: 'interface to bind (default 127.0.0.1 — this machine only)' })
+  .option('public', { type: 'boolean', default: false, describe: 'bind 0.0.0.0 (every interface) — only behind a firewall or proxy' })
+  .option('password', { type: 'string', describe: 'operator password, set now so nobody else can claim this node (or NGRAM_PASSWORD)' })
+  .option('no-password', { type: 'boolean', default: false, describe: 'leave the node unclaimed; `$0 login` claims it later (loopback only)' })
   .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)', default: false })
   .option('new-identity', { type: 'boolean', describe: 'with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)', default: false })
   .example('$0 init --name alice --port 3402', 'local ledger node')
+  .example('$0 init --name alice --password "…" --host 0.0.0.0', 'a node others can reach, claimed before it listens')
   .example('$0 init --ledger ain --ain-provider http://localhost:8081', 'AIN blockchain ledger (see `$0 chain up`)'),
-run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean }) =>
-  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'] }), false, true));
+run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean; 'no-password'?: boolean }) =>
+  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'], noPassword: a['no-password'] }), false, true));
 
 cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
   .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx), false, true))
@@ -174,8 +179,16 @@ run((ctx, a: G & { real: boolean; synthetic: boolean; prototype: boolean; announ
 cli.command('nodes', 'List known nodes and configured peers', (y: Y) => fail(y), run((ctx) => node.nodesTable(ctx)));
 
 // ---------------------------------------------------------------- auth
-cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y).option('password', { type: 'string', describe: 'or NGRAM_PASSWORD env' }),
-  run((ctx, a: G & { password?: string }) => auth.login(ctx, a)));
+cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y).option('password', { type: 'string', describe: 'or NGRAM_PASSWORD env' })
+  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)' }),
+  run((ctx, a: G & { password?: string; 'setup-token'?: string }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'] })));
+cli.command('password', 'Change the operator password (--reset rewrites it in config.json when you have forgotten it)', (y: Y) => fail(y)
+  .option('password', { type: 'string', describe: 'the new password (or NGRAM_NEW_PASSWORD)' })
+  .option('current', { type: 'string', describe: 'the current password (or NGRAM_PASSWORD)' })
+  .option('reset', { type: 'boolean', default: false, describe: 'forgotten password: write a new hash into config.json (the node must be stopped)' })
+  .example('$0 password', 'change it on the running node')
+  .example('$0 stop && $0 password --reset', 'the way back when it is forgotten'),
+  run((ctx, a: G & { password?: string; current?: string; reset: boolean }) => auth.password(ctx, a), false, true));
 cli.command('logout', 'Forget the operator session', (y: Y) => fail(y), run((ctx) => auth.logout(ctx), false, true));
 
 // ---------------------------------------------------------------- peers
@@ -188,7 +201,7 @@ cli.command('peers', 'Manage peers', (y: Y) => fail(y)
 // ---------------------------------------------------------------- patches
 cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
-    .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED' })
+    .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
     .option('model', { type: 'string' }).option('schema', { type: 'string', describe: 'benchmark schema' }).option('branch', { type: 'string' })
     .option('author', { type: 'string' }).option('q', { type: 'string', describe: 'text search' })
     .option('sort', { choices: ['latest', 'popular', 'price', 'rows'] as const, default: 'latest' })
@@ -209,6 +222,8 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
     .option('dataset-license', { type: 'string', describe: 'licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary' })
     .option('announce', { type: 'boolean', default: false, describe: 'announce to the network immediately' })
+    .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this publish may retire (required when it would retire any)' })
+    .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
     .example('$0 patch publish ./rows.npz --name "KRX tickers" --model Qwen3.8-Flash-Next --benchmark bench.json --price 25 --announce', ''),
   run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string }) =>
     patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'] })))
@@ -220,7 +235,15 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('description', { type: 'string' })
     .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', 'then: $0 patch apply taught-pixelplus-1a2b3c'),
   run((ctx, a: G & patch.ImportArgs) => patch.patchImport(ctx, a)))
-  .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchAnnounce(ctx, a.id)))
+  .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+    .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this announce may retire — it refuses until every one of them is named' })
+    .example('$0 patch announce krx-codes-v3 --supersede krx-codes-v2', 'v2 goes off sale the moment v3 is verified'),
+  run((ctx, a: G & { id: string; supersede?: string[] }) => patch.patchAnnounce(ctx, a.id, { supersede: a.supersede })))
+  .command('retire <id>', 'Take your published knowledge off sale for good (the record stays; buyers keep their copy)', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('reason', { type: 'string', describe: 'why, in one line — shown to anyone who asks for it afterwards' })
+    .example('$0 patch retire krx-codes-2026-08 --reason "the source feed changed; use krx-codes-2026-09"', ''),
+  run((ctx, a: G & { id: string; reason?: string }) => patch.patchRetire(ctx, a.id, { reason: a.reason })))
   .command('verify <id>', 'Run this node\'s verifier on a patch and publish an attestation', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchVerify(ctx, a.id)))
   .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }).option('reason', { type: 'string', demandOption: true }),
     run((ctx, a: G & { id: string; reason: string }) => patch.patchChallenge(ctx, a.id, a.reason)))
@@ -262,7 +285,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
-  .command('forget <id>', 'Stop serving the knowledge file from this node (deletes the local body; the public record stays)', (yy: Y) => yy
+  .command('forget <id>', 'Delete this node\'s copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
     .option('all-sharing', { type: 'boolean', default: false, describe: 'also stop serving every other knowledge built from the same file (the command lists them first)' }),
   run((ctx, a: G & { id: string; 'all-sharing': boolean }) => patch.patchForget(ctx, a.id, { allSharing: a['all-sharing'] })))
@@ -278,6 +301,8 @@ cli.command('publish <file>', 'One line to sell knowledge: register a .npz + ben
   .option('id', { type: 'string' }).option('description', { type: 'string' }).option('parents', { type: 'string', describe: 'comma list of source knowledge ids (creators get a revenue share)' })
   .option('branch', { type: 'string' }).option('topic', { type: 'string' }).option('license', { type: 'string' })
   .option('announce', { type: 'boolean', default: true, describe: 'announce immediately (--no-announce keeps a draft)' })
+  .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this publish may retire (required when it would retire any)' })
+  .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' })
   .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
   .example('$0 publish ./my-knowledge.npz --name "KRX ticker codes" --model Qwen3.8-Flash-Next --benchmark ./bench.json --price 25', '')
