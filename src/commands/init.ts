@@ -4,11 +4,12 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, loadConfig,
+  PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, hashPassword, loadConfig,
   createIdentity, identityFromPrivateKey, nearestConfigKey, saveConfig, validateConfig, type NodeConfig, type NodeRole,
 } from '@ngram/core';
 import { NodeClient } from '../client.js';
 import { promptLine, promptPassword } from './auth.js';
+import { warnLedgerMismatch } from './peers.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { runningPid } from '../pid.js';
 import { emit, info, kv, ok, warn, c } from '../output.js';
@@ -17,6 +18,10 @@ export interface InitArgs {
   name?: string; port?: number; ledger?: 'local' | 'ain'; ainProvider?: string; ainChainId?: number; peer?: string[];
   roles?: string; runtimeRepo?: string; runtimeApi?: string; privateKey?: string; publicUrl?: string; force?: boolean;
   newIdentity?: boolean;
+  /** Interface to bind. Defaults to 127.0.0.1; `--public` is the same as `--host 0.0.0.0` (item 121). */
+  host?: string; public?: boolean;
+  /** Claim the node here, before it ever listens: the hash goes into config.json (item 121). */
+  password?: string; noPassword?: boolean;
 }
 
 /** Copy config.json aside before overwriting it — it is the only copy of the node's private key. */
@@ -63,23 +68,52 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   const cfg = defaultConfig({
     home: ctx.home, name: a.name, port: a.port, ledger: a.ledger, ainProviderUrl: a.ainProvider, ainChainId: a.ainChainId,
     peers: a.peer, roles, runtimeRepo: a.runtimeRepo, runtimeApi: a.runtimeApi, privateKey: a.privateKey, publicUrl: a.publicUrl,
+    host: a.public ? '0.0.0.0' : a.host,
   });
   const kept = !!existing && !a.newIdentity && !a.privateKey;
   if (kept) {
     cfg.identity = existing!.identity;
     if (existing!.operatorPasswordHash) cfg.operatorPasswordHash = existing!.operatorPasswordHash;   // not part of defaultConfig
   }
+  // Claim the node NOW rather than at its first HTTP call. Until a password exists, `POST /api/auth/setup` gives a
+  // full operator session to whoever asks; the node only accepts that from its own machine, but a node that is
+  // already claimed cannot be taken at all. Interactive terminals are asked; scripts pass --password / NGRAM_PASSWORD
+  // (or --no-password to start unclaimed on purpose, which is what `ainize login` then fixes). Item 121.
+  const wantPassword = a.password ?? process.env.NGRAM_PASSWORD;
+  let claimed: 'given' | 'typed' | null = null;
+  if (!cfg.operatorPasswordHash && !a.noPassword) {
+    if (wantPassword) {
+      if (wantPassword.length < 4) throw new CliError('the operator password must be at least 4 characters');
+      cfg.operatorPasswordHash = hashPassword(wantPassword);
+      claimed = 'given';
+    } else if (process.stdin.isTTY && !ctx.json && !ctx.quiet) {
+      const pw = await promptPassword('Operator password for this node (empty = claim it later with `ainize login`): ');
+      if (pw) {
+        if (pw.length < 4) throw new CliError('the operator password must be at least 4 characters');
+        const again = await promptPassword('Confirm password: ');
+        if (again !== pw) throw new CliError('passwords do not match — nothing was written');
+        cfg.operatorPasswordHash = hashPassword(pw);
+        claimed = 'typed';
+      }
+    }
+  }
   saveConfig(cfg, ctx.home);
-  emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null }, (d) => [
+  const publicBind = cfg.host === '0.0.0.0' || cfg.host === '::';
+  emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, host: cfg.host, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null, claimed: !!cfg.operatorPasswordHash }, (d) => [
     c.ok('✓ ') + `node initialised at ${d.config}`,
-    kv([['name', d.name], ['address', d.address], ['port', d.port], ['ledger', d.ledger], ['roles', d.roles.join(', ')]]),
+    kv([['name', d.name], ['address', d.address], ['listens on', `${d.host}:${d.port}${publicBind ? c.warn('  (every interface)') : c.dim('  (this machine only)')}`], ['ledger', d.ledger], ['roles', d.roles.join(', ')],
+      ['operator', d.claimed ? c.ok(claimed ? 'password set — this node is claimed' : 'password kept from the previous config') : c.warn(`not set — claim it with \`${PROG} login\` before anyone else can`)]]),
     ...(d.kept_identity ? [c.dim(`keeping this node's identity ${d.address} (pass --new-identity to replace it)`)] : []),
     ...(d.backup ? [c.dim(`previous config saved as ${d.backup}`)] : []),
     ...(existing ? [] : [
       c.dim(`the private key lives in ${d.config} and this is the only copy — back it up now: \`${PROG} keys backup <file>\``),
     ]),
-    '', c.dim(`next: \`${PROG} start\`   (then \`${PROG} login\`, \`${PROG} seed\`)`),
+    ...(publicBind && !d.claimed ? [c.warn(`! this node will accept connections from every interface with no operator password: run \`${PROG} login\` before \`${PROG} start\`, or re-run init with --password`)] : []),
+    ...(publicBind ? [c.dim(`bound to ${cfg.host}: anyone who can reach port ${cfg.port} reaches this node's API — put it behind a proxy or a firewall (\`${PROG} config set host 127.0.0.1\` keeps it local)`)] : []),
+    '', c.dim(`next: \`${PROG} start\`${d.claimed ? '' : `   (then \`${PROG} login\`)`}   (then \`${PROG} seed\`)`),
   ].join('\n'));
+  // A peer on the other ledger answers everything and serves an empty record set forever — say so now, not never (item 170).
+  for (const ep of cfg.peers) await warnLedgerMismatch(ctx, ep, cfg.ledger.kind);
   return cfg;
 }
 
@@ -111,9 +145,101 @@ function redact(cfg: NodeConfig): Record<string, unknown> {
   return clone;
 }
 
-export function configShow(ctx: CliContext): NodeConfig {
+// ------------------------------------------------------------------ teach-mode overrides (item 125)
+
+/**
+ * Teach policy has TWO stores and config.json is the one that loses. The console's Teaching tab writes a
+ * `settings.teach` row into node.sqlite, and `market.teach()` lets every field of that row override the file —
+ * so `config set teach.enabled false`, a full restart and `config show` printed `"enabled": false` while the same
+ * running node went on accepting and publishing lessons. This table is the missing link between the two names:
+ * the dotted config key, the override field the store keeps, and the field `PATCH /api/me/teach/policy` takes.
+ *
+ * `teach.rowsPerJob` is deliberately absent: in config.json it is the {floor,ceiling,safetyFactor} block that shapes
+ * the measured derivation, while the store's `rowsPerJob` is a scalar that DISABLES it. Different settings, same word.
+ */
+export const TEACH_OVERRIDES: { key: string; setting: string; api: string }[] = [
+  { key: 'teach.enabled', setting: 'enabled', api: 'enabled' },
+  { key: 'teach.publish', setting: 'publish', api: 'publish' },
+  { key: 'teach.factsPerJob', setting: 'factsPerJob', api: 'facts_per_job' },
+  { key: 'teach.jobsPerKeyPerDay', setting: 'jobsPerKeyPerDay', api: 'jobs_per_key_per_day' },
+  { key: 'teach.jobsPerIpPerDay', setting: 'jobsPerIpPerDay', api: 'jobs_per_ip_per_day' },
+  { key: 'teach.queueMax', setting: 'queueMax', api: 'queue_max' },
+  { key: 'teach.contributorShare', setting: 'contributorShare', api: 'contributor_share' },
+  { key: 'teach.draftTtlDays', setting: 'draftTtlDays', api: 'draft_ttl_days' },
+  { key: 'teach.queuedRowsMax', setting: 'queuedRowsMax', api: 'queued_rows_max' },
+  { key: 'teach.dataset.maxBytes', setting: 'datasetMaxBytes', api: 'dataset_max_bytes' },
+  { key: 'teach.dataset.maxRows', setting: 'datasetMaxRows', api: 'dataset_max_rows' },
+  { key: 'teach.dataset.rowsPerKeyPerDay', setting: 'rowsPerKeyPerDay', api: 'rows_per_key_per_day' },
+  { key: 'teach.dataset.rowsPerIpPerDay', setting: 'rowsPerIpPerDay', api: 'rows_per_ip_per_day' },
+  { key: 'teach.dataset.perKeyPerDay', setting: 'datasetsPerKeyPerDay', api: 'datasets_per_key_per_day' },
+  { key: 'teach.dataset.ttlDays', setting: 'datasetTtlDays', api: 'dataset_ttl_days' },
+  { key: 'teach.dataset.declarationRows', setting: 'declarationRows', api: 'declaration_rows' },
+  { key: 'teach.check.callBudget', setting: 'checkCallBudget', api: 'check_call_budget' },
+];
+/** Overrides the console can set that config.json has no key for at all — still worth naming when they are on. */
+const OVERRIDE_ONLY: { setting: string; label: string }[] = [
+  { setting: 'rowsPerJob', label: 'teach.rowsPerJob (a fixed rows-per-job override; disables the measured derivation)' },
+  { setting: 'pausedReason', label: 'teach paused (reason shown to visitors)' },
+  { setting: 'blockedTopics', label: 'teach blocked topics (regular expression)' },
+];
+
+export interface ConfigOverride { key: string; file: unknown; effective: unknown; source: 'console' }
+
+/**
+ * What the RUNNING node is actually using, where it differs from config.json. Silent when no node answers or the
+ * terminal is not logged in — an override can only be read by the operator, and `config show` must still work offline.
+ */
+async function teachOverrides(ctx: CliContext, cfg: NodeConfig): Promise<{ overrides: ConfigOverride[]; checked: boolean }> {
+  if (!(await runningHere(ctx, cfg))) return { overrides: [], checked: false };
+  const policy = await new NodeClient(ctx)
+    .get<{ policy: Record<string, unknown> }>('/api/me/teach/policy', { timeoutMs: 4000 })
+    .catch(() => null);
+  if (!policy?.policy) return { overrides: [], checked: false };
+  const at = (key: string): unknown => key.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), cfg);
+  const out: ConfigOverride[] = [];
+  for (const m of TEACH_OVERRIDES) {
+    const v = policy.policy[m.setting];
+    if (v === undefined || v === null) continue;
+    if (JSON.stringify(v) === JSON.stringify(at(m.key))) continue;
+    out.push({ key: m.key, file: at(m.key), effective: v, source: 'console' });
+  }
+  for (const o of OVERRIDE_ONLY) {
+    const v = policy.policy[o.setting];
+    if (v === undefined || v === null) continue;
+    out.push({ key: o.label, file: undefined, effective: v, source: 'console' });
+  }
+  return { overrides: out, checked: true };
+}
+
+/** Append `// overridden …` to the line of every overridden key in a `JSON.stringify(x, null, 2)` rendering. */
+function annotate(json: string, notes: Map<string, string>): string {
+  const stack: string[] = [];
+  return json.split('\n').map((line) => {
+    const m = /^(\s*)"([^"]+)":/.exec(line);
+    if (!m) return line;
+    const depth = m[1].length / 2 - 1;
+    stack.length = Math.max(0, depth);
+    stack.push(m[2]);
+    const note = notes.get(stack.join('.'));
+    return note ? `${line}  ${c.warn(note)}` : line;
+  }).join('\n');
+}
+
+export async function configShow(ctx: CliContext): Promise<NodeConfig> {
   const cfg = requireConfig(ctx);
-  emit(ctx, redact(cfg), (d) => `${c.dim(configPath(ctx.home))}\n${JSON.stringify(d, null, 2)}`);
+  const { overrides, checked } = await teachOverrides(ctx, cfg);
+  const notes = new Map(overrides.filter((o) => o.file !== undefined).map((o) => [o.key, `// overridden to ${JSON.stringify(o.effective)} in the console (settings.teach) — this file's value is not in use`]));
+  const body = redact(cfg) as Record<string, unknown>;
+  emit(ctx, overrides.length ? { ...body, overrides } : body, () => [
+    c.dim(configPath(ctx.home)),
+    annotate(JSON.stringify(redact(cfg), null, 2), notes),
+    ...(overrides.length ? [
+      '',
+      c.warn(`! ${overrides.length} setting${overrides.length === 1 ? ' is' : 's are'} overridden in the console and outlive a restart — the value above is not what the node uses:`),
+      ...overrides.map((o) => `    ${o.key}: ${o.file === undefined ? c.dim('(not in config.json)') : JSON.stringify(o.file)} → ${c.bold(JSON.stringify(o.effective))}`),
+      c.dim(`    \`${PROG} config set <key> <value>\` now writes both; \`${PROG} config unset <key>\` clears the console override.`),
+    ] : checked ? [c.dim('no console overrides — the running node is using exactly this file')] : []),
+  ].join('\n'));
   return cfg;
 }
 
@@ -176,6 +302,21 @@ export async function configSet(ctx: CliContext, key: string, value: string): Pr
   const running = await runningHere(ctx, cfg);
   saveConfig(cfg, ctx.home);
   ok(ctx, `${key} = ${JSON.stringify(check.data)}  ${c.dim('(the node reads config.json when it starts)')}`);
+  // A teach key set here used to lose to the console's `settings.teach` row for good: config.json said `false`,
+  // the running node said `true`, a restart changed nothing and `config show` never mentioned the override (item 125).
+  // Write BOTH when a node is up, so the terminal switch actually is the switch.
+  const mapped = TEACH_OVERRIDES.find((m) => m.key === key);
+  if (running && mapped) {
+    const wrote = await writeTeachOverride(ctx, mapped.api, check.data);
+    if (wrote === 'ok') { ok(ctx, `applied to the running node as well ${c.dim('(the console override for this setting now matches — no restart needed)')}`); return cfg; }
+    const effective = await new NodeClient({ ...ctx, token: null }).get<Record<string, unknown>>('/api/teach/policy', { auth: false, timeoutMs: 3000 }).catch(() => null);
+    const live = effective?.[mapped.setting === 'enabled' ? 'enabled' : mapped.setting];
+    if (live !== undefined && JSON.stringify(live) !== JSON.stringify(check.data)) {
+      warn(ctx, `the running node still answers ${mapped.setting} = ${JSON.stringify(live)}: that value is a console override in node.sqlite, and it outlives a restart.\n` +
+        `  ${wrote === 'unauthorised' ? `sign in and run this again to write both (\`${PROG} login\`)` : `clear it in the console's Teaching tab, or run \`${PROG} config unset ${key}\` while signed in`}`);
+      return cfg;
+    }
+  }
   if (running) {
     warn(ctx, `the node in ${ctx.home} is running${running.pid ? ` (pid ${running.pid})` : ` on ${running.url}`} and keeps using the value it started with` +
       ` — restart it to apply this (\`${PROG} stop\` then \`${PROG} start -d\`)`);
@@ -183,24 +324,37 @@ export async function configSet(ctx: CliContext, key: string, value: string): Pr
   return cfg;
 }
 
+/** PATCH one teach field on the running node. 'unauthorised' when this terminal is not signed in. */
+async function writeTeachOverride(ctx: CliContext, apiField: string, value: unknown): Promise<'ok' | 'unauthorised' | 'failed'> {
+  if (!ctx.token) return 'unauthorised';
+  try { await new NodeClient(ctx).patch('/api/me/teach/policy', { [apiField]: value }, { timeoutMs: 5000 }); return 'ok'; }
+  catch (e) { return (e as CliError).exitCode === 3 ? 'unauthorised' : 'failed'; }
+}
+
 /** One key's current value — the half of `config show` an operator actually asked for. */
-export function configGet(ctx: CliContext, key: string): unknown {
+export async function configGet(ctx: CliContext, key: string): Promise<unknown> {
   const cfg = requireConfig(ctx);
   if (!configField(key)) {
     const near = nearestConfigKey(key);
     throw new CliError(`unknown config key '${key}'${near ? ` — did you mean '${near}'?` : `; \`${PROG} config show\` lists every key this node has`}`);
   }
   const value = key.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), redact(cfg));
-  if (value === undefined) {
+  // Asking for one teach key and being told the value the node is NOT using is exactly the trap of item 125.
+  const override = TEACH_OVERRIDES.some((m) => m.key === key) ? (await teachOverrides(ctx, cfg)).overrides.find((o) => o.key === key) : undefined;
+  if (value === undefined && !override) {
     info(ctx, c.dim(`${key} is not set in ${configPath(ctx.home)} (the node uses its built-in default)`));
     return undefined;
   }
-  emit(ctx, value, (d) => (typeof d === 'object' && d !== null ? JSON.stringify(d, null, 2) : String(d)));
+  emit(ctx, override ? { value, effective: override.effective, overridden_by: 'console' } : value, () => [
+    typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value),
+    ...(override ? [c.warn(`! the running node uses ${JSON.stringify(override.effective)}: a console override (settings.teach) wins over this file, and survives a restart.`),
+      c.dim(`  \`${PROG} config set ${key} <value>\` writes both; \`${PROG} config unset ${key}\` clears the override.`)] : []),
+  ].join('\n'));
   return value;
 }
 
 /** Remove a key so the node falls back to its default; a key the config cannot do without is reset, not deleted. */
-export function configUnset(ctx: CliContext, key: string): NodeConfig {
+export async function configUnset(ctx: CliContext, key: string): Promise<NodeConfig> {
   const cfg = requireConfig(ctx);
   settableField(key);
   const { parent, last } = containerOf(cfg, key);
@@ -219,6 +373,13 @@ export function configUnset(ctx: CliContext, key: string): NodeConfig {
   ok(ctx, required
     ? `${key} reset to the default ${JSON.stringify(restored)} ${c.dim(`(was ${JSON.stringify(had)}; it cannot be absent)`)}`
     : `${key} unset ${c.dim(`(was ${JSON.stringify(had)} — the node falls back to its built-in default)`)}`);
+  // Unsetting a teach key must also clear the console override, or the node keeps the value the file no longer has (item 125).
+  const mapped = TEACH_OVERRIDES.find((m) => m.key === key);
+  if (mapped && (await runningHere(ctx, cfg))) {
+    const wrote = await writeTeachOverride(ctx, mapped.api, null);
+    if (wrote === 'ok') ok(ctx, `the console override for ${key} was cleared too ${c.dim('(the running node is back on config.json / its built-in default)')}`);
+    else warn(ctx, `could not clear the console override for ${key}${wrote === 'unauthorised' ? ` — sign in (\`${PROG} login\`) and run this again` : ''}: until it is cleared the running node keeps using it, and a restart will not help`);
+  }
   return cfg;
 }
 
