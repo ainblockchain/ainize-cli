@@ -706,6 +706,8 @@ function readResolutions(path: string): Record<string, MergeResolutionInput> {
 }
 
 function renderMergePreview(p: MergePreview): string {
+  // the design's copy names the two knowledges, never their ids: "{A} says: …" is a sentence a creator can read
+  const A = p.a.name || p.a.id; const B = p.b.name || p.b.id;
   const tier = (name: 'union' | 'retrain' | 'rebuild') => {
     const t = p.tiers[name];
     const est = 'est_min' in t && t.est_min !== null ? c.dim(` ~${t.est_min} min`) : name === 'union' ? '' : c.dim(' (this node has never timed one)');
@@ -713,23 +715,24 @@ function renderMergePreview(p: MergePreview): string {
     const why = t.allowed ? '' : c.dim(` — ${t.reason}`);
     return `  ${mark} ${TIER_COPY[name]}${est}${why}${p.tiers.required === name ? c.warn('  ← required') : ''}`;
   };
+  const rows = ['rows', `${p.rows.a_only} only in ${A} · ${p.rows.b_only} only in ${B} · ${p.rows.shared} written by both (${p.rows.disagree} disagree)`] as [string, string];
   return [
-    `${c.id(p.a.id)} + ${c.id(p.b.id)}`,
+    `${A} ${c.dim(`(${p.a.id})`)} + ${B} ${c.dim(`(${p.b.id})`)}`,
     p.questions
       ? kv([
-        ['questions', `${p.questions.a_only} only in ${p.a.id} · ${p.questions.b_only} only in ${p.b.id} · ${p.questions.same} the same · ${p.questions.conflicts.length} same question, different answer`],
-        ['rows', `${p.rows.a_only} only in ${p.a.id} · ${p.rows.b_only} only in ${p.b.id} · ${p.rows.shared} written by both (${p.rows.disagree} disagree)`],
-        ['combined set', p.merged ? `${p.merged.rows} question(s) — ${p.merged.from_a} from ${p.a.id}, ${p.merged.from_b} from ${p.b.id}` : '—'],
+        ['questions', `${p.questions.a_only} only in ${A} · ${p.questions.b_only} only in ${B} · ${p.questions.same} the same · ${p.questions.conflicts.length} same question, different answer`],
+        rows,
+        ['combined set', p.merged ? `${p.merged.rows} question(s) — ${p.merged.from_a} from ${A}, ${p.merged.from_b} from ${B}` : '—'],
         ['licence', `${p.licenses.a ?? '—'} + ${p.licenses.b ?? '—'} → ${p.licenses.child_min ?? 'your choice'}`],
       ])
       : kv([
-        ['questions', c.dim(`${p.private_parent} keeps its questions private — only the rows can be compared`)],
-        ['rows', `${p.rows.a_only} only in ${p.a.id} · ${p.rows.b_only} only in ${p.b.id} · ${p.rows.shared} written by both (${p.rows.disagree} disagree)`],
+        ['questions', c.dim(`${p.private_parent === p.a.id ? A : B} keeps its questions private — only the rows can be compared`)],
+        rows,
       ]),
     '',
     tier('union'), tier('retrain'), tier('rebuild'),
     ...(p.questions?.conflicts.length ? ['', c.warn(`${p.questions.conflicts.length} question(s) need an answer:`),
-      ...p.questions.conflicts.slice(0, 5).map((x) => `  ${x.prompt}\n    ${p.a.id}: ${x.a_answer}\n    ${p.b.id}: ${x.b_answer}`),
+      ...p.questions.conflicts.slice(0, 5).map((x) => `  ${x.prompt}\n    ${A}: ${x.a_answer}\n    ${B}: ${x.b_answer}`),
       ...(p.questions.conflicts.length > 5 ? [c.dim(`  … and ${p.questions.conflicts.length - 5} more`)] : [])] : []),
   ].join('\n');
 }
