@@ -244,6 +244,21 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .example('$0 patch fork krx-all-2761 --name "KRX + biotech"', 'start from its questions')
     .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
   run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
+  .command('tree <id>', 'The family tree: what this was built on, what was built on it, and what each one added', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('depth', { type: 'number', default: 4, describe: 'how many hops in each direction (max 8)' })
+    .option('dir', { type: 'string', choices: ['up', 'down', 'both'], default: 'both', describe: 'ancestors, descendants, or both' })
+    .example('$0 patch tree krx-all-2761 --depth 6', 'the whole line, with what each knowledge added'),
+  run((ctx, a: G & { id: string; depth?: number; dir?: 'up' | 'down' | 'both' }) => patch.patchTree(ctx, a.id, { depth: a.depth, dir: a.dir })))
+  .command('missing <id>', 'Open questions: what people asked this knowledge that it could not answer', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('kind', { type: 'string', choices: ['own_miss', 'preflight', 'free_wrong', 'request', 'gap'], describe: 'only one source' })
+    .option('all', { type: 'boolean', default: false, describe: 'include the ones a later knowledge already answered' })
+    .option('limit', { type: 'number', default: 50 })
+    .example('$0 patch missing krx-all-2761', 'what to add on top of it'),
+  run((ctx, a: G & { id: string; kind?: string; all?: boolean; limit?: number }) => patch.patchMissing(ctx, a.id, { kind: a.kind, all: a.all, limit: a.limit })))
+  .command('signals <id>', 'How a knowledge is doing: network facts, and this node\'s last 30 days', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { id: string }) => patch.patchSignals(ctx, a.id)))
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
   .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))

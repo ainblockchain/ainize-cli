@@ -252,6 +252,114 @@ export async function patchStack(ctx: CliContext): Promise<StackLayer[]> {
   return r.stack;
 }
 
+// ------------------------------------------------------------------ family tree, open questions, signals (design §13)
+/** One knowledge in the tree, as the node reports it (`GET /api/patches/:id/tree`). */
+export interface TreeNodeView {
+  id: string; name: string; missing?: boolean; author_name?: string | null; taught_by?: string | null; status?: string;
+  added: { questions: number; changed: number; removed: number; rows: number; new: number };
+  signals: Record<string, number>; depth: number; legacy?: boolean; export?: 'delta' | 'squash' | null;
+}
+export interface TreeView {
+  root: string; depth: number; truncated: boolean;
+  nodes: TreeNodeView[]; edges: { from: string; to: string; kind: string }[];
+  family: { sales: number; knowledges: number; authors: number };
+  money: { seller_pct: number; lineage_pct: number; seller_name: string | null; recipients: { address: string; pct: number; name: string | null }[] };
+}
+
+/**
+ * `ainize patch tree <id>` — the family tree as text: ancestors above, this knowledge, then what was built on it,
+ * each line saying what that knowledge ADDED. The relation is the child's own claim ("built on" / "newer version" /
+ * "correction" / "combined"), and `declared` prints as the honest "declared parent — not trained on top" (§14).
+ */
+export async function patchTree(ctx: CliContext, id: string, opts: { depth?: number; dir?: 'up' | 'down' | 'both' } = {}): Promise<TreeView> {
+  const r = await new NodeClient(ctx).get<TreeView>(`/api/patches/${encodeURIComponent(id)}/tree${query({ depth: opts.depth, dir: opts.dir })}`);
+  const byId = new Map(r.nodes.map((n) => [n.id, n]));
+  const relation: Record<string, string> = { extend: 'built on it', update: 'newer version', contradict: 'correction', merge: 'combined from', version: 'newer version', track: 'different context', declared: 'declared parent — not trained on top' };
+  const label = (n: TreeNodeView) => {
+    if (n.missing) return `${c.dim(n.id)} ${c.dim('(not on this node)')}`;
+    const added = `+${n.added.questions} questions · ${n.added.changed} changed · ${n.added.rows.toLocaleString('en-US')} rows (${n.added.new.toLocaleString('en-US')} new)`;
+    const sig = `${n.signals.sales_all ?? 0} sales · loaded on ${n.signals.loads ?? 0} nodes · built on ${n.signals.built_on ?? 0}×`;
+    return `${c.id(n.id)}${n.name && n.name !== n.id ? ` — ${n.name}` : ''}\n      ${c.dim(added)}\n      ${c.dim(sig)}`;
+  };
+  emit(ctx, r, () => {
+    const lines: string[] = [];
+    const children = (from: string) => r.edges.filter((e) => e.from === from);
+    const parents = r.edges.filter((e) => e.to === r.root);
+    for (const e of parents) {
+      const n = byId.get(e.from);
+      if (n) lines.push(`  ${c.dim('base')}  ${label(n)}  ${c.dim(`(${relation[e.kind] ?? e.kind})`)}`);
+    }
+    if (parents.length) lines.push(c.dim('    ↓'));
+    const root = byId.get(r.root);
+    if (root) lines.push(`  ${c.dim('this')}  ${label(root)}`);
+    const kids = children(r.root);
+    if (kids.length) lines.push(c.dim('    ↓'));
+    const seen = new Set<string>([r.root]);
+    const walk = (from: string, indent: string) => {
+      for (const e of children(from)) {
+        const n = byId.get(e.to);
+        if (!n || seen.has(e.to)) continue;
+        seen.add(e.to);
+        lines.push(`${indent}${c.dim(relation[e.kind] ?? e.kind)}  ${label(n)}`);
+        walk(e.to, `${indent}  `);
+      }
+    };
+    walk(r.root, '  ');
+    if (!parents.length && !kids.length) lines.push(c.dim('  nothing was built on this, and it was not built on anything'));
+    lines.push('');
+    lines.push(c.dim(`this family: ${r.family.sales} sales · ${r.family.knowledges} knowledges · ${r.family.authors} creators`));
+    if (r.money.lineage_pct > 0) lines.push(c.dim(`each sale: ${r.money.seller_pct}% to ${r.money.seller_name ?? 'the seller'}, ${r.money.lineage_pct}% shared by ${r.money.recipients.map((x) => x.name ?? shortAddr(x.address, 8)).join(', ')}`));
+    if (r.truncated) lines.push(c.dim(`(stopped at depth ${r.depth} — ask for more with --depth)`));
+    return lines.join('\n');
+  });
+  return r;
+}
+
+export interface IssueView { id: string; kind: string; count: number; people: number; topic: string | null; text: string | null; sample_index: number | null; status: string; covered_by: string | null; first_seen: number; last_seen: number }
+
+/**
+ * `ainize patch missing <id>` — the open questions of a knowledge. A row with no text is not a bug: the question was
+ * counted without being kept, because nobody consented to share it (§10).
+ */
+export async function patchMissing(ctx: CliContext, id: string, opts: { kind?: string; limit?: number; all?: boolean } = {}): Promise<IssueView[]> {
+  const r = await new NodeClient(ctx).get<{ total: number; counts: Record<string, number>; items: IssueView[] }>(
+    `/api/patches/${encodeURIComponent(id)}/issues${query({ kind: opts.kind, limit: opts.limit, status: opts.all ? 'all' : 'open' })}`);
+  const kindText: Record<string, string> = { own_miss: 'its own question, got wrong here', preflight: 'someone tried to teach it on top', free_wrong: 'a free question marked wrong', request: 'a buyer asked for it', gap: 'coverage gap' };
+  emit(ctx, r.items, (rows) => table(rows, [
+    { key: 'k', title: 'WHY', get: (x) => kindText[x.kind] ?? x.kind },
+    { key: 'q', title: 'QUESTION', get: (x) => x.text ?? c.dim('not shared — counted only') },
+    { key: 'n', title: 'ASKED', get: (x) => `${x.count}×`, align: 'right' },
+    { key: 'p', title: 'PEOPLE', get: (x) => String(x.people), align: 'right' },
+    { key: 's', title: 'STATUS', get: (x) => (x.covered_by ? c.ok(`covered by ${x.covered_by}`) : 'open') },
+  ], 'nothing reported yet — load it in Chat and ask around'));
+  return r.items;
+}
+
+/** `ainize patch signals <id>` — what it is doing, with the two scopes kept apart (SC-11). */
+export async function patchSignals(ctx: CliContext, id: string): Promise<{ network: Record<string, number | string>; node: Record<string, number> }> {
+  const r = await new NodeClient(ctx).get<{ patch_id: string; network: Record<string, number | string>; node: Record<string, number> }>(`/api/patches/${encodeURIComponent(id)}/signals`);
+  emit(ctx, { network: r.network, node: r.node }, () => [
+    c.dim('network — read from the ledger and the peers, the same on every node'),
+    kv([
+      ['sales', `${r.network.sales_all} (${r.network.sales_30d} in 30 days)`],
+      ['buyers', String(r.network.buyers)], ['revenue', String(r.network.revenue)],
+      ['loaded on', `${r.network.loads} nodes`], ['built on', `${r.network.built_on} knowledges`],
+      ['versions', String(r.network.versions)], ['track subscribers', String(r.network.subscribers)],
+      ['verified', `${r.network.passed}/${r.network.quorum}`],
+    ]),
+    '',
+    c.dim(`this node — last ${r.node.window_days} days, this node only`),
+    kv([
+      ['live tests', `${r.node.tests} (✓${r.node.hits} ✗${r.node.misses} unscored ${r.node.unscored})`],
+      ['marked wrong', String(r.node.marked_wrong)], ['visitors', String(r.node.visitors)],
+      ['pre-flight on top of it', `${r.node.preflight_wrong_today} new · ${r.node.preflight_in_base} already answered · ${r.node.preflight_base_conflict} disagreeing`],
+      ['questions fetched', String(r.node.derive_fetches)], ['lessons built on it', String(r.node.builds_on_jobs)],
+      ['open questions', String(r.node.open_questions)],
+    ]),
+  ].join('\n'));
+  return { network: r.network, node: r.node };
+}
+
 export async function patchConflicts(ctx: CliContext, id: string): Promise<PatchDetail['conflicts']> {
   const r = await new NodeClient(ctx).get<{ conflicts: PatchDetail['conflicts'] }>(`/api/patches/${encodeURIComponent(id)}/conflicts`);
   emit(ctx, r.conflicts, (rows) => table(rows, [
