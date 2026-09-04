@@ -130,6 +130,10 @@ export interface TeachPolicy {
   samples?: { kind: string; name: string; rows: number }[];
   shares: { contributor: number; lineage: number }; model: { id_M: string | null }; applied: string[]; draft_ttl_days: number;
   simulated_checks?: boolean;
+  /** item 298 — whether a lesson published here can ever reach quorum. Absent on an older node: unknown, not "yes". */
+  verification?: { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean };
+  /** item 299 — `local` is development play money; a price set here is not money anyone can spend. */
+  ledger?: { kind: 'local' | 'ain'; currency: string };
 }
 export interface TeachJobView {
   id: string; status: string; position?: number; eta_s?: number | null; blocked?: string | null; name?: string;
@@ -153,7 +157,9 @@ export interface TeachJobView {
 }
 export interface TeacherProfile {
   address: string; name?: string; hidden?: boolean;
-  lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string }[];
+  lessons: { id: string; name: string; status: string; verified: boolean; downloads: number; revenue: string; created_at?: number; attestations?: number; quorum?: number }[];
+  verification?: { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean };
+  ledger?: { kind: 'local' | 'ain'; currency: string };
   earnings: { currency?: string; owed: string; paid: string; pending: string; failed?: string; sales?: number; items?: unknown[] };
 }
 export type TeachStatusResult =
@@ -216,6 +222,12 @@ export function renderTeachStatus(r: TeachStatusResult): string {
           : []),
         ...(p.effort?.length ? [['effort', p.effort.map((e) => `${e.id} (${e.max_steps} passes)`).join(' · ')] as [string, unknown]] : []),
         ['data-provider share', `${pct(p.shares.contributor)} of the node's share of each sale (lineage pool ${pct(p.shares.lineage)})`],
+        // item 298: publishing here is only worth doing if something can attest it — self-attestation never counts
+        ...(p.verification ? [['verifiers reachable', p.verification.verifiers >= p.verification.quorum
+          ? c.ok(`${p.verification.verifiers} of ${p.verification.quorum} needed`) + c.dim(`  (${p.verification.reachable} of ${p.verification.peers} peers answered)`)
+          : c.err(`${p.verification.verifiers} of ${p.verification.quorum} needed`) + ` — a lesson published here goes on the record but cannot be sold until verifier nodes appear${p.verification.self_verifier ? c.dim(' (this node verifies, but its own attestation does not count towards quorum)') : ''}`] as [string, unknown]] : []),
+        // item 299: a price on a local-ledger node is credit this node mints, and no wallet can spend it
+        ...(p.ledger ? [['settles in', p.ledger.kind === 'local' ? c.warn(`${p.ledger.currency} on this node's own ledger`) + ' — development play money, not withdrawable' : `${p.ledger.currency} transfers on the AIN chain`] as [string, unknown]] : []),
         ['model', p.model.id_M ?? c.dim('model server off')], ['always loaded', p.applied.length ? p.applied.join(', ') : c.dim('nothing pinned')],
         ['unsaved lessons kept', `${p.draft_ttl_days} days`],
       ]),
@@ -283,7 +295,19 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     if (j.result) pairs.push(['knowledge file', `${j.result.rows.toLocaleString('en-US')} rows · ${fmtBytes(j.result.size_bytes)} · sha256 ${shortHash(j.result.sha256, 16)}`]);
     if (j.checks) {
       const k = j.checks;
-      pairs.push(['checks', !k.executed ? c.warn('not measured (model server was off) — ask the node to check again') : k.ok ? c.ok('passed') : c.err('failed')]);
+      /*
+       * Item 239 — `checks.ok` is the SIDE-EFFECT check (locality && parent_regression), and it is computed
+       * independently of whether the lesson stuck. A bake that taught 0 of 18 sentences printed a green
+       * `checks  passed` above a line reading `taught 0/18`, so the label now says which check it is, and whether the
+       * LESSON worked is stated first, in its own line, with the status that decided it.
+       */
+      if (k.executed) {
+        const ratio = `${k.taught.hits}/${k.taught.total}`;
+        pairs.push(['lesson', j.status === 'READY'
+          ? c.ok(`learned — ${ratio} trained sentences answer right in the live model`)
+          : c.err(`did not stick — ${ratio} trained sentences answer right (${j.status})`)]);
+      }
+      pairs.push(['side-effect check', !k.executed ? c.warn('not measured (model server was off) — ask the node to check again') : k.ok ? c.ok('passed') + c.dim(' — it did not change unrelated answers') : c.err('failed')]);
       if (k.executed) {
         pairs.push(['  taught', `${k.taught.hits}/${k.taught.total} trained sentences answer right${k.taught.sampled ? ` (a sample of ${k.taught.sampled.checked} of ${k.taught.sampled.of} questions)` : ''}${k.heldout?.total ? ` · other phrasings ${k.heldout.hits}/${k.heldout.total}` : ''}`]);
         pairs.push(['  side effects', `${k.locality.same}/${k.locality.total} unrelated answers unchanged ${k.locality.ok ? c.ok('✓') : c.err('✗')}`]);
@@ -312,7 +336,8 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     }
     if (j.patch_id) lines.push('', c.dim(`knowledge page: ${r.node}/patch/${j.patch_id} · ainize patch get ${j.patch_id}`));
     else if (j.status === 'READY') lines.push('', c.dim([
-      `ready: open ${r.node}/teach/lesson/${j.id} to try it, keep it private or publish it`,
+      `publish it from here: ${PROG} teach publish ${j.id} --name "<name>" --price <n> --consent-permanent --consent-rights`,
+      `or in the browser:    ${r.node}/teach/lesson/${j.id}  (try it, keep it private, publish it)`,
       ...(j.dataset?.id && !j.dataset.deleted ? [`train the same questions harder: ${PROG} teach train ${j.dataset.id} --effort thorough`] : []),
     ].join('\n')));
     return lines.join('\n');
@@ -320,15 +345,26 @@ export function renderTeachStatus(r: TeachStatusResult): string {
   const p = r.profile;
   const e = p.earnings;
   const cur = e.currency ? ` ${e.currency}` : '';
+  const v = p.verification;
   const lines = [
     c.bold(`Data provider ${p.name ?? ''}`.trim()) + '  ' + c.dim(p.address) + (p.hidden ? c.dim('  (name hidden by the operator)') : ''),
-    kv([['node', r.node], ['lessons', String(p.lessons.length)], ['earned', `${e.owed}${cur}${e.sales !== undefined ? ` from ${e.sales} sales` : ''}`], ['paid out', `${e.paid}${cur}`], ['pending', `${e.pending}${cur}`], ...(e.failed && e.failed !== '0' ? [['transfer failed', `${e.failed}${cur} (still owed by the seller)`] as [string, unknown]] : [])]),
+    kv([['node', r.node], ['lessons', String(p.lessons.length)], ['earned', `${e.owed}${cur}${e.sales !== undefined ? ` from ${e.sales} sales` : ''}`],
+      // item 299: on a local ledger "paid out" is a line in this node's own book — say so where the number is
+      ['paid out', `${e.paid}${cur}${p.ledger?.kind === 'local' ? c.dim(' — credited on this node only, not withdrawable') : ''}`],
+      ['pending', `${e.pending}${cur}`], ...(e.failed && e.failed !== '0' ? [['transfer failed', `${e.failed}${cur} (still owed by the seller)`] as [string, unknown]] : [])]),
     '', c.head('lessons'), table(p.lessons, [
       { key: 'id', title: 'KNOWLEDGE', get: (l) => c.id(l.id) }, { key: 'n', title: 'NAME', get: (l) => l.name.slice(0, 40) },
-      { key: 's', title: 'STATUS', get: (l) => statusColor(l.status) }, { key: 'v', title: 'VERIFIED', get: (l) => (l.verified ? c.ok('yes') : c.dim('not yet')) },
+      { key: 's', title: 'STATUS', get: (l) => statusColor(l.status) },
+      // item 298: "not yet" said nothing about how long, or whether anyone can ever look
+      { key: 'v', title: 'VERIFIED', get: (l) => (l.verified ? c.ok('yes')
+        : l.attestations !== undefined ? c.dim(`${l.attestations}/${l.quorum ?? v?.quorum ?? 2}${l.created_at ? ` · waiting ${fmtDur((Date.now() - l.created_at) / 1000)}` : ''}`)
+          : c.dim('not yet')) },
       { key: 'd', title: 'SOLD', get: (l) => String(l.downloads), align: 'right' }, { key: 'r', title: 'REVENUE', get: (l) => `${l.revenue}${cur}`, align: 'right' },
     ], 'no lessons yet'),
-    '', c.dim(`public page: ${r.node}/teacher/${p.address}`),
   ];
+  if (v && v.verifiers < v.quorum) {
+    lines.push('', c.warn('! ') + `${r.node} has ${v.verifiers} verifier peer(s) and needs ${v.quorum}: knowledge published here stays on the record but cannot go on sale until verifier nodes appear.`);
+  }
+  lines.push('', c.dim(`public page: ${r.node}/teacher/${p.address}`));
   return lines.join('\n');
 }

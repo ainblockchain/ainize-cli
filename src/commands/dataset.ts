@@ -90,7 +90,9 @@ async function download(s: TeachSession, id: string, d: PublishedDataset, opts: 
   if (direct.ok) bytes = Buffer.from(await direct.arrayBuffer());
   else if (direct.status === 403 && d.access === 'derivative') {
     // the derive intent IS the record that someone is building on this knowledge (§6.1) — it is counted on the parent
-    const intent = await s.post<{ token: string; sha256: string }>(`/api/patches/${encodeURIComponent(id)}/derive-intent`, {}).catch(refusal);
+    const intent = await s.post<{ token: string; sha256: string; terms?: string }>(`/api/patches/${encodeURIComponent(id)}/derive-intent`, {}).catch(refusal);
+    // Item 312: the intent is a commitment, not a formality — say what was just promised, in the node's own words.
+    if (intent.terms) warn(ctx, intent.terms);
     const ts = Date.now();
     const auth = `${s.key.address}:${ts}:${signMessage(`dataset:${intent.sha256}:${ts}`, s.key.privateKey)}`;
     const res = await fetch(`${s.client.baseUrl}/p2p/dataset/${intent.sha256}`, { headers: { 'x-ngram-auth': auth, 'x-ngram-derive': intent.token } });
@@ -150,7 +152,8 @@ export function renderPublishedDataset(r: PublishedDatasetResult): string {
   }
   if (r.manifest) lines.push('', c.head('manifest'), JSON.stringify(r.manifest, null, 1));
   if (r.saved) {
-    lines.push('', c.ok('✓ ') + `saved ${r.saved.path} (${fmtBytes(r.saved.bytes)})${r.saved.via === 'derive' ? c.dim(' · fetched as a derivative — the creator’s node counted it') : ''}`);
+    lines.push('', c.ok('✓ ') + `saved ${r.saved.path} (${fmtBytes(r.saved.bytes)})${r.saved.via === 'derive' ? c.dim(' · fetched as a derivative — recorded against your teaching key') : ''}`);
+    if (r.saved.via === 'derive') lines.push(c.dim(`  a lesson trained on these questions must name ${r.patch_id} as its base (\`${PROG} teach train <dataset> --on ${r.patch_id}\`), or the node will refuse to publish it`));
     if (r.saved.notes_removed) lines.push(c.dim(`  ${r.saved.notes_removed} note(s) left out — pass --include-notes to keep them (and the published fingerprint)`));
     else if (r.saved.verified) lines.push(c.dim('  fingerprint verified — uploading this file gives you the same questions to build on'));
   }

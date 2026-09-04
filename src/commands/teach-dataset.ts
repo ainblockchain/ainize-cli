@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { createIdentity, type TeachDataset, type TeachDatasetRow, type TeachDatasetSummary, type TeachEffort } from '@ngram/core';
+import { createIdentity, signMessage, type TeachDataset, type TeachDatasetRow, type TeachDatasetSummary, type TeachEffort } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, shortHash, table, warn } from '../output.js';
@@ -117,13 +117,19 @@ export function renderRows(rows: TeachDatasetRow[], opts: { all?: boolean; posit
   // `pii` rows train, but they are shown with the problems: the owner has to remove them before the set can be shared
   const shown = opts.all ? rows : rows.filter((r) => r.status !== 'ok' && r.status !== 'fixed');
   if (!shown.length) return c.dim(opts.all ? '(no questions)' : 'every line will train');
-  return table(shown, [
+  // item 5: after an edit the accepted rows are numbered by position, but a CARRIED row still points at the line of
+  // the uploaded file it came from. Marking it is the difference between two different sevens and one.
+  const carried = shown.some((r) => r.carried);
+  const out = table(shown, [
     // after an edit the dataset was rewritten: these are positions in it, not lines of the file that was uploaded
-    { key: 'l', title: opts.positions ? '#' : 'LINE', get: (r) => String(r.line), align: 'right' },
+    { key: 'l', title: opts.positions ? '#' : 'LINE', get: (r) => `${r.line}${r.carried ? '*' : ''}`, align: 'right' },
     { key: 's', title: 'STATUS', get: (r) => rowColor(r.status) },
     { key: 'q', title: 'QUESTION', get: (r) => (r.prompt ?? r.raw ?? '').replace(/\s+/g, ' ').slice(0, 36) },
     { key: 'w', title: 'WHY', get: (r) => (r.detail ?? (r.fixes?.length ? `tidied up: ${r.fixes.join(', ')}` : ROW_COPY[r.status] ?? r.status)).slice(0, 60) },
   ]);
+  return carried && opts.positions
+    ? `${out}\n${c.dim('* a line of the file you uploaded, left out when it was read and not resolved by your edits since')}`
+    : out;
 }
 
 export function renderDataset(d: TeachDataset, node: string): string {
@@ -343,6 +349,42 @@ function trainingSpec(opts: TrainOpts): Record<string, unknown> | undefined {
   return Object.keys(spec).length ? spec : undefined;
 }
 
+/**
+ * Item 171 — every `--patch` / `--on` id, resolved BEFORE anything is uploaded.
+ *
+ * The CLI used to create a teaching key, upload the dataset, print "2 of 2 lines will train" and only then post the
+ * job, which the node rejected with `invalid: unknown knowledge krx-all-2761` — after the side effect, with a label
+ * that reads like an internal validation tag and names no remedy. The refusal now happens before the upload and says
+ * which of the two problems it is: this node has never heard of that id, or it is listed here and its file is not.
+ */
+interface BaseCheck { id: string; name?: string; usable: boolean; reason?: 'not_listed' | 'not_held'; price?: string; currency?: string; status?: string }
+
+async function assertBasesUsable(s: TeachSession, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    let e: BaseCheck;
+    try {
+      e = await s.get<BaseCheck>(`/api/teach/bases/${encodeURIComponent(id)}`);
+    } catch (err) {
+      // an older node has no such route: leave the check to the job post rather than refusing a valid command
+      if ((err as CliError).exitCode === 2) throw err;
+      if (/^HTTP 404|not found/i.test((err as Error).message)) return;
+      throw err;
+    }
+    if (e.usable) continue;
+    if (e.reason === 'not_held') {
+      const price = e.price && Number(e.price) > 0 ? `${e.price} ${e.currency ?? ''}`.trim() : 'free';
+      throw new CliError([
+        `${e.name ?? id} is listed on ${s.client.baseUrl}, but its file is not on this node.`,
+        `Teaching on top of it needs the file: \`${PROG} use ${id} --no-apply\` (${price}), then run this again.`,
+      ].join('\n'), 2);
+    }
+    throw new CliError([
+      `${id} is not on ${s.client.baseUrl}.`,
+      `Check the id with \`${PROG} patch ls\`, or teach on a node that holds it (\`--node <url>\`).`,
+    ].join('\n'), 2);
+  }
+}
+
 async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts): Promise<CreateJobResult> {
   const patchIds = (opts.patch ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   const baseIds = (opts.on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -361,7 +403,12 @@ async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts)
   return s.post<CreateJobResult>('/api/teach/jobs', body);
 }
 
-export interface TrainResult extends CreateJobResult { node: string; dataset_id: string; uploaded?: DatasetUploadResult }
+export interface TrainResult extends CreateJobResult {
+  node: string; dataset_id: string; uploaded?: DatasetUploadResult;
+  /** `--wait` only (item 239): READY *and* measured on the live model. A script keying on `checks.ok` alone was told
+   *  a lesson that taught 0 of 18 sentences had succeeded, because `checks.ok` is the SIDE-EFFECT check, not the lesson. */
+  ok?: boolean;
+}
 
 /**
  * `teach train <dataset-id | file>` — queue a lesson from a dataset. A path is uploaded first (the same validation
@@ -370,22 +417,37 @@ export interface TrainResult extends CreateJobResult { node: string; dataset_id:
 export async function teachTrain(ctx: CliContext, target: string, opts: DatasetOpts & TrainOpts = {}): Promise<TrainResult> {
   let uploaded: DatasetUploadResult | undefined;
   let datasetId = target;
+  const s = await TeachSession.open(ctx, opts);
+  // Item 171: the bases are checked BEFORE the upload. Failing after the file is on the node — after a teaching key
+  // was created and a dataset quota was spent — is what made `invalid: unknown knowledge` unrecoverable advice.
+  await assertBasesUsable(s, [...(opts.on ?? '').split(','), ...(opts.patch ?? '').split(',')].map((x) => x.trim()).filter(Boolean));
   if (!UUID_RE.test(target)) {
     if (!existsSync(target)) throw new CliError(`not a dataset id or a file: ${target} — \`${PROG} teach dataset ls\` lists your datasets`);
     uploaded = await datasetUpload(ctx, target, { ...opts, silent: ctx.json, nextSteps: false });
     datasetId = uploaded.dataset.id;
     if (!ctx.quiet && !ctx.json) process.stdout.write('\n');
   }
-  const s = await TeachSession.open(ctx, opts);
   const created = await trainDataset(s, datasetId, opts);
   let out: TrainResult = { ...created, node: s.client.baseUrl, dataset_id: datasetId, ...(uploaded ? { uploaded } : {}) };
   if (opts.wait) {
     const done = await waitForJob(s, created.job.id, ctx);
-    out = { ...out, job: done };
+    out = { ...out, job: done, ok: done.status === 'READY' && done.checks?.executed === true };
+    // Item 239: a script has to be able to tell a bake that worked from one that did not. `--wait` used to exit 0 on
+    // FAILED, on NEEDS_MORE and on a lesson that taught 0 of 18, so `teach train --wait && teach publish …` published
+    // a failed bake every morning. The exit code is the terminal status, documented in --help.
+    process.exitCode = EXIT_FOR_STATUS[done.status] ?? (done.status === 'READY' && done.checks?.executed !== true ? 8 : 0);
   }
   emit(ctx, out, (d) => (opts.wait ? renderTeachStatus({ kind: 'job', node: d.node, job: d.job, owner: true }) : renderJobCreated(d, d.node)));
   return out;
 }
+
+/**
+ * `teach train --wait` exit codes (item 239). 0 only when the lesson is READY and was actually measured on the live
+ * model; every other terminal state has its own code so a cron line can branch instead of guessing from stdout.
+ */
+export const EXIT_FOR_STATUS: Record<string, number> = {
+  READY: 0, NEEDS_MORE: 4, FAILED: 5, CANCELLED: 5, EXPIRED: 5, REJECTED: 6, ANNOUNCED: 0, PENDING_REVIEW: 0,
+};
 
 const TERMINAL = ['READY', 'NEEDS_MORE', 'FAILED', 'CANCELLED', 'EXPIRED', 'REJECTED', 'ANNOUNCED', 'PENDING_REVIEW'];
 
@@ -398,7 +460,7 @@ async function waitForJob(s: TeachSession, id: string, ctx: CliContext, timeoutM
     const line = `${job.status}${job.progress ? ` step ${job.progress.step}/${job.progress.max_steps} · ${job.progress.hits}/${job.progress.total} right` : ''}`;
     if (line !== last && !ctx.quiet && !ctx.json) { process.stderr.write(c.dim(`  ${line}\n`)); last = line; }
     if (TERMINAL.includes(job.status)) return job;
-    if (Date.now() - t0 > timeoutMs) throw new CliError(`lesson ${id} is still ${job.status} after ${Math.round((Date.now() - t0) / 60_000)} min — check later: ${PROG} teach status ${id}`);
+    if (Date.now() - t0 > timeoutMs) throw new CliError(`lesson ${id} is still ${job.status} after ${Math.round((Date.now() - t0) / 60_000)} min — check later: ${PROG} teach status ${id}`, 7);
     await new Promise((r) => setTimeout(r, 3000));
   }
 }
@@ -447,4 +509,107 @@ export function renderJobs(r: JobsResult): string {
     '',
     c.dim(`one lesson: ${PROG} teach status <lesson-id>   ·   its questions: ${PROG} teach dataset get <dataset-id>`),
   ].join('\n');
+}
+
+// ---------------------------------------------------------------- teach publish (item 238)
+/** What `GET /api/teach/jobs/:id/publish-challenge` answers. `split_preview` is item 186's real money split. */
+export interface PublishChallenge {
+  patch_sha256: string; benchmark_hash: string; address: string; signer: string; share: number; claim: string;
+  split_preview?: {
+    currency: string; royalty_share: number; contributor_share: number;
+    parents: { id: string; name: string; author?: string; price?: string }[];
+    shares: { address: string; share: number; kind: 'you' | 'node' | 'lineage'; name?: string }[];
+    suggested_price: string;
+  };
+  verification?: { quorum: number; peers: number; reachable: number; verifiers: number; self_verifier: boolean };
+  ledger?: { kind: 'local' | 'ain'; currency: string };
+}
+export type PublishOutcome = { status: 'PENDING_REVIEW' } | { status: 'ANNOUNCED'; patch_id: string; url: string };
+export interface PublishResult { node: string; job_id: string; challenge: PublishChallenge; result: PublishOutcome; price: string }
+export interface TeachPublishOpts extends KeyOpts {
+  name: string; price?: string; license?: string; description?: string; payout?: string;
+  consentPermanent?: boolean; consentRights?: boolean;
+  access?: 'public' | 'derivative' | 'private'; datasetLicense?: string; includeNotes?: boolean;
+}
+
+/**
+ * `ainize teach publish <job-id>` — the door that only the browser had (item 238).
+ *
+ * The whole dataset pipeline already ran from the terminal (upload -> train -> wait -> READY) and then stopped with
+ * "open <node>/teach/lesson/<id>": publishing needs a `claim_sig` signed by the TEACHING key, and only the browser's
+ * PublishSheet ever signed one — although this CLI has held that key in `<home>/teaching-key.json` all along. So a
+ * cron line could bake every morning and never share anything without someone opening a browser at 3 a.m.
+ *
+ * The two consents are the publisher's, not this command's: they are typed as flags, sent as the real checkbox state,
+ * and the node refuses the publish without both. Nothing is defaulted to true.
+ */
+export async function teachPublish(ctx: CliContext, jobId: string, opts: TeachPublishOpts): Promise<PublishResult> {
+  if (!opts.consentPermanent || !opts.consentRights) {
+    throw new CliError([
+      'publishing puts this lesson on a permanent public record: the questions, the answers, your display name and your payout address cannot be edited or deleted, and verifier nodes will read them.',
+      'Confirm both, in your own words, with --consent-permanent --consent-rights (the second is: you have the right to share this information, and it is not private or personal data).',
+    ].join('\n'), 1);
+  }
+  const name = (opts.name ?? '').trim();
+  if (name.length < 2 || name.length > 80) throw new CliError('--name must be 2 to 80 characters — it is what buyers see');
+  const price = (opts.price ?? '0').trim();
+  if (!/^\d+(\.\d+)?$/.test(price)) throw new CliError('--price must be a number, 0 or more (0 = free)');
+  const payout = opts.payout === undefined ? undefined : opts.payout === 'none' ? null : opts.payout.trim();
+  if (payout && !/^0x[0-9a-fA-F]{40}$/.test(payout)) throw new CliError('--payout takes an AIN address (0x…) or the word `none`');
+
+  const s = await TeachSession.open(ctx, opts);
+  const chPath = `/api/teach/jobs/${encodeURIComponent(jobId)}/publish-challenge${query({ payout_address: payout === null ? 'none' : payout })}`;
+  const challenge = await s.get<PublishChallenge>(chPath).catch((e) => {
+    const msg = (e as Error).message;
+    // `job_not_ready` / `checks_failed` are the lesson's own state, not a usage error: exit 1 with what to do next
+    if (/^job_not_ready|^checks_failed/.test(msg)) throw new CliError(`${msg}\n${PROG} teach status ${jobId}  shows what the lesson is waiting for.`, 1);
+    if (/^publish_disabled/.test(msg)) throw new CliError(`${msg}\nKeep the file instead: ${PROG} teach status ${jobId}`, 1);
+    throw e;
+  });
+  const claim_sig = signMessage(challenge.claim, s.key.privateKey);
+  const body = {
+    name, price, ...(opts.license ? { license: opts.license } : {}), ...(opts.description ? { description: opts.description } : {}),
+    ...(payout !== undefined ? { payout_address: payout } : {}),
+    claim_sig, consent: { permanent: true, rights: true },
+    dataset: { access: opts.access ?? 'derivative', ...(opts.datasetLicense ? { license: opts.datasetLicense } : {}), ...(opts.includeNotes ? { include_notes: true } : {}) },
+    ...(s.key.name ? { contributor: { name: s.key.name } } : {}),
+  };
+  const result = await s.post<PublishOutcome>(`/api/teach/jobs/${encodeURIComponent(jobId)}/publish`, body);
+  const out: PublishResult = { node: s.client.baseUrl, job_id: jobId, challenge, result, price };
+  emit(ctx, out, renderPublished);
+  return out;
+}
+
+export function renderPublished(r: PublishResult): string {
+  const ch = r.challenge;
+  const sp = ch.split_preview;
+  const cur = sp?.currency ?? ch.ledger?.currency ?? '';
+  const lines: string[] = [];
+  lines.push(r.result.status === 'ANNOUNCED'
+    ? c.ok('✓ ') + `published as ${c.id(r.result.patch_id)} (ANNOUNCED)`
+    : c.ok('✓ ') + 'sent to the node operator for review (PENDING_REVIEW)');
+  const pairs: [string, unknown][] = [['price', Number(r.price) > 0 ? `${r.price} ${cur}` : 'free'], ['credited to', ch.address]];
+  // Item 186 in the terminal: the same numbers the sheet shows, from the node's own royaltySplit — never the raw
+  // contributor share, which is 70 % on a lesson that pays its teacher 49 %.
+  if (sp) {
+    const pctOf = (x: number) => `${Math.round(x * 1000) / 10} %`;
+    const amount = (x: number) => (Number(r.price) > 0 ? ` = ${Math.round(x * Number(r.price) * 1e6) / 1e6} ${cur}` : '');
+    for (const sh of sp.shares) {
+      if (sh.share <= 0 && sh.kind !== 'node') continue;
+      const who = sh.kind === 'you' ? 'you' : sh.kind === 'node' ? 'this node' : sh.name ?? sh.address;
+      pairs.push([sh.kind === 'lineage' ? '  creator share' : sh.kind === 'you' ? '  your share' : '  node share', `${pctOf(sh.share)} of every sale${amount(sh.share)}  ${c.dim(who)}`]);
+    }
+    if (sp.parents.length) pairs.push(['built on', sp.parents.map((p) => `${p.name}${p.price ? ` (sells for ${p.price} ${cur})` : ''}`).join(', ')]);
+  }
+  if (ch.ledger?.kind === 'local') pairs.push(['settles in', c.warn(`${ch.ledger.currency} on this node's own ledger`) + ' — development play money, not withdrawable']);
+  if (r.result.status === 'ANNOUNCED') pairs.push(['page', r.result.url]);
+  lines.push(kv(pairs));
+  // Item 298: never end on "verifiers are now checking it" when this node has none.
+  const v = ch.verification;
+  if (v && v.verifiers < v.quorum) {
+    lines.push('', c.warn('! ') + `${r.node} has ${v.verifiers} verifier peer(s) and needs ${v.quorum}: this is on the record, but it cannot go on sale here until verifier nodes appear.`);
+  } else if (v) {
+    lines.push('', c.dim(`${v.verifiers} verifier peer(s) reachable — it goes on sale when ${v.quorum} of them agree.`));
+  }
+  return lines.join('\n');
 }
