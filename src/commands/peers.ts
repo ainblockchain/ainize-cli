@@ -88,7 +88,7 @@ export async function peersAdd(ctx: CliContext, endpoint: string): Promise<void>
   const ep = endpoint.replace(/\/+$/, '');
   const client = new NodeClient(ctx);
   await client.post('/api/peers', { endpoint: ep });
-  ok(ctx, `peer added: ${ep}`);
+  ok(ctx, `peer added: ${endpoint}`);
   const own = ctx.cfg?.ledger.kind
     ?? (await client.get<{ ledger: { kind: 'local' | 'ain' } }>('/api/info', { auth: false }).catch(() => null))?.ledger.kind;
   if (own) await warnLedgerMismatch(ctx, ep, own);

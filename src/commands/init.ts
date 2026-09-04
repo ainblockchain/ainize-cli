@@ -230,15 +230,17 @@ export async function configShow(ctx: CliContext): Promise<NodeConfig> {
   const { overrides, checked } = await teachOverrides(ctx, cfg);
   const notes = new Map(overrides.filter((o) => o.file !== undefined).map((o) => [o.key, `// overridden to ${JSON.stringify(o.effective)} in the console (settings.teach) — this file's value is not in use`]));
   const body = redact(cfg) as Record<string, unknown>;
+  // The overrides go ABOVE the JSON, so the last thing on screen is still a config.json a script can read off the
+  // first `{` — and so the warning is not below the fold of a 200-line config.
   emit(ctx, overrides.length ? { ...body, overrides } : body, () => [
     c.dim(configPath(ctx.home)),
-    annotate(JSON.stringify(redact(cfg), null, 2), notes),
     ...(overrides.length ? [
-      '',
-      c.warn(`! ${overrides.length} setting${overrides.length === 1 ? ' is' : 's are'} overridden in the console and outlive a restart — the value above is not what the node uses:`),
+      c.warn(`! ${overrides.length} setting${overrides.length === 1 ? ' is' : 's are'} overridden in the console and outlive a restart — config.json below is not what the node uses:`),
       ...overrides.map((o) => `    ${o.key}: ${o.file === undefined ? c.dim('(not in config.json)') : JSON.stringify(o.file)} → ${c.bold(JSON.stringify(o.effective))}`),
       c.dim(`    \`${PROG} config set <key> <value>\` now writes both; \`${PROG} config unset <key>\` clears the console override.`),
+      '',
     ] : checked ? [c.dim('no console overrides — the running node is using exactly this file')] : []),
+    annotate(JSON.stringify(redact(cfg), null, 2), notes),
   ].join('\n'));
   return cfg;
 }
