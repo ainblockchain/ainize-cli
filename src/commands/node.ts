@@ -190,7 +190,15 @@ export async function stop(ctx: CliContext): Promise<{ stopped: boolean; pid: nu
 export interface InfoResponse {
   node: { address: string; name: string; endpoint: string; roles: string[]; ledger: string; model?: string; branches: string[]; blobs: string[]; version: string; build?: string; config_version?: string };
   ledger: { kind: string; network: string; height?: number; records: number; provider?: string; head?: string };
-  runtime: { available: boolean; api: string | null; model: string | null; hook: boolean; repo: string | null; error?: string };
+  runtime: {
+    available: boolean; api: string | null; model: string | null; hook: boolean; repo: string | null; error?: string; applied?: string[];
+    /** item 144: the mailbox this node's applies are written into, and whether it was configured or derived. */
+    patch_dir?: string | null; patch_dir_source?: 'config' | 'repo' | 'none';
+    /** item 135: the cross-process lock on the shared model, and how many callers are waiting behind it. */
+    queue?: { running: { label: string; since: number } | null; waiting: number; lock: { owner: string; label: string; since: number; alive: boolean; stale: boolean; mine: boolean } | null };
+    /** item 215: the watchdog's last physical measurement of the table (`patch.py status`), not the store's flag. */
+    checked?: { patch_id: string; sha256: string; at: number; present: boolean; source: string } | null;
+  };
   quorum: number; currency: string; peers: number; counts: { patches: number; listed: number };
   /** item 170: how many peers ANSWERED, how many of those verify, and which are on a ledger this node cannot read. */
   peer_status?: PeerStatus;
@@ -256,6 +264,40 @@ export async function statusCheck(ctx: CliContext): Promise<ReadyResponse> {
   return d;
 }
 
+/**
+ * `available · Qwen3.8-Flash-Next · hook ok · held by pid:1859000 (runtime) for 4m · 2 waiting` (item 135).
+ *
+ * Several nodes on one host serialise on a cross-process lock in the shared patch directory, with a 20-minute wait
+ * before a caller gives up. The holder was reported only to visitors through the chat endpoints, so the commonest
+ * cause of "why is nothing happening" on a multi-node host was invisible on every operator surface.
+ */
+export function runtimeLine(r: InfoResponse['runtime']): string {
+  const head = r.available ? c.ok(`available · ${r.model} · hook ok`) : c.warn(`unavailable${r.error ? ` (${r.error})` : ''}`);
+  const q = r.queue;
+  if (!q) return head;
+  const parts: string[] = [];
+  if (q.lock && !q.lock.mine) parts.push(c.warn(`held by ${q.lock.owner} (${q.lock.label}) for ${relAge(Date.now() - q.lock.since)}${q.lock.stale ? ', stale' : !q.lock.alive ? ', holder is gone' : ''}`));
+  else if (q.lock?.mine && q.running) parts.push(`this node is running ${q.running.label} (${relAge(Date.now() - q.running.since)})`);
+  if (q.waiting) parts.push(`${q.waiting} waiting`);
+  return head + (parts.length ? c.dim(' · ') + parts.join(c.dim(' · ')) : '');
+}
+
+/**
+ * `09-01 → 09-02 · on the table (checked 12 s ago)` (item 215). `applied` is a row in this node's database; the only
+ * thing that knows whether the rows are physically there is the watchdog's `patch.py status`, every 20 s, on the top
+ * of the stack. Through a rollback and through every verification restore the flag said yes and the model answered no.
+ */
+export function appliedLine(r: InfoResponse['runtime']): string {
+  const ids = r.applied ?? [];
+  const chk = r.checked;
+  const top = ids[ids.length - 1];
+  if (!chk || chk.patch_id !== top) return ids.join(' → ') + c.dim('  (not measured on the live table yet)');
+  const age = relAge(Date.now() - chk.at);
+  return ids.join(' → ') + (chk.present
+    ? c.dim('  · ') + c.ok(`on the table (${top} checked ${age} ago)`)
+    : c.dim('  · ') + c.err(`${top} is NOT on the table — its rows were overwritten (checked ${age} ago); the watchdog re-applies the stack`));
+}
+
 /** `3 known · 3 answered · 2 verifiers` — the peer count alone said nothing about whether anyone was there (item 170). */
 export function peersLine(st: PeerStatus | undefined, fallback: number): string {
   if (!st) return String(fallback);
@@ -281,7 +323,11 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
     kv([
       ['address', x.node.address], ['roles', x.node.roles.join(', ')], ['version', nodeVersion(x.node)],
       ['ledger', `${x.ledger.kind} · ${x.ledger.network}${x.ledger.provider ? ` · ${x.ledger.provider}` : ''} · ${x.ledger.records} records${x.ledger.height !== undefined ? ` · height ${x.ledger.height}` : ''}`],
-      ['runtime', x.runtime.available ? c.ok(`available · ${x.runtime.model} · hook ok`) : c.warn(`unavailable${x.runtime.error ? ` (${x.runtime.error})` : ''}`)],
+      ['runtime', runtimeLine(x.runtime)],
+      // item 144: which mailbox this node writes .npz files into — `runtime.api` (which model to talk to) and
+      // `runtime.patchDir` (which table to mutate) are independent, and nothing named the second anywhere.
+      ...(x.runtime.patch_dir ? [['mailbox', x.runtime.patch_dir + (x.runtime.patch_dir_source === 'repo' ? c.dim('  (from runtime.repo — set runtime.patchDir to be sure it is this instance\'s)') : '')] as [string, string]] : []),
+      ...(x.runtime.applied?.length ? [['in model', appliedLine(x.runtime)] as [string, string]] : []),
       ['peers', peersLine(x.peer_status, x.peers)], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],
       ['branches', x.node.branches.join(', ') || '-'], ['blobs held', `${x.node.blobs.length}${x.disk ? c.dim(` of ${x.disk.blob_files} files on disk`) : ''}`],
       ['disk', diskLine(x.disk)],
