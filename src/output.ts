@@ -202,6 +202,15 @@ export function emit<T>(ctx: CliContext, data: T, render: (d: T) => string | voi
   return data;
 }
 
+/**
+ * One step of a batch (`ainize use a b c`, item 219): a terminal still gets every step's own lines, but the JSON
+ * document belongs to the command, not to each step — the batch writes one at the end.
+ */
+export function emitStep<T>(ctx: CliContext, batched: boolean, data: T, render: (d: T) => string | void): T {
+  if (batched && ctx.json) return data;
+  return emit(ctx, data, render);
+}
+
 /** End of a command: under `--json`, a command that only spoke through `ok()` still owes the script one document. */
 export function flushJson(ctx: CliContext): void {
   if (!ctx.json || jsonEmitted || !jsonNotes.length) return;

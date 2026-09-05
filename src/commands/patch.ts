@@ -8,7 +8,7 @@ import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
-import { ask, c, confirm, emit, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
+import { ask, c, confirm, emit, emitStep, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
 
 export interface LsArgs { status?: string; model?: string; schema?: string; branch?: string; author?: string; q?: string; sort?: string; limit?: number; mine?: boolean; drafts?: boolean; }
 
@@ -337,15 +337,41 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
   if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
-  let announced = false;
-  if (a.announce) { await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede }); announced = true; }
-  else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ainize patch announce ${r.anchor.id}`));
-  if (ctx.json) emit(ctx, { anchor: r.anchor, announced }, () => '');
-  return { anchor: r.anchor, announced };
+  let announced: AnnounceResult | null = null;
+  if (a.announce) announced = await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede, document: false });
+  else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ${PROG} patch announce ${r.anchor.id}`));
+  // Item 253: the morning script had `{anchor, announced}` and a 64-integer addr_sketch, and had to poll
+  // `patch get --json` to learn whether the announce landed, what it retired and whether anyone can verify it.
+  emit(ctx, publishDocument(r.anchor, announced), () => undefined);
+  return { anchor: r.anchor, announced: !!announced };
+}
+
+/** `ainize --json publish` — the record hash, the derived status and what the announce retired, without the sketch. */
+export function publishDocument(anchor: PatchAnchor, announced: AnnounceResult | null): Record<string, unknown> {
+  const { addr_sketch: _sketch, ...rest } = anchor;   // 64 integers a script has no use for; the sha256 identifies the body
+  return {
+    anchor: rest,
+    announced: !!announced,
+    status: announced ? 'ANNOUNCED' : 'DRAFT',
+    record_hash: announced?.record.hash ?? null,
+    pending_supersedes: (announced?.retires ?? []).map((x) => ({ id: x.patch_id, status: x.status, sales: x.sales ?? 0, overlap_rows: x.overlap_rows ?? 0 })),
+    verifiers_known: announced?.verifiers?.verifiers ?? null,
+    quorum: announced?.verifiers?.quorum ?? null,
+    visibility: announced?.visibility ?? anchor.visibility ?? 'public',
+  };
 }
 
 /** What the node's `verifierReach()` reports back with an announce (item 147). */
 export interface VerifierReach { known: number; reachable: number; verifiers: number; quorum: number; self_attest: boolean; endpoints: string[] }
+
+/** Everything an announce establishes: the record it wrote, what it retired, and who can verify it (item 253). */
+export interface AnnounceResult {
+  patch_id: string;
+  record: LedgerRecord;
+  retires: PatchDetail['conflicts'];
+  verifiers: VerifierReach | null;
+  visibility: string;
+}
 
 /**
  * The overlaps an announce would RETIRE: same subject, same branch, still tradeable, and published by this same node
@@ -362,11 +388,13 @@ export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
  *  - whether any reachable peer on this network actually verifies. Below the quorum nothing announced here can ever
  *    be LISTED, so the old unconditional "verifiers will now attest" was a promise the node could not keep.
  */
-export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[] } = {}): Promise<LedgerRecord> {
+export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[]; document?: boolean } = {}): Promise<AnnounceResult> {
   const client = new NodeClient(ctx);
   const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
+  let retired: PatchDetail['conflicts'] = [];
   if (detail) {
     const retires = retiredByAnnounce(detail);
+    retired = retires;
     const named = new Set((opts.supersede ?? []).flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean));
     const missing = retires.filter((x) => !named.has(x.patch_id));
     if (retires.length && !ctx.json) {
@@ -403,7 +431,10 @@ export async function patchAnnounce(ctx: CliContext, id: string, opts: { superse
     ].join('\n') + '\n');
   }
   if (r.visibility === 'test') warn(ctx, `${id} was published as a TEST listing: it is hidden from every public catalogue, and only this node can see it.`);
-  return r.record;
+  const out: AnnounceResult = { patch_id: id, record: r.record, retires: retired, verifiers: r.verifiers ?? null, visibility: r.visibility ?? 'public' };
+  // `publish` writes the one document for the whole operation; a bare `patch announce` writes its own (item 253)
+  if (opts.document !== false) emit(ctx, { ...out, record_hash: r.record.hash, status: 'ANNOUNCED' }, () => undefined);
+  return out;
 }
 
 /**
@@ -511,6 +542,8 @@ export interface BuyArgs {
   maxPrice?: number;
   /** pay a second time for something this node has already bought (item 271) — off, so a retry never charges twice */
   again?: boolean;
+  /** one step of `use a b` / `buy a b`: the terminal still gets its lines, the JSON document is the batch's (item 219) */
+  batched?: boolean;
 }
 
 /**
@@ -557,7 +590,7 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   if (detail.purchased && !o.again) {
     info(ctx, c.dim(`${id} was already paid for by this node — collecting the body on that receipt (nothing will be charged; \`--again\` buys a second time on purpose)`));
     const done = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`, { apply: !!o.apply }, { timeoutMs: 30 * 60_000 });
-    emit(ctx, done, (x) => [
+    emitStep(ctx, !!o.batched, done, (x) => [
       c.ok('✓ ') + `collected ${c.id(x.patch_id)} — nothing was charged (paid ${x.amount}${x.currency ? ` ${x.currency}` : ''} already, tx ${shortHash(x.tx_hash, 16)})`,
       ...x.steps.map((st) => `  ${c.head(st.step.padEnd(11))} ${st.detail}`),
       c.dim(`  body: ${x.path}`),
@@ -691,20 +724,27 @@ export interface RuntimeJob {
  * timeout: `cannot reach node … (fetch failed)`, exit 2, five minutes before the node ran the operation anyway.
  * The node answers 202 with a job now; this prints where it is in the queue and waits for the real answer.
  */
-async function runRuntimeJob(ctx: CliContext, kind: 'apply' | 'remove', id: string, body: Record<string, unknown>): Promise<string> {
+async function runRuntimeJob(ctx: CliContext, kind: 'apply' | 'remove', id: string, body: Record<string, unknown>, batched = false): Promise<string> {
   const client = new NodeClient(ctx);
   const path = `/api/patches/${encodeURIComponent(id)}/${kind === 'apply' ? 'apply' : 'remove'}`;
   const first = await client.post<{ job?: RuntimeJob; result?: string; stack?: StackLayer[] }>(path, { ...body, async: true }, { timeoutMs: 120_000 });
-  // A node from before jobs existed answers synchronously; keep working with it.
-  if (!first.job) {
-    const result = String(first.result ?? '');
-    ok(ctx, `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${result}`);
+  /**
+   * Item 220 — under `--json` these verbs printed nothing at all on success: a script that loaded a set got zero
+   * bytes and exit 0 from every step, and had to read `/api/runtime` afterwards to guess what each one did. The
+   * stack is what the caller actually wants ("what is loaded now, in what order"), so it is fetched once, for the
+   * document only, and never for a terminal that has just been told the same thing in a sentence.
+   */
+  const done = async (result: string): Promise<string> => {
+    const stack = ctx.json && !batched ? await client.get<{ stack: StackLayer[] }>('/api/runtime/stack').then((x) => x.stack).catch(() => null) : null;
+    emitStep(ctx, batched, { patch_id: id, kind, result, applied: stack }, () => c.ok('✓ ') + `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${result}`);
     return result;
-  }
+  };
+  // A node from before jobs existed answers synchronously; keep working with it.
+  if (!first.job) return done(String(first.result ?? ''));
   let job = first.job;
   let said = false;
   for (;;) {
-    if (job.state === 'done') { ok(ctx, `${kind === 'apply' ? 'applied' : 'removed'} ${id}: ${job.result ?? ''}`); return job.result ?? ''; }
+    if (job.state === 'done') return done(job.result ?? '');
     // A refusal from the model container arrives here as its own Python trace too (item 160).
     if (job.state === 'failed') throw runtimeFailure(new CliError(job.error ?? `${kind} failed`, job.status === 409 ? 5 : 1), ctx.nodeUrl, id);
     if (!said && job.state === 'queued') {
@@ -719,12 +759,43 @@ async function runRuntimeJob(ctx: CliContext, kind: 'apply' | 'remove', id: stri
   }
 }
 
-export async function patchApply(ctx: CliContext, id: string, opts: { withBase?: boolean } = {}): Promise<string> {
-  return runRuntimeJob(ctx, 'apply', id, { with_base: !!opts.withBase });
+export async function patchApply(ctx: CliContext, id: string, opts: { withBase?: boolean; batched?: boolean } = {}): Promise<string> {
+  return runRuntimeJob(ctx, 'apply', id, { with_base: !!opts.withBase }, !!opts.batched);
 }
 
-export async function patchRemove(ctx: CliContext, id: string, opts: { cascade?: boolean } = {}): Promise<string> {
-  return runRuntimeJob(ctx, 'remove', id, { cascade: !!opts.cascade });
+export async function patchRemove(ctx: CliContext, id: string, opts: { cascade?: boolean; batched?: boolean } = {}): Promise<string> {
+  return runRuntimeJob(ctx, 'remove', id, { cascade: !!opts.cascade }, !!opts.batched);
+}
+
+/**
+ * `ainize use a b`, `patch apply a b`, `patch buy a,b` — a set, in the order given (item 219).
+ *
+ * The product's stated purpose is combining several knowledges, and `use a,b` answered `patch not found` while
+ * `patch apply a b` answered `Unknown argument: b`: the set had to be assembled one command at a time, with no
+ * stated order. The order typed IS the load order, and the last one wins on any memory entry two of them share —
+ * so the run ends by saying which order that was. Under `--json` the batch writes one document, not one per step.
+ */
+export async function overIds<T>(ctx: CliContext, ids: string[], verb: 'loaded' | 'unloaded' | 'bought' | null, one: (id: string, batched: boolean) => Promise<T>): Promise<T[]> {
+  const many = ids.length > 1;
+  const out: T[] = [];
+  for (const id of ids) out.push(await one(id, many));
+  if (!many) return out;
+  if (verb && !ctx.json) info(ctx, c.dim(verb === 'loaded'
+    ? `loaded in order: ${ids.join(' → ')}  (the last one wins on any memory entry they share)`
+    : `${verb}: ${ids.join(', ')}`));
+  emit(ctx, { ids, items: out }, () => undefined);
+  return out;
+}
+
+/**
+ * `a,b`, `a b` and repeated flags all mean the same set, in the order typed (item 219). `chat` had this and
+ * nothing else did, so the comma form was sent to the node verbatim as one id and came back "patch not found".
+ */
+export function parseIds(input: string | string[] | undefined): string[] {
+  const raw = Array.isArray(input) ? input : input === undefined ? [] : [input];
+  const ids = [...new Set(raw.flatMap((x) => String(x).split(/[,\s]+/)).map((x) => x.trim()).filter(Boolean))];
+  if (!ids.length) throw new CliError(`knowledge id required — \`${PROG} patch ls\` lists what this node knows about`);
+  return ids;
 }
 
 /** Why a layer is on the table, in the operator's words (`applied.reason`). */
@@ -1064,11 +1135,12 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
   if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
+    // item 220: the document says which of the two happened, and whether it ended up loaded
     // §8.7 — `use` means the knowledge WORKS afterwards, so an add-on is loaded with the stack it was trained on
     // top of; without this, `ainize use <child>` on a held child failed with `needs_base` and left nothing loaded.
     if (apply) { await patchApply(ctx, id, { withBase: true }); }
-    if (!ctx.json) ok(ctx, c.dim(`try it: ainize chat ${id} "your question"`));
-    return { already: true };
+    if (!ctx.json) ok(ctx, c.dim(`try it: ${PROG} chat ${id} "your question"`));
+    return emitStep(ctx, !!opts.batched, { patch_id: id, already: true as const, owned: !!detail.owned, purchased: !!detail.purchased, applied: apply, has_body: true }, () => '');
   }
   // A knowledge already paid for whose body this node no longer holds is COLLECTED, not bought again (item 273).
   if (detail.purchased && !detail.has_body) {

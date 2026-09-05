@@ -346,32 +346,40 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
   .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .option('reason', { type: 'string', demandOption: true, describe: 'why, in one line — it goes on the public record next to your address' }),
     run((ctx, a: G & { id: string; reason: string }) => patch.patchChallenge(ctx, a.id, a.reason)))
-  .command('buy <id>', 'Buy a listed patch via HTTP 402 (x402) and download its body', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+  .command('buy <ids..>', 'Buy listed knowledge via HTTP 402 (x402) and download the body — several ids buy them in the order given', (yy: Y) => yy
+    .positional('ids', { type: 'string', array: true, demandOption: true, describe: 'knowledge id(s) — `a b` or `a,b`, bought in the order given' })
     .option('apply', { type: 'boolean', default: false, describe: 'apply to the serving runtime after download' })
     // Item 102: the price is quoted and confirmed before anything is spent. `--yes` answers in advance; a
     // non-terminal without it is refused, never taken as a yes. `--max-price` is the FAMILY total (item 270).
     .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
-    .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
+    .option('max-price', { type: 'number', describe: 'refuse if the total for one knowledge (it + the bases it needs) is above this' })
     .option('bundle', { type: 'boolean', default: false, describe: 'buy the bases this knowledge needs underneath it too, deepest first (one payment each). Without it you are asked' })
     .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
     // Item 271: without this, a knowledge this node has already paid for is collected, not bought a second time.
     .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
     .example('$0 patch buy krx-all-2761', 'quote the price, ask, then pay')
+    .example('$0 patch buy krx-all-2761 pixelplus-087600', 'two knowledges, one quote and one confirmation each')
     .example('$0 patch buy krx-all-2761 --bundle', 'the add-on and the knowledge it needs underneath, in one go')
     .example('$0 patch buy krx-all-2761 --yes --max-price 30', 'unattended, with a budget for the whole family'),
-  run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
-    patch.patchBuy(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'] })))
+  run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) => {
+    const ids = patch.parseIds(a.ids);
+    return patch.overIds(ctx, ids, 'bought', (id, batched) =>
+      patch.patchBuy(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], batched }));
+  }))
   .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
   run((ctx, a: G & { id: string }) => patch.patchDownload(ctx, a.id)))
-  .command('apply <id>', 'Apply a held patch to the serving runtime (no restart)',
-    (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
-      .option('with-base', { type: 'boolean', default: false, describe: 'also load everything this knowledge was trained on top of, underneath it' }),
-    run((ctx, a: G & { id: string; withBase?: boolean }) => patch.patchApply(ctx, a.id, { withBase: a.withBase })))
-  .command('remove <id>', 'Unload it, putting back whatever was underneath',
-    (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
+  .command('apply <ids..>', 'Load held knowledge into the serving model (no restart) — several ids load in the order given, the last winning on any entry they share',
+    (yy: Y) => yy.positional('ids', { type: 'string', array: true, demandOption: true, describe: 'knowledge id(s) — `a b` or `a,b`, loaded in the order given' })
+      .option('with-base', { type: 'boolean', default: false, describe: 'also load everything this knowledge was trained on top of, underneath it' })
+      .example('$0 patch apply krx-all-2761 pixelplus-087600', 'the set, in that order'),
+    run((ctx, a: G & { ids: string[]; withBase?: boolean }) => patch.overIds(ctx, patch.parseIds(a.ids), 'loaded',
+      (id, batched) => patch.patchApply(ctx, id, { withBase: a.withBase, batched }))))
+  .command('remove <ids..>', 'Unload knowledge from the serving model, putting back whatever was underneath',
+    (yy: Y) => yy.positional('ids', { type: 'string', array: true, demandOption: true, describe: 'knowledge id(s) — `a b` or `a,b`' })
       .option('cascade', { type: 'boolean', default: false, describe: 'also unload everything that is loaded on top of it' }),
-    run((ctx, a: G & { id: string; cascade?: boolean }) => patch.patchRemove(ctx, a.id, { cascade: a.cascade })))
+    run((ctx, a: G & { ids: string[]; cascade?: boolean }) => patch.overIds(ctx, patch.parseIds(a.ids), 'unloaded',
+      (id, batched) => patch.patchRemove(ctx, id, { cascade: a.cascade, batched }))))
   .command('stack', 'What is loaded in the serving model, bottom first', (yy: Y) => yy, run((ctx) => patch.patchStack(ctx)))
   .command('fork <id>', 'Copy this knowledge\'s questions into your own training set, and continue from there', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
@@ -547,18 +555,20 @@ cli.command('dataset', 'Training sets: the questions a published knowledge was t
     dataset.datasetGetPublished(ctx, a.id, { key: a.key, keyFile: a['key-file'], out: a.out, manifest: a.manifest, includeNotes: a['include-notes'] })))
   .demandCommand(1, 'Subcommand is required (get).'), () => undefined);
 
-cli.command('use <id>', 'One line to use knowledge: check it is verified → quote the price → pay → download → load into your model', (y: Y) => fail(y)
-  .positional('id', { type: 'string', demandOption: true, describe: `knowledge id (see \`${PROG} patch ls\`)` })
+cli.command('use <ids..>', 'One line to use knowledge: check it is verified → quote the price → pay → download → load into your model. Several ids are used in the order given', (y: Y) => fail(y)
+  .positional('ids', { type: 'string', array: true, demandOption: true, describe: `knowledge id(s) — \`a b\` or \`a,b\`, in load order (see \`${PROG} patch ls\`)` })
   .option('apply', { type: 'boolean', default: true, describe: 'load into the serving model after download (--no-apply to only download)' })
   .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation (answer yes in advance)' })
-  .option('max-price', { type: 'number', describe: 'refuse if the total (this knowledge + the bases it needs) is above this' })
+  .option('max-price', { type: 'number', describe: 'refuse if the total for one knowledge (it + the bases it needs) is above this' })
   .option('bundle', { type: 'boolean', default: false, describe: 'buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked' })
   .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
   .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
   .example('$0 use krx-all-2761', 'quote, ask, pay, download, load')
+  .example('$0 use krx-all-2761 pixelplus-087600', 'two knowledges, loaded in that order')
   .example('$0 use krx-all-2761 --yes --max-price 30', 'unattended, with a budget'),
-run((ctx, a: G & { id: string; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
-  patch.patchUse(ctx, a.id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'] })));
+run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
+  patch.overIds(ctx, patch.parseIds(a.ids), a.apply === false ? 'bought' : 'loaded', (id, batched) =>
+    patch.patchUse(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], batched }))));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
