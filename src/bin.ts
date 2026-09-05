@@ -331,6 +331,7 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('price', { type: 'string', describe: `price if you later publish it (default: this node's market.defaultPrice)` })
     .option('license', { type: 'string', describe: 'licence for the draft: an SPDX id or free text' })
     .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
+    .option('drop-lineage', { type: 'boolean', default: false, describe: 'import as a ROOT even though the lesson names a base this node does not have — no credit and no royalty to the base creator' })
     .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', `then: ${PROG} patch apply taught-pixelplus-1a2b3c`),
   run((ctx, a: G & patch.ImportArgs) => patch.patchImport(ctx, a)))
   .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })

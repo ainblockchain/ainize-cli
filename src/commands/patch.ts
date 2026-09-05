@@ -1170,7 +1170,7 @@ export interface LessonRecipe {
   [k: string]: unknown;
 }
 
-export interface ImportArgs { file: string; recipe: string; id?: string; name?: string; model?: string; price?: string; license?: string; description?: string; }
+export interface ImportArgs { file: string; recipe: string; id?: string; name?: string; model?: string; price?: string; license?: string; description?: string; dropLineage?: boolean; }
 export interface ImportResult { anchor: PatchAnchor; sha256: string; sha_matches: boolean | null; model_matches: boolean | null; first_prompt: string | null }
 
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
@@ -1223,8 +1223,20 @@ export async function patchImport(ctx: CliContext, a: ImportArgs): Promise<Impor
   let model_matches: boolean | null = null;
   try { const info = await client.get<{ model?: string | null }>('/api/info', { auth: false }); model_matches = info.model ? info.model === d.model_id : null; } catch { /* reported by the POST below */ }
   if (model_matches === false) warnLine(ctx, `this node serves a different model than the lesson was trained on (node: see /api/info, lesson: ${d.model_id}) — the lesson will not fire`);
+  /**
+   * A lesson trained on top of somebody's knowledge carries that knowledge's id in its recipe, and the import used
+   * to drop the link with a warning whenever this node had not heard of the base yet (item 175) — turning a
+   * derivative into a root, with no credit and no royalty, on a line most people scroll past. It refuses now: the
+   * base has to reach this node first (`ainize peers add <url>` is one gossip round), and `--drop-lineage` is the
+   * explicit way to say "import it as a root anyway".
+   */
   const parents: string[] = [];
-  for (const pid of d.parents) { try { await client.get(`/api/patches/${encodeURIComponent(pid)}`, { auth: false }); parents.push(pid); } catch { warnLine(ctx, `parent knowledge ${pid} is not on this node — imported without that lineage link (load it first for the same behaviour)`); } }
+  const unknownParents: string[] = [];
+  for (const pid of d.parents) { try { await client.get(`/api/patches/${encodeURIComponent(pid)}`, { auth: false }); parents.push(pid); } catch { unknownParents.push(pid); } }
+  if (unknownParents.length && !a.dropLineage) {
+    throw new CliError(`this lesson was trained on top of ${unknownParents.join(', ')}, and ${unknownParents.length > 1 ? 'those are' : 'that is'} not on this node — importing it now would record it as a root, with no credit to ${unknownParents.length > 1 ? 'their creators' : 'its creator'} and no royalty on any sale.\n  add the node that publishes it:  ${PROG} peers add <its url>   (the record arrives within about 10 s)\n  or import it as a root anyway:   ${PROG} patch import ${a.file} --recipe ${a.recipe} --drop-lineage`);
+  }
+  if (unknownParents.length) warnLine(ctx, `--drop-lineage: imported WITHOUT the link to ${unknownParents.join(', ')} — this draft claims no base, so nobody is credited if you publish it`);
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: d.id, name: d.name, model_id: d.model_id, benchmark: JSON.stringify(d.benchmark), description: d.description, price: a.price, license: a.license,
     parents: parents.join(',') || undefined, path: file, contributors: d.contributors ? JSON.stringify(d.contributors) : undefined,
