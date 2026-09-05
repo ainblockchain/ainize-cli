@@ -77,9 +77,42 @@ export function executorLine(e: CatalogEntry): string {
   return c.dim(` · ${machines} independent model server${machines > 1 ? 's' : ''}`);
 }
 
+/** `split` as `GET /api/patches/:id` returns it. */
+export interface SaleSplitView {
+  patch_id: string; amount: string; currency: string; share: number; verifier_share: number;
+  lines: { address: string; amount: string; name: string | null; role: 'seller' | 'ancestor' | 'contributor' | 'verifier'; knowledge: string[] }[];
+  parents: { id: string; name: string; price: string | null; currency: string; author: string | null; author_name: string | null; status: string | null }[];
+  cheaper_than: { id: string; price: string; currency: string }[];
+  unresolved: Record<string, string>;
+}
+
+/**
+ * "Each sale of 3 CREDIT → 2.1 to you, 0.9 shared by the creators of krx-all-2761" (item 189), and the one thing a
+ * publisher undercutting their own base is never told (item 318). Printed at publish, before the announce, because
+ * afterwards the price is on the permanent record.
+ */
+export function splitLines(s: SaleSplitView): string[] {
+  if (!s.parents.length && s.lines.length <= 1) return [];
+  const money = (n: string) => `${n} ${s.currency}`;
+  const who = (l: SaleSplitView['lines'][number]) => (l.role === 'seller' ? 'you'
+    : `${l.name ?? shortAddr(l.address, 6)}${l.knowledge.length ? ` (${l.knowledge.join(', ')})` : ''}`);
+  const out = [c.dim(`  each sale of ${money(s.amount)} → `) + s.lines.map((l) => `${c.id(money(l.amount))} ${c.dim(`to ${who(l)}`)}`).join(c.dim(' · '))];
+  for (const p of s.parents) {
+    out.push(c.dim(`  base ${p.id}${p.price !== null ? ` sells at ${p.price} ${p.currency}` : ' (price unknown here)'}${p.author_name ? ` from ${p.author_name}` : ''}${p.status ? ` · ${p.status}` : ''}`));
+  }
+  for (const u of s.cheaper_than) {
+    out.push(c.warn(`  ! ${money(s.amount)} is below ${u.id}'s own price of ${u.price} ${u.currency} — buyers get its rows for less from you, and its creator's take drops from ${u.price} to a royalty slice.`));
+  }
+  const held = Object.keys(s.unresolved);
+  if (held.length) out.push(c.warn(`  ! ${held.join(', ')}: no anchor here names an author, so their share is held, not paid — add the node that publishes ${held.length > 1 ? 'them' : 'it'} (${PROG} peers add <url>).`));
+  return out;
+}
+
 export interface PatchDetail extends CatalogEntry {
   lineage: { parents: { id: string; name: string; author: string; status: string }[]; children: { id: string; name: string; author: string; status: string }[] };
-  conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; cross_branch?: boolean; same_author?: boolean; author?: string; author_name?: string | null; created_at?: number; sales?: number }[];
+  conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; cross_branch?: boolean; same_author?: boolean; author?: string; author_name?: string | null; created_at?: number; sales?: number; lineage?: 'parent' | 'child' | null }[];
+  /** What one sale pays and to whom, by name (items 189, 318) — from the node's `royaltyPlan`. */
+  split?: SaleSplitView;
   retired_at?: number | null;
   retire_reason?: string | null;
   branches: { name: string; context: Record<string, string> }[];
@@ -195,7 +228,7 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
     if (e.conflicts.length) {
       lines.push('', c.head('address-set overlaps (A₁ ∩ A₂)'), table(e.conflicts, [
         { key: 'p', title: 'PATCH', get: (x) => x.patch_id }, { key: 'o', title: 'SHARED ROWS', get: (x) => x.overlap_rows.toLocaleString('en-US'), align: 'right' },
-        { key: 's', title: 'SAME SCHEMA', get: (x) => (x.same_schema ? c.warn('yes → conflicting knowledge') : 'no') }, { key: 'st', title: 'STATUS', get: (x) => statusColor(x.status) },
+        { key: 's', title: 'SAME SCHEMA', get: (x) => (x.lineage ? c.ok(`yes → its ${x.lineage === 'parent' ? 'base' : 'add-on'}, not a rival`) : x.same_schema ? c.warn('yes → conflicting knowledge') : 'no') }, { key: 'st', title: 'STATUS', get: (x) => statusColor(x.status) },
       ]));
     }
     if (e.branches.length) lines.push('', c.head('branches'), ...e.branches.map((b) => `  ${b.name} ${c.dim(JSON.stringify(b.context))}`));
@@ -337,6 +370,12 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
   if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
+  // Items 189 + 318: the money split and the parents' prices, while the draft is still a draft and the price can change.
+  if (!ctx.json && r.anchor.parents?.length) {
+    const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(r.anchor.id)}`).catch(() => null);
+    const lines = detail?.split ? splitLines(detail.split) : [];
+    if (lines.length) process.stderr.write(lines.join('\n') + '\n' + c.dim(`  the price goes on the permanent record at announce; until then \`${PROG} patch rm ${r.anchor.id}\` and publish again changes it.\n`));
+  }
   let announced: AnnounceResult | null = null;
   if (a.announce) announced = await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede, document: false });
   else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ${PROG} patch announce ${r.anchor.id}`));
@@ -378,7 +417,7 @@ export interface AnnounceResult {
  * — the node's own rule (market.supersedable). A cross-author overlap is not in this list any more: it coexists.
  */
 export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
-  return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
+  return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && !x.lineage && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
 }
 
 /**
@@ -629,9 +668,20 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   if (balance !== null && balance < pay) {
     throw new CliError(`this node holds ${balance} ${quote.currency} and the purchase costs ${bundle ? quote.total : quote.price} — nothing was bought`);
   }
+  /*
+   * Item 277 — a free knowledge is not bought. Nothing is charged, no identity is needed and no sale is recorded,
+   * so asking "Pay 0 CREDIT?" was both untrue and the last thing between a visitor and the cheapest way in.
+   * Item 351 — and when money DOES move, the record naming this node as the buyer is public on every peer. That
+   * was learned afterwards, from the ledger page; it is said here, before the answer.
+   */
+  const freeNow = pay === 0;
+  if (freeNow) info(ctx, c.dim(`  free — nothing will be charged, and no public record will name this node as a buyer`));
+  else info(ctx, c.dim(`  the sale is recorded publicly: ${id}, ${bundle ? quote.total : quote.price} ${quote.currency} and this node's address, on every peer's ledger`));
   await confirm(ctx, heldUnlicensed
     ? `Pay ${quote.price} ${quote.currency} to license ${id} (the file is already here)? [y/N]`
-    : `Pay ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && named.length ? ` for ${named.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes });
+    : freeNow
+      ? `Download ${id} for free${bundle && named.length ? ` with ${named.length} base${named.length === 1 ? '' : 's'}` : ''}? [Y/n]`
+      : `Pay ${bundle ? quote.total : quote.price} ${quote.currency}${bundle && named.length ? ` for ${named.length + 1} knowledges` : ''}? [y/N]`, { yes: o.yes || freeNow });
   const seller = detail.anchor.author_name ?? shortAddr(detail.anchor.author, 8);
   const r = await client.post<PurchaseResult>(`/api/patches/${encodeURIComponent(id)}/buy`,
     { apply: !!o.apply, bundle, max_total: o.maxPrice, again: !!o.again }, { timeoutMs: 30 * 60_000 })
@@ -641,7 +691,10 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
     const cur = x.currency ?? quote.currency;
     const head = x.redeemed
       ? c.ok('✓ ') + `collected ${c.id(x.patch_id)} against the payment already made — nothing was charged  tx ${shortHash(x.tx_hash, 16)}`
-      : c.ok('✓ ') + `bought ${c.id(x.patch_id)} for ${x.total ?? x.amount} ${cur} (${x.scheme})  tx ${shortHash(x.tx_hash, 16)}`;
+      : Number(x.total ?? x.amount) === 0
+        // Item 277: "bought ux4-free for 0 (local-credit)" described a ceremony that no longer happens.
+        ? c.ok('✓ ') + `downloaded ${c.id(x.patch_id)} — free, nothing was charged and no sale was recorded`
+        : c.ok('✓ ') + `bought ${c.id(x.patch_id)} for ${x.total ?? x.amount} ${cur} (${x.scheme})  tx ${shortHash(x.tx_hash, 16)}`;
     const bought = (x.purchases ?? []).filter((pp) => pp.patch_id !== x.patch_id);
     return [
       head,
