@@ -97,7 +97,14 @@ export class NodeClient {
     if (!res.ok) {
       const err = (data as { error?: string; issues?: { path?: (string | number)[]; message: string }[] } | null);
       let msg = err?.error ?? (typeof data === 'string' ? data : `HTTP ${res.status}`);
-      if (err?.issues?.length) msg += ': ' + err.issues.map((i) => `${(i.path ?? []).join('.')} ${i.message}`.trim()).join('; ');
+      // Item 169(d): the field name was joined onto a message that often starts with it, so a rejected price read
+      // "price price must be a non-negative number". Name the field only when the message does not already.
+      if (err?.issues?.length) {
+        msg += ': ' + err.issues.map((i) => {
+          const field = (i.path ?? []).join('.');
+          return field && !i.message.toLowerCase().startsWith(field.toLowerCase()) ? `${field} ${i.message}` : i.message;
+        }).join('; ');
+      }
       if (res.status === 401) msg += ` — run \`${PROG} login\` first`;
       throw new CliError(msg, res.status === 401 ? 3 : 1, data);
     }
