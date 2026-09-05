@@ -511,6 +511,14 @@ export async function walletSend(ctx: CliContext, to: string, amount: number, op
   const client = new NodeClient(ctx);
   const w = await client.get<WalletResponse>('/api/me/wallet');
   const unit = w.kind === 'ain' ? 'AIN' : 'CREDIT';
+  // …and a node whose ledger is its own book still cannot. The node refuses this in the right words, but the
+  // refusal used to arrive AFTER "a transfer on a chain is irreversible" and a [y/N] — so the operator was asked
+  // to consent to an irreversible chain transfer on a node that has no chain, which is the pretending item 320 is
+  // about. There is nothing to preview and nothing to confirm: go straight to the node and let it say why.
+  if (w.kind !== 'ain') {
+    await client.post('/api/me/wallet/send', { to, amount, memo: opts.memo });
+    throw new Error('unreachable: a node that cannot send refuses this request');
+  }
   info(ctx, [
     `${c.bold(`${amount} ${unit}`)} → ${c.id(to)}`,
     c.dim(`  from this node's own wallet (${w.address}${w.balance === null ? '' : `, balance ${w.balance} ${unit}`}).`),
