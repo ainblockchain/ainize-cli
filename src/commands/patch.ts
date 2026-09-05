@@ -451,6 +451,40 @@ export function assertNpzBody(file: string): void {
     + `  Export it again from the trainer, or pass the file the lesson produced (\`lesson-*.npz\`).`);
 }
 
+/**
+ * `--branch <name>` used to file into nothing (item 169c).
+ *
+ * `anchor.branch` is a free-text label on the record. Every track surface — `branch ls`, `patch ls --branch`,
+ * `/api/route`, the /network table, `branch subscribe` — reads `BranchInfo.patch_ids` instead, and nothing ever
+ * joins the two. So `ainize publish --branch law/KR` was accepted in full, printed nothing, and left `branch ls`
+ * saying "no branches yet": the publisher believed their knowledge was on a track that did not exist.
+ *
+ * Publishing is not the place to create a public track as a side effect, and `branch add` refuses knowledge that is
+ * not verified yet, so this cannot silently do the filing either. It says exactly where the label stands instead:
+ * an unknown track is refused before the draft is written, and a real one is recorded with the one command that
+ * finishes the job once the network has verified it.
+ */
+async function checkBranch(ctx: CliContext, client: NodeClient, name: string): Promise<{ mine: boolean }> {
+  // `mine` on this response is the tracks this node SUBSCRIBES to, not the ones it owns — the question here is who
+  // may put knowledge on it, which is the owner.
+  const [d, info] = await Promise.all([
+    client.get<{ branches: { name: string; owner: string; description: string }[] }>('/api/branches?include_test=1&include_archived=1'),
+    client.get<{ node: { address: string } }>('/api/info'),
+  ]);
+  const b = d.branches.find((x) => x.name === name);
+  if (!b) {
+    const near = d.branches.map((x) => x.name).filter((n) => n.split('/')[0] === name.split('/')[0]);
+    throw new CliError(`no knowledge track called ${JSON.stringify(name)} on this node, and --branch does not create one: the name would go on the permanent record and `
+      + `\`${PROG} branch ls\`, \`${PROG} route\` and every subscriber would still see nothing.\n`
+      + `  create it first: ${PROG} branch create ${name} --context <key>=<value>\n`
+      + (near.length ? `  or did you mean: ${near.join(', ')}\n` : '')
+      + `  or publish without --branch — knowledge does not need a track.`);
+  }
+  const mine = b.owner.toLowerCase() === info.node.address.toLowerCase();
+  if (!mine) warn(ctx, `${name} belongs to ${shortAddr(b.owner, 6)}, not this node. The name goes on your record, but only that track's owner can put knowledge on it (\`${PROG} branch add\`), so it will not appear there until they do.`);
+  return { mine };
+}
+
 export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ anchor: PatchAnchor; announced: boolean }> {
   const file = resolve(a.file);
   if (!existsSync(file)) throw new CliError(`file not found: ${file}`);
@@ -466,6 +500,8 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   const datasetFile = a.dataset ? resolve(a.dataset) : undefined;
   if (datasetFile && !existsSync(datasetFile)) throw new CliError(`training set not found: ${datasetFile}`);
   // Item 158 — an id derived from a name that has no ASCII at all.
+  // …and before anything is written, that --branch names a track that exists (item 169c).
+  const branch = a.branch ? await checkBranch(ctx, client, a.branch) : null;
   const derived = a.id ? { id: a.id, from: 'name' as const } : idFromName(a.name);
   if (derived.from === 'hash') {
     warn(ctx, `no id could be made from the name ${JSON.stringify(a.name)} — an id is a-z 0-9 . _ - and that name has none of them, so this draft is ${c.id(derived.id)}.`);
@@ -502,6 +538,12 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   let announced: AnnounceResult | null = null;
   if (a.announce) announced = await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede, keepOthers: a.keepOthers, document: false });
   else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ${PROG} patch announce ${r.anchor.id}`));
+  // Item 169c — the last half of what --branch really did. The label is on the record now; a track carries
+  // patch_ids, and `branch add` takes only verified knowledge, so this is the step that is genuinely still to come
+  // rather than something publish could have done here.
+  if (branch?.mine && !ctx.json) {
+    ok(ctx, c.dim(`${a.branch} is recorded on this knowledge. It joins the track — and reaches its subscribers and \`${PROG} route\` — once the network has verified it: ${PROG} branch add ${a.branch} ${r.anchor.id}`));
+  }
   // Item 253: the morning script had `{anchor, announced}` and a 64-integer addr_sketch, and had to poll
   // `patch get --json` to learn whether the announce landed, what it retired and whether anyone can verify it.
   emit(ctx, publishDocument(r.anchor, announced), () => undefined);
