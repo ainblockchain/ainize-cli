@@ -470,11 +470,14 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
       .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'with --train: how hard to train' })
       .option('check', { type: 'boolean', describe: 'with --train: --no-check skips the side-effect check (publishing then stays blocked)' })
       .option('rows', { type: 'number', describe: 'with --train: train only the first N questions' })
+      .option('wait', { type: 'boolean', default: false, describe: 'with --train: follow the lesson until it is ready and exit with its outcome (0 ready · 4 did not stick · 5 failed · 6 declined · 7 timed out · 8 never measured) — the same wait as `teach train --wait`' })
+      .option('timeout', { type: 'number', describe: 'with --wait: give up after this many minutes and exit 7 (default 60)' })
       .example('$0 teach dataset ./questions.csv', 'validate + upload, print every line that will not train')
       .example('$0 teach dataset ./qa.jsonl --train --effort thorough', 'upload and teach it in one line')
-      .example('$0 teach dataset ./data.csv --columns \'{"prompt":"질문","answer":"답"}\'', 'unusual column names'),
-    run((ctx, a: G & { file: string; key?: string; 'key-file'?: string; name?: string; format?: string; delimiter?: string; header?: boolean; columns?: string; encoding?: string; retention?: 'keep' | 'delete_after_training'; train: boolean; effort?: teachData.TrainOpts['effort']; check?: boolean; rows?: number }) =>
-      teachData.datasetUpload(ctx, a.file, { key: a.key, keyFile: a['key-file'], name: a.name, format: a.format, delimiter: a.delimiter, header: a.header, columns: a.columns, encoding: a.encoding, retention: a.retention, train: a.train, effort: a.effort, check: a.check, rows: a.rows })))
+      .example('$0 teach dataset ./data.csv --columns \'{"prompt":"질문","answer":"답"}\'', 'unusual column names')
+      .example('$0 teach dataset ./today.csv --train --wait && $0 teach publish <id> …', 'a nightly bake that only publishes when the lesson stuck'),
+    run((ctx, a: G & { file: string; key?: string; 'key-file'?: string; name?: string; format?: string; delimiter?: string; header?: boolean; columns?: string; encoding?: string; retention?: 'keep' | 'delete_after_training'; train: boolean; effort?: teachData.TrainOpts['effort']; check?: boolean; rows?: number; wait: boolean; timeout?: number }) =>
+      teachData.datasetUpload(ctx, a.file, { key: a.key, keyFile: a['key-file'], name: a.name, format: a.format, delimiter: a.delimiter, header: a.header, columns: a.columns, encoding: a.encoding, retention: a.retention, train: a.train, effort: a.effort, check: a.check, rows: a.rows, wait: a.wait, timeout: a.timeout })))
     .command('ls', 'My datasets on this node', (z: Y) => keyOpts(z),
       run((ctx, a: G & { key?: string; 'key-file'?: string }) => teachData.datasetLs(ctx, { key: a.key, keyFile: a['key-file'] })))
     .command(['get <id>', 'download <id>'], 'One dataset: every source line with the reason it was or was not used; -o writes the questions to a file', (z: Y) => keyOpts(z)
@@ -504,12 +507,13 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('inherit', { type: 'boolean', describe: '--no-inherit checks against the base without keeping its questions as known answers' })
     .option('yes-change', { type: 'boolean', default: false, describe: 'my answers are meant to replace the base\'s where they differ' })
     .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage). Exit code says what happened: 0 ready · 4 did not stick (NEEDS_MORE) · 5 failed/cancelled/expired · 6 declined by the operator · 7 still running when the wait ran out · 8 ready but never measured on the live model' })
+    .option('timeout', { type: 'number', describe: 'with --wait: give up after this many minutes and exit 7 (default 60)' })
     .example('$0 teach train 6f2c1b2a-…', 'train an uploaded dataset')
     .example('$0 teach train ./questions.csv --effort quick --wait', 'file → lesson in one line')
     .example('$0 teach train 6f2c1b2a-… --on krx-all-2761', 'teach it on top of someone else\'s knowledge')
     .example('$0 teach train 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
-  run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; on?: string; inherit?: boolean; 'yes-change': boolean; wait: boolean }) =>
-    teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, on: a.on, inherit: a.inherit, yesChange: a['yes-change'], wait: a.wait })))
+  run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; on?: string; inherit?: boolean; 'yes-change': boolean; wait: boolean; timeout?: number }) =>
+    teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, on: a.on, inherit: a.inherit, yesChange: a['yes-change'], wait: a.wait, timeout: a.timeout })))
 
   .command('jobs', 'My lessons on this node and the dataset each came from', (yy: Y) => keyOpts(yy)
     .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),

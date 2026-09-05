@@ -35,6 +35,8 @@ export interface CreateJobResult { job: TeachJobView; quota?: { key_remaining?: 
 
 export interface ParseOpts { format?: string; delimiter?: string; header?: boolean; columns?: string; encoding?: string; layout?: string }
 export interface TrainOpts { effort?: TeachEffort; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; wait?: boolean;
+  /** `--timeout <minutes>`: how long `--wait` waits before giving up with exit 7 (default 60). */
+  timeout?: number;
   /** `--on <id>`: the knowledge this lesson is trained ON TOP OF (design §13). Distinct from `--patch`, which only loads for comparison. */
   on?: string;
   /** `--no-inherit`: check against the base, but do not train its questions as known answers. */
@@ -159,7 +161,17 @@ const nextSteps = (id: string) => c.dim([
 ].join('\n'));
 
 // ---------------------------------------------------------------- teach dataset <file>
-export interface DatasetUploadResult extends DatasetResult { node: string; file: string; bytes: number; sha256: string; job?: CreateJobResult }
+export interface DatasetUploadResult extends DatasetResult { node: string; file: string; bytes: number; sha256: string; job?: CreateJobResult;
+  /** `--train --wait`: the lesson in `job` is the finished one, and the exit code is its outcome (item 252). */
+  waited?: boolean }
+
+/** How long `--wait` waits: `--timeout <minutes>`, an hour by default. */
+export function waitMs(opts: TrainOpts): number {
+  const m = opts.timeout;
+  if (m === undefined) return 60 * 60_000;
+  if (!Number.isFinite(m) || m <= 0) throw new CliError('--timeout is in minutes and must be a positive number');
+  return Math.round(m * 60_000);
+}
 
 /**
  * Validate a dataset file and upload it. Nothing is trained here — the node parses the bytes, reports every line it
@@ -191,12 +203,24 @@ export async function datasetUpload(ctx: CliContext, file: string, opts: Dataset
 
   const r = await s.upload<DatasetResult>('/api/teach/datasets', form, fileSha).catch((e: unknown) => { throw withReport(e, ctx); });
   const out: DatasetUploadResult = { ...r, node: s.client.baseUrl, file: path, bytes: bytes.length, sha256: fileSha };
-  if (opts.train) out.job = await trainDataset(s, r.dataset.id, opts);
-  if (!opts.silent) emit(ctx, out, (d) => renderUpload(d, { nextSteps: opts.nextSteps }));
+  if (opts.train) {
+    out.job = await trainDataset(s, r.dataset.id, opts);
+    // Item 252: the documented one-liner (`teach dataset ./questions.csv --train`) is the form a cron line reaches
+    // for, and it was the one form that could not block on the result — `--wait` existed only on the sibling
+    // command, so the first scripted attempt failed with `Unknown argument: wait`. Same wait, same exit codes.
+    if (opts.wait) {
+      const done = await waitForJob(s, out.job.job.id, ctx, waitMs(opts));
+      out.job = { ...out.job, job: done };
+      out.waited = true;
+      process.exitCode = exitForJob(done);
+      if (unchecked(done)) warnUnchecked(ctx, done.id);
+    }
+  }
+  if (!opts.silent) emit(ctx, out, (d) => renderUpload(d, { nextSteps: opts.nextSteps, waited: d.waited }));
   return out;
 }
 
-export function renderUpload(r: DatasetUploadResult, opts: { nextSteps?: boolean } = {}): string {
+export function renderUpload(r: DatasetUploadResult, opts: { nextSteps?: boolean; waited?: boolean } = {}): string {
   const lines = [
     renderDataset(r.dataset, r.node),
     '',
@@ -208,7 +232,8 @@ export function renderUpload(r: DatasetUploadResult, opts: { nextSteps?: boolean
     lines.push('', c.head('lines that will not train'), renderRows(r.report.rows));
     if (r.report.rows.length >= 50) lines.push(c.dim(`the first 50 source lines only — the rest: ${PROG} teach dataset get ${r.dataset.id} --rows 200 --all`));
   }
-  if (r.job) lines.push('', renderJobCreated(r.job, r.node));
+  if (r.job && opts.waited) lines.push('', renderTeachStatus({ kind: 'job', node: r.node, job: r.job.job, owner: true }));
+  else if (r.job) lines.push('', renderJobCreated(r.job, r.node));
   else if (opts.nextSteps !== false) lines.push('', nextSteps(r.dataset.id));
   return lines.join('\n');
 }
@@ -438,7 +463,7 @@ export async function teachTrain(ctx: CliContext, target: string, opts: DatasetO
   const created = await trainDataset(s, datasetId, opts);
   let out: TrainResult = { ...created, node: s.client.baseUrl, dataset_id: datasetId, ...(uploaded ? { uploaded } : {}) };
   if (opts.wait) {
-    const done = await waitForJob(s, created.job.id, ctx);
+    const done = await waitForJob(s, created.job.id, ctx, waitMs(opts));
     out = { ...out, job: done, ok: done.status === 'READY' && done.checks?.executed === true };
     // Item 239: a script has to be able to tell a bake that worked from one that did not. `--wait` used to exit 0 on
     // FAILED, on NEEDS_MORE and on a lesson that taught 0 of 18, so `teach train --wait && teach publish …` published
@@ -493,7 +518,10 @@ async function waitForJob(s: TeachSession, id: string, ctx: CliContext, timeoutM
       + (job.blocked ? ` · waiting for ${blockedText(job.blocked)}` : '');
     if (line !== last && !ctx.quiet && !ctx.json) { process.stderr.write(c.dim(`  ${line}\n`)); last = line; }
     if (TERMINAL.includes(job.status)) return job;
-    if (Date.now() - t0 > timeoutMs) throw new CliError(`lesson ${id} is still ${job.status} after ${Math.round((Date.now() - t0) / 60_000)} min — check later: ${PROG} teach status ${id}`, 7);
+    if (Date.now() - t0 > timeoutMs) {
+      const waited = Math.round((Date.now() - t0) / 1000);
+      throw new CliError(`lesson ${id} is still ${job.status} after ${waited < 90 ? `${waited}s` : `${Math.round(waited / 60)} min`} — it goes on without this command; check later: ${PROG} teach status ${id}`, 7);
+    }
     await new Promise((r) => setTimeout(r, 3000));
   }
 }
