@@ -264,7 +264,9 @@ export interface WalletResponse { kind: string; address: string; balance: number
   verification_total?: string;
   verifier_share?: number;
   /** Unpaid royalty transfers (pre-payouts nodes omit the field). */
-  payouts?: PayoutSummary & { items: PayoutRow[] } }
+  payouts?: PayoutSummary & { items: PayoutRow[] };
+  /** Knowledge this node handed over for nothing (item 277) — downloads that appear in no sales figure. */
+  free_downloads?: { patch_id: string; count: number; last_at: number }[] }
 export interface PayoutsResponse { items: PayoutRow[]; summary: PayoutSummary; max_attempts: number; retry_ms: number; wallet: boolean }
 
 const payoutStatus = (p: PayoutRow, maxAttempts = 20) => p.status === 'paid' ? c.ok('paid') : p.status === 'failed' ? (p.attempts >= maxAttempts ? c.err('failed (gave up)') : c.warn(`failed · retrying`)) : c.warn('pending');
@@ -318,6 +320,9 @@ export async function wallet(ctx: CliContext): Promise<WalletResponse> {
       ['of that, transferred', `${x.royalty_totals.paid} ${c.dim("(the seller's node reports the transfer)")}`],
       ['of that, unconfirmed', (Number(x.royalty_totals.unconfirmed) > 0 ? c.warn : c.dim)(`${x.royalty_totals.unconfirmed} ${c.dim('(promised on the record, nobody has confirmed a transfer)')}`)],
     ])] : []),
+    // Item 277: 74 free lessons that write no settle record used to leave the seller reading "0 sales" and
+    // concluding nobody wanted them. A free hand-over is a download, and it is counted as one.
+    ...(x.free_downloads?.length ? [kv([['given away free', `${x.free_downloads.reduce((n, f) => n + f.count, 0)} download(s) of ${x.free_downloads.length} knowledge(s) priced 0 ${c.dim('(no payment, no sale record, no buyer named)')}`]])] : []),
     // Verifying used to earn nothing anywhere in this product (item 325).
     ...(x.verification ? [kv([['earned from verifying', x.verification.length
       ? `${x.verification_total} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'} ${c.dim(`over ${x.verification.length} sale(s) of knowledge you verified`)}`
