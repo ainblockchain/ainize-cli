@@ -321,6 +321,8 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
 export interface PublishArgs {
   file: string; name: string; model: string; benchmark: string; id?: string; price?: string; description?: string; parents?: string; branch?: string;
   topic?: string; license?: string; billing?: 'per_download' | 'per_apply_hour' | 'per_hit'; announce?: boolean;
+  /** What this knowledge is to its bases (item 188): extend | contradict | update | merge. The node measures the rows. */
+  kind?: 'extend' | 'contradict' | 'update' | 'merge';
   /** hidden from public catalogs (e2e/test publishing on a shared chain) */
   test?: boolean;
   /** data providers credited on the record: `addr:name:share` (name optional: `addr:share`), up to 4, Σ share ≤ 1 */
@@ -439,6 +441,8 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: derived.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
+    // Item 188: what this is to its base. The node measures added / changed rows from the two bodies.
+    ...(a.kind ? { kind: a.kind } : {}),
     contributors: contributors ? JSON.stringify(contributors) : undefined,
     // past `duplicate_body` / `model_mismatch` only — the node never lets --force publish another author's bytes
     ...(a.force ? { force: true } : {}),
@@ -446,6 +450,11 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
     ...(datasetFile ? { dataset_file: datasetFile, dataset_access: a.datasetAccess ?? 'derivative', dataset_license: a.datasetLicense } : {}),
   });
   ok(ctx, `draft created: ${c.id(r.anchor.id)}  (${r.anchor.rows.toLocaleString('en-US')} rows, sha256 ${shortHash(r.anchor.patch_sha256)})`);
+  // Item 188: what the record now says this knowledge is to its base, in the numbers the node measured.
+  const der = r.anchor.derivation;
+  if (der) {
+    ok(ctx, c.dim(`on the record: this ${der.kind}s ${der.bases.map((x) => x.patch_id).join(', ')} — ${der.added_rows.toLocaleString('en-US')} new memory entries, ${der.changed_rows.toLocaleString('en-US')} written over theirs`));
+  }
   if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
   // Items 189 + 318: the money split and the parents' prices, while the draft is still a draft and the price can change.

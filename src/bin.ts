@@ -297,6 +297,9 @@ const publishOpts = (y: Y): Y => y
   .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap' })
   // Item 248 — a dated snapshot, published on purpose, that the row-overlap rule must not retire.
   .option('keep-others', { type: 'boolean', default: false, describe: 'with --announce: retire nothing — every overlapping listing of yours stays on sale' })
+  // Item 188 — a derivative could only be a new root-style listing with a dashed "declared" edge to its base: no
+  // version, no correction, no fork. The kind is the publisher's word; the row counts under it are the node's.
+  .option('kind', { choices: ['extend', 'contradict', 'update', 'merge'] as const, describe: 'what this is to --parents: extend (adds answers on top) · contradict (disagrees with some of theirs) · update (your own next version) · merge. Needs the base\'s file on this node, which is how the row counts are measured' })
   .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' });
 
