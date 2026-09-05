@@ -77,6 +77,22 @@ export function executorLine(e: CatalogEntry): string {
   return c.dim(` · ${machines} independent model server${machines > 1 ? 's' : ''}`);
 }
 
+/**
+ * "3 CREDIT → node-b 2.1 (seller) · node-a 0.9 (creator of pixel-parent)" (item 280).
+ *
+ * The seller returns the whole split in `x-payment-response` on the same reply that hands over the manifest, and
+ * the buyer's receipt printed six timeline steps and a tx hash. A payee this node's own lineage view did not
+ * expect is marked, because that is the one thing the split is worth checking for.
+ */
+export function payeeLines(r: PurchaseResult, currency: string): string[] {
+  const payees = r.payees ?? [];
+  if (!payees.length) return [];
+  const who = (p: NonNullable<PurchaseResult['payees']>[number]) =>
+    `${p.name ?? shortAddr(p.address, 8)} ${c.bold(p.amount)} ${c.dim(`(${p.role}${p.knowledge.length ? ` of ${p.knowledge.join(', ')}` : ''})`)}`
+    + (p.promised ? '' : c.warn(' — not in the lineage this node was shown'));
+  return [c.dim(`  paid   ${r.amount} ${currency} → `) + payees.map(who).join(c.dim(' · '))];
+}
+
 /** `split` as `GET /api/patches/:id` returns it. */
 export interface SaleSplitView {
   patch_id: string; amount: string; currency: string; share: number; verifier_share: number;
@@ -569,6 +585,9 @@ export interface PurchaseResult {
   total?: string; currency?: string;
   /** the payment was already settled and the seller re-issued the manifest — nothing was charged (item 273) */
   redeemed?: boolean;
+  /** who this purchase paid, from the seller's `x-payment-response` (item 280) */
+  royalty?: Record<string, string>;
+  payees?: { address: string; amount: string; name: string | null; role: string; knowledge: string[]; promised: boolean }[];
 }
 
 /** `GET /api/patches/:id/quote` — what this purchase costs before anyone pays for it (item 270). */
@@ -718,6 +737,9 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
       head,
       ...bought.map((pp) => c.dim(`  with its base ${pp.patch_id}: ${pp.amount} ${pp.currency}  tx ${shortHash(pp.tx_hash, 12)}`)),
       ...x.steps.map((s) => `  ${c.dim(`+${String(s.at - t0).padStart(5)}ms`)}  ${c.head(s.step.padEnd(9))} ${s.detail}`),
+      // Item 280: who the money actually went to, from the seller's own `x-payment-response` — the product's
+      // central promise to a buyer, shown at the moment it is kept instead of only on the seller's log.
+      ...payeeLines(x, cur),
       // Item 343: the node's own timeline says "body already present"; what the money bought is said here.
       ...(heldUnlicensed ? [c.dim(`  the file was already on this node (fetched to verify it) — what ${x.total ?? x.amount} ${cur} bought is the licence: settlement ${shortHash(x.tx_hash, 16)}, and ${id} may now be used, taught on and subscribed with here`)] : []),
       c.dim(`  body: ${x.path}`),
