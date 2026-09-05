@@ -260,16 +260,55 @@ function renderSubscribe(x: SubscribeResult, name: string): string {
   return out.join('\n');
 }
 
-export async function route(ctx: CliContext, pairs: string[]): Promise<{ branch: BranchInfo | null; nodes: PeerInfo[] }> {
+/** What `/api/route` answers (item 234). */
+export interface RouteResult {
+  branch: BranchInfo | null; matched: string[]; unmatched: string[];
+  candidates: { name: string; context: Record<string, string>; matched: string[]; unmatched: string[] }[];
+  ambiguous: boolean; current: string[];
+  nodes: (PeerInfo & { applied: string[] | null; missing: string[]; current: boolean | null })[];
+  stale_nodes: { address: string; name: string; endpoint: string; missing: string[] }[];
+}
+
+/**
+ * `ainize route k=v …` (item 234).
+ *
+ * The command used to print one branch name and a table of nodes that had once written a `subscribe` record — with
+ * no sign that a key went unmatched, that two tracks matched equally well, or that the node it was sending traffic
+ * to was serving last week's bake. All three are on the answer now, and a node that is not serving the track's
+ * current knowledge is marked instead of listed as if it were.
+ */
+export async function route(ctx: CliContext, pairs: string[], opts: { partial?: boolean } = {}): Promise<RouteResult> {
   const q = parseContext(pairs);
-  const d = await new NodeClient(ctx).get<{ branch: BranchInfo | null; nodes: PeerInfo[] }>(`/api/route${query(q)}`);
-  emit(ctx, d, (x) => (!x.branch ? c.warn(`no branch matches ${JSON.stringify(q)}`) : [
-    `context ${c.dim(JSON.stringify(q))} → branch ${c.id(x.branch.name)} ${c.dim(JSON.stringify(x.branch.context))}`,
-    table(x.nodes, [
-      { key: 'n', title: 'SERVING NODE', get: (n) => n.name }, { key: 'e', title: 'ENDPOINT', get: (n) => n.endpoint },
-      { key: 'm', title: 'MODEL', get: (n) => n.model ?? '-' }, { key: 'a', title: 'ADDRESS', get: (n) => shortAddr(n.address, 8) },
-    ], 'no node currently subscribes to that branch'),
-  ].join('\n')));
+  const d = await new NodeClient(ctx).get<RouteResult>(`/api/route${query({ ...q, ...(opts.partial ? { partial: '1' } : {}) })}`);
+  emit(ctx, d, (x) => {
+    if (!x.branch) {
+      return [
+        c.warn(`no track answers every attribute of ${JSON.stringify(q)}`),
+        ...x.candidates.map((cd) => c.dim(`  ${cd.name} matches ${cd.matched.join(', ')} but not ${cd.unmatched.join(', ')} ${JSON.stringify(cd.context)}`)),
+        c.dim(x.candidates.length
+          ? `  route to the closest of them anyway: ${PROG} route ${pairs.join(' ')} --partial`
+          : `  no track on this node has any of those attributes (${PROG} branch ls)`),
+      ].join('\n');
+    }
+    const lines = [
+      `context ${c.dim(JSON.stringify(q))} → track ${c.id(x.branch.name)} ${c.dim(JSON.stringify(x.branch.context))}`,
+      c.dim(`  matched ${x.matched.join(', ') || 'nothing'}${x.unmatched.length ? c.warn(` · NOT matched: ${x.unmatched.join(', ')} (--partial)`) : ''}`),
+    ];
+    if (x.ambiguous) {
+      lines.push(c.warn(`  ${x.candidates.length} tracks match this context equally well — showing ${x.branch.name}: `)
+        + c.dim(x.candidates.map((cd) => cd.name).join(', ')));
+    }
+    lines.push(c.dim(`  serving: ${x.current.join(', ') || 'nothing current on this track'}`));
+    lines.push(table(x.nodes, [
+      { key: 'n', title: 'SERVING NODE', get: (n) => (n.current === false ? c.warn(n.name) : n.name) },
+      { key: 'e', title: 'ENDPOINT', get: (n) => n.endpoint },
+      { key: 'm', title: 'MODEL', get: (n) => n.model ?? '-' },
+      { key: 'l', title: 'LOADED', get: (n) => (n.applied === null ? c.dim('not reported') : n.current ? c.ok('the track, in full') : c.warn(`missing ${n.missing.join(', ')}`)) },
+      { key: 'a', title: 'ADDRESS', get: (n) => shortAddr(n.address, 8) },
+    ], 'no node currently subscribes to that track'));
+    if (x.stale_nodes.length) lines.push(c.warn(`! ${x.stale_nodes.length} of these nodes subscribe to ${x.branch.name} but are not serving all of it — sending traffic there answers from an older version, or from the bare model.`));
+    return lines.join('\n');
+  });
   return d;
 }
 
