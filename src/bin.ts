@@ -375,6 +375,16 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     return patch.overIds(ctx, ids, 'bought', (id, batched) =>
       patch.patchBuy(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], allowSuperseded: a['allow-superseded'], batched }));
   }))
+  // Item 278: an anchor is immutable, and before this the only way to re-price a listing was to publish a new one
+  // that superseded it — restarting verification and splitting the sales history to run a discount.
+  .command('price <id> <price>', 'Change what a published knowledge sells for (0 makes it free)', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true, describe: 'the knowledge to re-price (you must be its author)' })
+    .positional('price', { type: 'string', demandOption: true, describe: `the new price in this node's currency, e.g. 2.5 — "0" makes it free` })
+    .option('reason', { type: 'string', describe: 'why, in your words — shown to buyers on the price history' })
+    .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation' })
+    .example('$0 patch price krx-all-2761 1.5 --reason "launch price"', 'a discount, on the public record')
+    .example('$0 patch price krx-all-2761 0', 'make an obsolete knowledge free'),
+    run((ctx, a: G & { id: string; price: string; reason?: string; yes: boolean }) => patch.patchPrice(ctx, a.id, a.price, { reason: a.reason, yes: a.yes })))
   .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
   run((ctx, a: G & { id: string }) => patch.patchDownload(ctx, a.id)))
@@ -670,8 +680,10 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
     run((ctx, a: G & { name: string }) => branch.branchQuote(ctx, a.name)))
   .command('subscribe <name>', 'Subscribe this node: buy the track\'s current knowledge, load it, and keep it up to date', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true })
     .option('yes', { type: 'boolean', default: false, describe: 'answer the spend confirmation in advance' })
+    // Item 214 — the track is applied on top of what is loaded, and the model is last-wins on a shared row.
+    .option('replace', { type: 'boolean', default: false, describe: 'load the track even though it writes over knowledge already in the model (it answers instead of it on the shared rows)' })
     .example('$0 branch subscribe daily/krx --yes', ''),
-    run((ctx, a: G & { name: string; yes?: boolean }) => branch.branchSubscribe(ctx, a.name, 'subscribe', { yes: a.yes })))
+    run((ctx, a: G & { name: string; yes?: boolean; replace?: boolean }) => branch.branchSubscribe(ctx, a.name, 'subscribe', { yes: a.yes, replace: a.replace })))
   .command('sync <name>', 'Bring a subscribed track up to date now (buy and load what it added, unload what it retired)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
     run((ctx, a: G & { name: string }) => branch.branchSync(ctx, a.name)))
   .command('unsubscribe <name>', 'Unsubscribe (unload the track\'s knowledge; nothing is refunded)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'unsubscribe')))

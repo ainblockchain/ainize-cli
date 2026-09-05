@@ -608,6 +608,36 @@ export interface CreditInfo {
   note: string;
 }
 
+/**
+ * `ainize patch price <id> <price>` — change what a published knowledge sells for (item 278).
+ *
+ * Anchors are immutable, so this was impossible: no discount, no raise, no "make it free". The only path was
+ * republishing, which supersedes your own item, restarts verification and splits its sales history — so every
+ * price was a one-shot guess made before a single sale. The change is a signed record on the ledger, it applies to
+ * the next sale, and it takes nothing away from anyone who already bought.
+ */
+export async function patchPrice(ctx: CliContext, id: string, price: string, opts: { reason?: string; yes?: boolean } = {}): Promise<PriceChange> {
+  const client = new NodeClient(ctx);
+  const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`);
+  const cur = detail.anchor.price;
+  const currency = detail.anchor.currency;
+  if (cur === price) { ok(ctx, c.dim(`${id} already sells for ${Number(price) === 0 ? 'free' : `${price} ${currency}`} — nothing to change`)); }
+  else {
+    info(ctx, [
+      `${c.id(id)}  ${c.bold(`${cur} ${currency}`)} → ${c.bold(Number(price) === 0 ? 'free' : `${price} ${currency}`)}`,
+      c.dim(`  the new price goes on the public record and applies to the next sale; ${detail.downloads} past sale(s) and everyone who already bought are untouched.`),
+      c.dim('  every price this knowledge has been sold at stays on the record, so buyers can see a discount is real.'),
+    ].join('\n'));
+    await confirm(ctx, `Change the price of ${id} to ${Number(price) === 0 ? 'free' : `${price} ${currency}`}? [y/N]`, { yes: opts.yes });
+  }
+  const r = await client.post<PriceChange>(`/api/patches/${encodeURIComponent(id)}/price`, { price, reason: opts.reason ?? '' });
+  emit(ctx, r, (x) => c.ok('✓ ') + `${c.id(x.patch_id)} now sells for ${Number(x.price) === 0 ? 'free' : `${x.price} ${x.currency}`}${x.previous !== x.price ? c.dim(` (was ${x.previous})`) : ''}`
+    + (x.history.length > 1 ? '\n' + c.dim(`  price history: ${x.history.map((h) => h.price).join(' → ')}`) : ''));
+  return r;
+}
+
+export interface PriceChange { ok: true; patch_id: string; price: string; previous: string; currency: string; created_at: number; history: { price: string; created_at: number }[] }
+
 export interface BuyArgs {
   apply?: boolean;
   /** buy the bases this knowledge needs underneath it too, deepest first */
