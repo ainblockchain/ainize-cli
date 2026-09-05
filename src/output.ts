@@ -236,6 +236,27 @@ export function jsonError(err: { message?: string; exitCode?: number; details?: 
  *  - anything else (a pipe, a cron, a CI job) is REFUSED, because a script that never saw the question has not
  *    agreed to anything. Silence is not consent when the next step spends money.
  */
+
+/**
+ * Read one line from the terminal, or `null` when there is nobody to read from.
+ *
+ * `rl.question`'s callback never fires if stdin reaches EOF while the question is open — readline emits `close` and
+ * the promise waits for ever. That is not a rare shape: `docker run -t` without `-i`, an ssh command with a pty, and
+ * `ainize patch rm <id> < /dev/null` all present a real TTY whose input has already ended, so `isTTY` is true and the
+ * guard above lets us through. Every confirm this CLI grew — `patch rm` (item 168), the buy that names the price
+ * (item 173), the announce that lists what it would retire (item 150) — hung there with no output and no timeout.
+ * Listening for `close` turns that into the answer the caller can act on.
+ */
+async function askLine(question: string): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<string | null>((res) => {
+    let settled = false;
+    const finish = (a: string | null) => { if (settled) return; settled = true; rl.close(); res(a); };
+    rl.question(`${question} `, (a) => finish(a.trim().toLowerCase()));
+    rl.once('close', () => finish(null));
+  });
+}
+
 /**
  * A yes/no question whose *no* is not a cancellation (design §13: "also needs {name} ({price}); buy both? [y/N]").
  *
@@ -246,9 +267,8 @@ export function jsonError(err: { message?: string; exitCode?: number; details?: 
 export async function ask(ctx: CliContext, question: string, opts: { default?: boolean; skip?: boolean } = {}): Promise<boolean> {
   const def = opts.default ?? false;
   if (opts.skip || !process.stdin.isTTY || ctx.json || ctx.quiet) return def;
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>((res) => rl.question(`${question} `, (a) => { rl.close(); res(a.trim().toLowerCase()); }));
-  if (!answer) return def;
+  const answer = await askLine(question);
+  if (answer === null || !answer) return def;   // EOF, or Enter on its own: the default stands
   return answer === 'y' || answer === 'yes';
 }
 
@@ -256,8 +276,8 @@ export async function confirm(ctx: CliContext, question: string, opts: { yes?: b
   const flag = opts.flag ?? '--yes';
   if (opts.yes) { info(ctx, c.dim(`${question} ${flag}`)); return; }
   if (!process.stdin.isTTY) throw new CliError(`refusing to continue without an answer: stdin is not a terminal, so nobody can be asked. Pass ${flag} to answer in advance.`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>((res) => rl.question(`${question} `, (a) => { rl.close(); res(a.trim().toLowerCase()); }));
+  const answer = await askLine(question);
+  if (answer === null) throw new CliError(`refusing to continue without an answer: the terminal's input ended (Ctrl-D) before one was given. Pass ${flag} to answer in advance.`);
   if (answer !== 'y' && answer !== 'yes') throw new CliError('cancelled — nothing was bought, nothing was charged', 130);
 }
 
