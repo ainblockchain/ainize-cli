@@ -289,7 +289,8 @@ const publishOpts = (y: Y): Y => y
   .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
   .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
   .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
-  .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const, describe: 'how buyers are charged (default: per_download)' })
+  // Item 360: per-hour and per-use were offered here and metered nowhere — a sale settles the price once, per download.
+  .option('billing', { choices: ['per_download'] as const, describe: 'how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)' })
   .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
   .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
   .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
