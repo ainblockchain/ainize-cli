@@ -314,6 +314,15 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
   // The token is sent when there is one (item 142: `balance` is operator-only); `status` still works without it.
   const d = await client.get<InfoResponse>('/api/info', { auth: !!ctx.token });
   const pid = runningPid(ctx.home);
+  /*
+   * Item 321 — money this node owes creators and could not send had no line on the one screen an operator looks at.
+   * The rows are operator-only, so this is asked for only when there is a token, and a node with no wallet or no
+   * debt adds nothing to the output.
+   */
+  const payouts = ctx.token
+    ? await client.get<{ summary: { pending: number; failed: number; paid: number } }>('/api/me/payouts?limit=1').then((r) => r.summary).catch(() => null)
+    : null;
+
   // Whatever answers the configured port is not necessarily this home's node: after a failed start it is usually
   // someone else's, and the whole block below — address, roles, ledger height, catalogue — would be theirs (item 118).
   const mine = ctx.cfg?.identity.address;
@@ -336,6 +345,10 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
       ...(typeof x.balance === 'number' ? [['balance', `${x.balance} ${x.currency}${x.balance <= 0 ? c.warn('  — this node cannot announce, attest or settle until it is funded') : ''}`] as [string, string]] : []),
       ['branches', x.node.branches.join(', ') || '-'], ['blobs held', `${x.node.blobs.length}${x.disk ? c.dim(` of ${x.disk.blob_files} files on disk`) : ''}`],
       ['disk', diskLine(x.disk)],
+      // Item 321: "payouts needing attention" — a creator on another node stays unpaid until somebody sees this.
+      ...(payouts && payouts.pending + payouts.failed > 0
+        ? [['payouts owed', `${(payouts.failed ? c.err : c.warn)(String(payouts.pending + payouts.failed))} royalty transfer(s) not sent${payouts.failed ? ` (${payouts.failed} failed)` : ''}${c.dim(`  — ${PROG} payouts ls`)}`] as [string, string]]
+        : []),
     ]),
     ...ledgerMismatchLines(x.peer_status),
   ].filter(Boolean).join('\n'));

@@ -695,8 +695,12 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
     .example('$0 branch rm daily/krx krx-daily-2026-09-03', 'a bake that failed verification comes off the track'),
     run((ctx, a: G & { name: string; patchId: string; yes?: boolean }) => branch.branchRemove(ctx, a.name, a.patchId, { yes: a.yes })))
   .demandCommand(1, 'Subcommand is required (ls|create|add|rm|archive|unarchive|quote|subscribe|sync|unsubscribe).'), () => undefined);
-cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
-  .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
+cli.command('route <context..>', 'Gateway routing: which track and which nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
+  // Item 234 — a track that answers only some of the attributes you named is not an answer unless you say so.
+  .option('partial', { type: 'boolean', default: false, describe: 'accept the closest track even though it does not match every attribute' })
+  .example('$0 route jurisdiction=KR', '')
+  .example('$0 route market=KRX freshness=daily --partial', 'route to the closest track when nothing matches both'),
+  run((ctx, a: G & { context: string[]; partial?: boolean }) => branch.route(ctx, a.context, { partial: a.partial })));
 cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
 // `patch ls --mine` is the knowledge this node REGISTERED; a buyer's own purchases had no listing anywhere (items 216, 289).
 cli.command('purchases', 'Knowledge this node bought: what, from whom, for how much, and whether it is loaded', (y: Y) => fail(y)
@@ -705,7 +709,12 @@ cli.command('payouts', 'Royalty transfers this node owes creators and data provi
   .command(['ls', '$0'], 'List payouts', (yy: Y) => yy.option('status', { type: 'string', choices: ['pending', 'paid', 'failed'], describe: 'only payouts in this state' }).option('address', { type: 'string', describe: 'only this recipient' }).option('limit', { type: 'number', describe: 'how many rows (default: all of them)' })
     .example('$0 payouts ls --status failed', ''),
   run((ctx, a: G & { status?: string; address?: string; limit?: number }) => branch.payoutsLs(ctx, a)))
-  .command('retry <id>', 'Retry one failed / pending payout now', (yy: Y) => yy.positional('id', { type: 'number', demandOption: true, describe: `the payout row id (\`${PROG} payouts ls\`)` }), run((ctx, a: G & { id: number }) => branch.payoutRetry(ctx, a.id))),
+  .command('retry <id>', 'Retry one failed / pending payout now', (yy: Y) => yy.positional('id', { type: 'number', demandOption: true, describe: `the payout row id (\`${PROG} payouts ls\`)` }), run((ctx, a: G & { id: number }) => branch.payoutRetry(ctx, a.id)))
+  // Item 313: the rows exist only in this node's SQLite and were never rebuilt from the settlements that created
+  // the debt — a wiped data dir or a crash between the record and the row left money owed and unpayable.
+  .command('reconcile', 'Rebuild the payouts this node owes from its own settlements, then pay what is due', (yy: Y) => yy
+    .example('$0 payouts reconcile', 'after a restore, a crash, or an upgrade'),
+    run((ctx) => branch.payoutsReconcile(ctx))),
   () => undefined);
 
 // ---------------------------------------------------------------- drive
