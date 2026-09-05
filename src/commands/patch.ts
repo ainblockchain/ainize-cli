@@ -108,6 +108,11 @@ export function payeeLines(r: PurchaseResult, currency: string): string[] {
 /** `split` as `GET /api/patches/:id` returns it. */
 export interface SaleSplitView {
   patch_id: string; amount: string; currency: string; share: number; verifier_share: number;
+  /** The rule that decides the split, in one sentence (item 322). */
+  rule?: string;
+  payees?: number;
+  /** What one sale costs to settle on this chain, from measured gas (item 366); null when nothing has been charged. */
+  cost?: { writes: number; gas_avg: number; floor: string; measured_writes: number } | null;
   lines: { address: string; amount: string; name: string | null; role: 'seller' | 'ancestor' | 'contributor' | 'verifier'; knowledge: string[] }[];
   parents: { id: string; name: string; price: string | null; currency: string; author: string | null; author_name: string | null; status: string | null }[];
   cheaper_than: { id: string; price: string; currency: string }[];
@@ -120,7 +125,7 @@ export interface SaleSplitView {
  * afterwards the price is on the permanent record.
  */
 export function splitLines(s: SaleSplitView): string[] {
-  if (!s.parents.length && s.lines.length <= 1) return [];
+  if (!s.parents.length && s.lines.length <= 1) return [];   // nothing is shared: there is no split to explain
   const money = (n: string) => `${n} ${s.currency}`;
   const who = (l: SaleSplitView['lines'][number]) => (l.role === 'seller' ? 'you'
     : `${l.name ?? shortAddr(l.address, 6)}${l.knowledge.length ? ` (${l.knowledge.join(', ')})` : ''}`);
@@ -133,6 +138,13 @@ export function splitLines(s: SaleSplitView): string[] {
   }
   const held = Object.keys(s.unresolved);
   if (held.length) out.push(c.warn(`  ! ${held.join(', ')}: no anchor here names an author, so their share is held, not paid — add the node that publishes ${held.length > 1 ? 'them' : 'it'} (${PROG} peers add <url>).`));
+  // Item 322: the rule that decides the split, in one sentence — it lived only in a source comment, so a creator
+  // choosing between one base and two made a permanent revenue decision with nothing in front of them.
+  if (s.rule) out.push(c.dim(`  how it is decided: ${s.rule}`));
+  // Item 366: what a sale costs to settle here, from gas this node has actually paid — never an estimate.
+  if (s.cost && Number(s.amount) > 0 && Number(s.amount) < Number(s.cost.floor)) {
+    out.push(c.warn(`  ! ${s.amount} ${s.currency} is below what a sale of it costs to settle on this chain: ${s.cost.writes} write(s) at ${s.cost.gas_avg} ${s.currency} of gas each (measured over ${s.cost.measured_writes} of this node's own writes) = ${s.cost.floor}. Every sale would lose money.`));
+  }
   return out;
 }
 
@@ -437,7 +449,9 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   if (r.anchor.dataset) ok(ctx, c.dim(`training set on the record: ${r.anchor.dataset.rows} questions, ${r.anchor.dataset.access ?? 'private'}${r.anchor.dataset.license ? `, ${r.anchor.dataset.license}` : ''} (sha256 ${shortHash(r.anchor.dataset.sha256)})`));
   if (r.anchor.contributors?.length) ok(ctx, c.dim(`data providers on the record: ${r.anchor.contributors.map((x) => `${x.name ?? shortAddr(x.address, 4)} ${Math.round(x.share * 100)}%`).join(', ')} (of this node's share of each sale)`));
   // Items 189 + 318: the money split and the parents' prices, while the draft is still a draft and the price can change.
-  if (!ctx.json && r.anchor.parents?.length) {
+  // Item 322: also when there are no parents but there ARE data providers — a lesson that pays its teacher has a
+  // split to show, and the rule that decides it is printed with it.
+  if (!ctx.json && (r.anchor.parents?.length || r.anchor.contributors?.length)) {
     const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(r.anchor.id)}`).catch(() => null);
     const lines = detail?.split ? splitLines(detail.split) : [];
     if (lines.length) process.stderr.write(lines.join('\n') + '\n' + c.dim(`  the price goes on the permanent record at announce; until then \`${PROG} patch rm ${r.anchor.id}\` and publish again changes it.\n`));
