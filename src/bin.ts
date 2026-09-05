@@ -297,7 +297,6 @@ const publishOpts = (y: Y): Y => y
   .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap' })
   // Item 248 — a dated snapshot, published on purpose, that the row-overlap rule must not retire.
   .option('keep-others', { type: 'boolean', default: false, describe: 'with --announce: retire nothing — every overlapping listing of yours stays on sale' })
-
   .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' });
 
@@ -709,7 +708,18 @@ cli.command('route <context..>', 'Gateway routing: which track and which nodes s
   .example('$0 route jurisdiction=KR', '')
   .example('$0 route market=KRX freshness=daily --partial', 'route to the closest track when nothing matches both'),
   run((ctx, a: G & { context: string[]; partial?: boolean }) => branch.route(ctx, a.context, { partial: a.partial })));
-cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
+// Item 320: every money verb was read-only or inward — a creator who had earned could spend it only by buying
+// knowledge through this same node.
+cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y)
+  .command(['show', '$0'], 'Balance, sales, royalties and pending payouts', (yy: Y) => yy, run((ctx) => branch.wallet(ctx)))
+  .command('send <address> <amount>', 'Send AIN from this node\'s wallet to another address', (yy: Y) => yy
+    .positional('address', { type: 'string', demandOption: true, describe: 'where the money goes (0x… AIN address)' })
+    .positional('amount', { type: 'number', demandOption: true, describe: 'how much, in AIN' })
+    .option('memo', { type: 'string', describe: 'a note for this node\'s own log (it does not travel with the transfer)' })
+    .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation' })
+    .example('$0 wallet send 0xabc… 25', 'move 25 AIN of earnings to your own wallet'),
+    run((ctx, a: G & { address: string; amount: number; memo?: string; yes: boolean }) => branch.walletSend(ctx, a.address, a.amount, { memo: a.memo, yes: a.yes }))),
+  run((ctx) => branch.wallet(ctx)));
 // `patch ls --mine` is the knowledge this node REGISTERED; a buyer's own purchases had no listing anywhere (items 216, 289).
 cli.command('purchases', 'Knowledge this node bought: what, from whom, for how much, and whether it is loaded', (y: Y) => fail(y)
   .example('$0 purchases', 'every purchase with its seller, tx and file'), run((ctx) => patch.purchasesLs(ctx)));

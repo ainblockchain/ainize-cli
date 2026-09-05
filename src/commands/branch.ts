@@ -464,6 +464,29 @@ export async function payoutsReconcile(ctx: CliContext): Promise<{ settlements: 
   return d;
 }
 
+/**
+ * `ainize wallet send <address> <amount>` — move earnings out of this node (item 320).
+ *
+ * Until this, a node that had earned could spend it only by buying other knowledge through the same node: no send,
+ * no withdraw, no export beyond `keys backup`, and `chain fund` refuses unless the chain is local. "You get paid
+ * per sale" ended at a number on one screen.
+ */
+export async function walletSend(ctx: CliContext, to: string, amount: number, opts: { memo?: string; yes?: boolean } = {}): Promise<{ to: string; amount: number; tx_hash: string; balance: number | null; currency: string }> {
+  const client = new NodeClient(ctx);
+  const w = await client.get<WalletResponse>('/api/me/wallet');
+  const unit = w.kind === 'ain' ? 'AIN' : 'CREDIT';
+  info(ctx, [
+    `${c.bold(`${amount} ${unit}`)} → ${c.id(to)}`,
+    c.dim(`  from this node's own wallet (${w.address}${w.balance === null ? '' : `, balance ${w.balance} ${unit}`}).`),
+    c.warn('  a transfer on a chain is irreversible, and this node cannot ask for it back.'),
+  ].join('\n'));
+  await confirm(ctx, `Send ${amount} ${unit} to ${to}? [y/N]`, { yes: opts.yes });
+  const r = await client.post<{ to: string; amount: number; tx_hash: string; balance: number | null; currency: string }>('/api/me/wallet/send', { to, amount, memo: opts.memo });
+  emit(ctx, r, (x) => c.ok('✓ ') + `sent ${x.amount} ${x.currency} to ${x.to}  tx ${x.tx_hash.slice(0, 16)}…`
+    + (x.balance === null ? '' : c.dim(`\n  balance now ${x.balance} ${x.currency}`)));
+  return r;
+}
+
 export async function payoutsLs(ctx: CliContext, opts: { status?: string; address?: string; limit?: number } = {}): Promise<PayoutsResponse> {
   const d = await new NodeClient(ctx).get<PayoutsResponse>(`/api/me/payouts${query({ status: opts.status, address: opts.address, limit: opts.limit })}`);
   emit(ctx, d, (x) => [
