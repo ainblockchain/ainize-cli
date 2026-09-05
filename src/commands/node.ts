@@ -431,9 +431,20 @@ export async function logs(ctx: CliContext, a: { follow?: boolean; patch?: strin
 
 export async function seed(ctx: CliContext, opts: SeedOptions = {}): Promise<SeedReport> {
   const cfg = assertUsableConfig(applyEnv(requireConfig(ctx)), ctx.home);
-  const client = new NodeClient(ctx);
-  if (await client.alive()) {
-    throw new CliError(`a node is running at ${ctx.nodeUrl}; seeding writes to its data directory — stop it first (\`${PROG} stop\`) or seed from the web console`);
+  // Item 143: this used to offer two escapes that do not exist — the wrong binary name (`ngram stop`), and "seed from
+  // the web console", where there is no seed control at all. The order is the whole fix: seed the data directory,
+  // THEN start the node that opens it, which is what scripts/cluster.mjs has always done and what deploy/README.md
+  // now documents. The check also asks about THIS home's node rather than whatever `--node` points at: seeding writes
+  // `cfg.dataDir` whatever that flag says, so `--node <somewhere else>` used to walk straight past the guard.
+  const pid = runningPid(ctx.home);
+  const own = new NodeClient({ ...ctx, nodeUrl: `http://localhost:${cfg.port}`, token: null });
+  const holder = await own.get<InfoResponse>('/api/info', { auth: false, timeoutMs: 1500 }).catch(() => null);
+  const serving = !!pid || (!!holder && holder.node.address.toLowerCase() === cfg.identity.address.toLowerCase());
+  if (serving) {
+    throw new CliError([
+      `this home's node is running${pid ? ` (pid ${pid})` : ` on http://localhost:${cfg.port}`} and seeding writes directly into ${cfg.dataDir}, which that node has open.`,
+      `  stop it, seed, start again:  ${PROG} stop && ${PROG} seed && ${PROG} start -d`,
+    ].join('\n'));
   }
   const node = await startNode(cfg, { home: ctx.home, listen: false, quiet: true, serveWeb: false });
   try {
