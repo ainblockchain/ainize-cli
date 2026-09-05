@@ -18,13 +18,19 @@ export async function loadedPositions(client: NodeClient): Promise<Map<string, n
   return new Map((r?.stack ?? []).map((l, i) => [l.patch_id, i + 1]));
 }
 
-export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogEntry[]> {
+/**
+ * A catalogue row as `/api/catalog` returns it: the derived entry plus the demand numbers the marketplace computes
+ * (item 201). `downloads` is the raw settlement count and stays for compatibility; `sales` is what a sale is.
+ */
+export type CatalogRow = CatalogEntry & { sales?: { sales_all: number; sales_30d: number }; built_on?: number };
+
+export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogRow[]> {
   const client = new NodeClient(ctx);
-  let items: CatalogEntry[];
+  let items: CatalogRow[];
   if (a.mine) {
-    items = (await client.get<{ items: CatalogEntry[] }>('/api/me/patches')).items;
+    items = (await client.get<{ items: CatalogRow[] }>('/api/me/patches')).items;
   } else {
-    const d = await client.get<{ items: CatalogEntry[]; total: number }>(`/api/catalog${query({ status: a.status, model: a.model, schema: a.schema, branch: a.branch, author: a.author, q: a.q, sort: a.sort ?? 'latest', limit: a.limit ?? 100, include_drafts: a.drafts })}`);
+    const d = await client.get<{ items: CatalogRow[]; total: number }>(`/api/catalog${query({ status: a.status, model: a.model, schema: a.schema, branch: a.branch, author: a.author, q: a.q, sort: a.sort ?? 'latest', limit: a.limit ?? 100, include_drafts: a.drafts })}`);
     items = d.items;
   }
   const loaded = await loadedPositions(client);
@@ -43,14 +49,20 @@ export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogE
     // Item 216 — "what is loaded here, in what order" was answerable from no listing at all.
     { key: 'loaded', title: 'LOADED', get: (e) => (loaded.has(e.anchor.id) ? c.ok(`#${loaded.get(e.anchor.id)}`) : c.dim('-')), align: 'right' },
     { key: 'author', title: 'AUTHOR', get: (e) => (!e.anchor.author.startsWith('0x') ? e.anchor.author : e.anchor.author_name ? `${e.anchor.author_name} ${c.dim(shortAddr(e.anchor.author, 4))}` : shortAddr(e.anchor.author, 6)) },
-    ...(oneModel ? [] : [{ key: 'model', title: 'MODEL', get: (e: CatalogEntry) => e.anchor.model.id_M }]),
+    ...(oneModel ? [] : [{ key: 'model', title: 'MODEL', get: (e: CatalogRow) => e.anchor.model.id_M }]),
     { key: 'rows', title: 'ROWS', get: (e) => e.anchor.rows.toLocaleString('en-US'), align: 'right' as const },
     { key: 'size', title: 'SIZE', get: (e) => fmtBytes(e.anchor.size_bytes), align: 'right' as const },
     { key: 'price', title: 'PRICE', get: (e) => `${e.anchor.price} ${e.anchor.currency}`, align: 'right' as const },
     // The numerator never exceeds the quorum (`3/2` is not a fraction anyone can read); extra independent
     // attestations are shown as `2/2+1`, and self-checks by the author are never in this count at all.
     { key: 'att', title: 'ATTEST', get: (e) => { const v = verificationCount(e); const s = v.extra ? `${v.fraction}+${v.extra}` : v.fraction; return e.quorum_ok ? c.ok(s) : c.warn(s); }, align: 'right' as const },
-    { key: 'dl', title: 'SOLD', get: (e) => String(e.downloads), align: 'right' as const },
+    /**
+     * Item 201: SOLD was `settlements.length` — every e2e run's purchase and every self-buy included — and it was
+     * the only demand number anywhere. It is real sales now (someone else, a real price), with the last 30 days
+     * beside it, and BUILT ON says how many published knowledges were built on this one.
+     */
+    { key: 'dl', title: 'SOLD', get: (e) => { const sold = e.sales?.sales_all ?? e.downloads; return sold && e.sales?.sales_30d ? `${sold} ${c.dim(`(${e.sales.sales_30d}/30d)`)}` : String(sold); }, align: 'right' as const },
+    { key: 'bo', title: 'BUILT ON', get: (e) => (e.built_on ? c.ok(String(e.built_on)) : c.dim('-')), align: 'right' as const },
     { key: 'schema', title: 'BENCHMARK', get: (e) => e.anchor.benchmark.schema },
   ], empty) + (loaded.size ? '\n' + c.dim(`loaded in the serving model, in order: ${[...loaded.entries()].sort((x, y) => x[1] - y[1]).map(([id, n]) => `${n} ${id}`).join(' → ')} (${PROG} patch stack)`) : ''));
   return items;
@@ -138,6 +150,15 @@ export interface PatchDetail extends CatalogEntry {
   /** The bases this knowledge needs underneath it, deepest first, with their prices (item 270). */
   requires?: { id: string; name: string; held: boolean; price: string | null; currency?: string; author?: string; author_name?: string | null; depth?: number; known?: boolean; purchased?: boolean; mine?: boolean }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null;
+  /**
+   * What is still to happen before this is LISTED (item 254) — who has not attested, how many of them can run this
+   * model, and how long verification has actually taken on this node. Null once the quorum is met.
+   */
+  verifying?: {
+    patch_id: string; since: number; waited_ms: number; counted: number; quorum: number;
+    waiting_on: { name: string; address: string; model: string | null; can_run: boolean }[];
+    capable: number; typical_ms: number | null; eta_ms: number | null; samples: number;
+  } | null;
   /** Why an announced knowledge has not been verified yet — null while it is still within its normal wait (item 154). */
   stalled?: {
     patch_id: string; since: number; waited_minutes: number; counted: number; quorum: number; hash_only: number;
@@ -208,6 +229,20 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
       ]),
       '', a.description ? a.description : c.dim('(no description)'),
     ];
+    /**
+     * Item 254 — the minutes before the FIRST attestation, when the status is still ANNOUNCED and every screen
+     * said "awaiting verification". Who has not answered yet, how many of them can run this model, and how long
+     * verification has actually taken on this node before (a median of what happened, never an invented ETA).
+     */
+    if (e.verifying && !e.stalled) {
+      const v = e.verifying;
+      const mins = (ms: number) => `${Math.max(1, Math.round(ms / 60_000))} min`;
+      lines.push('', c.warn(`verifying — ${v.counted}/${v.quorum} so far, ${mins(v.waited_ms)} since it was announced`));
+      lines.push(v.waiting_on.length
+        ? c.dim(`  waiting on ${v.waiting_on.length} verifier(s): ${v.waiting_on.map((w) => `${w.name}${w.can_run ? '' : c.warn(` (serves ${w.model ?? 'no model'} — cannot run this one)`)}`).join(', ')}`)
+        : c.warn('  no verifier node answers this one right now — nothing announced here can be listed until one does (`ainize peers add <url>`)'));
+      if (v.typical_ms !== null) lines.push(c.dim(`  this node's own knowledge has taken about ${mins(v.typical_ms)} from announce to verified${v.eta_ms !== null && v.eta_ms > 0 ? ` — roughly ${mins(v.eta_ms)} left on that pace` : ' — this one is already past that'}`));
+    }
     // Item 154: an anchor stuck at 0/2 used to say nothing at all on the author's own machine — the retry warnings
     // are events on the VERIFIERS' nodes. Print what this node knows, and who it asked.
     if (e.stalled) {
