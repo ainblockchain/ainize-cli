@@ -9,12 +9,29 @@ import { c, emit, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } fr
 
 export interface LedgerInfo { kind: string; network: string; records: number; height?: number; head?: string; provider?: string; app?: string; }
 
-function summary(r: LedgerRecord): string {
+/**
+ * Item 197 — a settle row said `<id> · 10 CREDIT · buyer 0x81…` and stopped exactly one field short of the money:
+ * `royalty` on the same record body says who was actually paid what. A creator checking whether her 30 % arrived
+ * had to re-run with `--json` and read addresses. `names` resolves an address to a name using the records
+ * themselves (a `node` record carries a node's name, an `anchor` its author's and its contributors'), so nothing is
+ * invented — an address the record never named stays an address.
+ */
+function summary(r: LedgerRecord, names?: (address: string) => string | undefined): string {
+  const who = (a: unknown) => names?.(String(a ?? '')) ?? shortAddr(String(a ?? ''), 4);
   const b = r.body as Record<string, unknown>;
   switch (r.kind) {
     case 'anchor': return `${b.id} · ${(b.model as { id_M?: string })?.id_M ?? b.id_M ?? ''} · ${b.rows ?? '?'} rows`;
     case 'attest': return `${b.patch_id ?? b.id} · ${b.passed === false ? 'FAIL' : 'PASS'} · ${b.verified_on ?? ''}`;
-    case 'settle': return `${b.patch_id ?? b.resource} · ${b.amount} ${b.currency ?? ''} · buyer ${shortAddr(b.buyer as string, 4)}`;
+    case 'settle': {
+      const seller = String(b.seller ?? '').toLowerCase();
+      const paid = Object.entries((b.royalty ?? {}) as Record<string, string>)
+        .filter(([addr, v]) => Number(v) > 0 && addr.toLowerCase() !== seller)
+        .map(([addr, v]) => `${who(addr)} ${v}`);
+      const unresolved = Object.values((b.royalty_unresolved ?? {}) as Record<string, string>).reduce((n, v) => n + Number(v), 0);
+      return `${b.patch_id ?? b.resource} · ${b.amount} ${b.currency ?? ''} · buyer ${who(b.buyer)}`
+        + (paid.length ? ` → ${paid.join(' · ')} (creator share)` : '')
+        + (unresolved > 0 ? ` · ${Math.round(unresolved * 1e6) / 1e6} ${b.currency ?? ''} with no payee yet` : '');
+    }
     case 'branch': return `${b.name} · ${(b.patch_ids as string[])?.length ?? 0} patch(es)`;
     case 'node': return `${b.name} · ${b.endpoint} · ${(b.roles as string[])?.join(',')}`;
     case 'supersede': return `${b.new_patch_id} supersedes ${b.old_patch_id} (${b.overlap_rows} rows)`;
@@ -22,6 +39,23 @@ function summary(r: LedgerRecord): string {
     case 'challenge': return `${b.patch_id} · ${b.reason}`;
     default: return JSON.stringify(b).slice(0, 60);
   }
+}
+
+/** Every name the record set itself carries, for the settle rows that pay those addresses (item 197). */
+function nameOf(records: LedgerRecord[]): (address: string) => string | undefined {
+  const m = new Map<string, string>();
+  for (const r of records) {
+    const b = (r.body ?? {}) as Record<string, unknown>;
+    if (r.kind === 'node' && typeof b.address === 'string' && typeof b.name === 'string' && b.name) m.set(b.address.toLowerCase(), b.name);
+    if (r.kind === 'anchor') {
+      if (typeof b.author === 'string' && typeof b.author_name === 'string' && b.author_name) m.set(b.author.toLowerCase(), b.author_name);
+      for (const con of (b.contributors as { address?: string; signer?: string; name?: string }[] | undefined) ?? []) {
+        if (con.name && con.address) m.set(con.address.toLowerCase(), con.name);
+        if (con.name && con.signer) m.set(con.signer.toLowerCase(), con.name);
+      }
+    }
+  }
+  return (address: string) => m.get(address.toLowerCase());
 }
 
 export async function ledgerLs(ctx: CliContext, a: { kind?: RecordKind; limit?: number } = {}): Promise<{ info: LedgerInfo; records: LedgerRecord[] }> {
@@ -35,7 +69,7 @@ export async function ledgerLs(ctx: CliContext, a: { kind?: RecordKind; limit?: 
     '',
     table(x.records, [
       { key: 't', title: 'AT', get: (r) => fmtTime(r.ts) }, { key: 'k', title: 'KIND', get: (r) => c.id(r.kind.padEnd(9)) },
-      { key: 'a', title: 'AUTHOR', get: (r) => shortAddr(r.author, 6) }, { key: 's', title: 'SUMMARY', get: (r) => summary(r) },
+      { key: 'a', title: 'AUTHOR', get: (r) => shortAddr(r.author, 6) }, { key: 's', title: 'SUMMARY', get: (r) => summary(r, nameOf(x.records)) },
       { key: 'h', title: 'HASH', get: (r) => shortHash(r.hash, 14) },
     ], empty),
   ].join('\n'));

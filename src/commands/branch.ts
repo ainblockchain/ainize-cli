@@ -256,7 +256,7 @@ export interface PayoutSummary { pending: number; failed: number; paid: number }
 export interface RoyaltyRow { patch_id: string; amount: string; created_at: number;
   kind?: 'lineage' | 'verification'; state?: 'credited' | 'paid' | 'pending' | 'failed' | 'unconfirmed';
   seller?: string; seller_name?: string | null; currency?: string; tx_hash?: string | null; days?: number; last_error?: string | null }
-export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number }[]; royalties: RoyaltyRow[]; purchases: number; network: string;
+export interface WalletResponse { kind: string; address: string; balance: number | null; sales: { patch_id: string; amount: string; currency: string; buyer: string; created_at: number; seller?: string; royalty?: Record<string, string> }[]; royalties: RoyaltyRow[]; purchases: number; network: string;
   /** owed / credited / paid / unconfirmed across every royalty line (pre-311 nodes omit it). */
   royalty_totals?: { owed: string; credited: string; paid: string; unconfirmed: string };
   /** The royalty lines this node earned by VERIFYING other people's knowledge (item 325). */
@@ -289,9 +289,27 @@ const royaltyState = (r: RoyaltyRow) => r.state === 'credited' ? c.ok('credited'
 
 export async function wallet(ctx: CliContext): Promise<WalletResponse> {
   const d = await new NodeClient(ctx).get<WalletResponse>('/api/me/wallet');
+  /**
+   * Items 317 + 323 — `sales 4` and `royalties received 1` were counts printed where every other line on this
+   * screen is an amount, so an ancestor read "1" and thought they had earned one credit; and the sale rows showed
+   * the gross settlement over a net balance with no line for the creator share that had left. The split is on every
+   * settlement (`royalty`), so it is summed here: what was charged, what stayed, and what went to whom.
+   */
+  const unit = d.kind === 'ain' ? 'AIN' : 'CREDIT';
+  const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  const me = d.address.toLowerCase();
+  const outOf = (s: WalletResponse['sales'][number]) => Object.entries(s.royalty ?? {})
+    .filter(([addr, v]) => Number(v) > 0 && addr.toLowerCase() !== me).reduce((n, [, v]) => n + Number(v), 0);
+  const gross = round(d.sales.reduce((n, s) => n + Number(s.amount), 0));
+  const sharedOut = round(d.sales.reduce((n, s) => n + outOf(s), 0));
+  const royaltyIn = round(d.royalties.reduce((n, r) => n + Number(r.amount ?? 0), 0));
   emit(ctx, d, (x) => [
     kv([['address', x.address], ['ledger', `${x.kind} · ${x.network}`], ['balance', x.balance === null ? c.warn('unknown (chain unreachable)') : `${x.balance} ${x.kind === 'ain' ? 'AIN' : 'CREDIT'}`],
-      ['sales', x.sales.length], ['royalties received', x.royalties.length], ['purchases', x.purchases]]),
+      ['sales', `${gross} ${unit} ${c.dim(`over ${x.sales.length} sale(s)`)}`],
+      ['of that, paid out', sharedOut > 0 ? `${sharedOut} ${unit} ${c.dim('to creators, data providers and verifiers')}` : c.dim(`0 ${unit}`)],
+      ['net revenue', `${round(gross - sharedOut)} ${unit} ${c.dim('(what stayed here)')}`],
+      ['royalties received', `${royaltyIn} ${unit} ${c.dim(`over ${x.royalties.length} payment(s)`)}`],
+      ['purchases', x.purchases]]),
     // The three totals a creator has to be able to reconcile: what the records promise, what is actually in the
     // balance or on the chain, and what nobody has confirmed (item 311).
     ...(x.royalty_totals ? [kv([
@@ -307,6 +325,9 @@ export async function wallet(ctx: CliContext): Promise<WalletResponse> {
     ...renderPayoutSummary(x),
     x.sales.length ? '\n' + c.head('recent sales') + '\n' + table(x.sales.slice(-10), [
       { key: 'p', title: 'PATCH', get: (s) => s.patch_id }, { key: 'a', title: 'AMOUNT', get: (s) => `${s.amount} ${s.currency}`, align: 'right' },
+      // item 317: the gross is what the buyer paid; these two are what happened to it
+      { key: 'y', title: 'YOURS', get: (s) => `${round(Number(s.amount) - outOf(s))}`, align: 'right' },
+      { key: 'sh', title: 'SHARED', get: (s) => (outOf(s) > 0 ? c.dim(Object.entries(s.royalty ?? {}).filter(([a2, v]) => Number(v) > 0 && a2.toLowerCase() !== me).map(([a2, v]) => `${shortAddr(a2, 6)} ${v}`).join(' · ')) : ''), align: 'left' },
       { key: 'b', title: 'BUYER', get: (s) => shortAddr(s.buyer, 8) }, { key: 't', title: 'AT', get: (s) => fmtTime(s.created_at) },
     ]) : '',
     x.royalties.length ? '\n' + c.head('creator share (what each sale owes you, and whether it moved)') + '\n' + table(x.royalties.slice(-10), [
