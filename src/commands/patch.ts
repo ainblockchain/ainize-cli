@@ -259,6 +259,9 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         ['verification', verificationLine(e)], ['sold', `${e.downloads}${e.buyers && e.buyers !== e.downloads ? ` (${e.buyers} buyer${e.buyers === 1 ? '' : 's'})` : ''} · revenue ${e.revenue} ${a.currency} gross`
           + (Number(e.revenue_shared ?? 0) > 0 ? ` · ${e.revenue_net} to ${a.author_name ?? shortAddr(a.author, 6)}, ${e.revenue_shared} shared with the creators it was built on` : '')
           + (e.self_purchases ? c.warn(` · ${e.self_purchases} self-purchase${e.self_purchases === 1 ? '' : 's'} not counted`) : '')],
+        // Item 267 — the day the DATA is true of, beside the day it was registered. On a daily bake these are
+        // different questions and only one of them tells a consumer whether the file is stale.
+        ...(a.as_of ? [['data as of', `${a.as_of} ${c.dim('(the day the data is true of)')}`] as [string, unknown]] : []),
         ['created', fmtTime(a.created_at)],
         // Items 173 / 343: what this node may DO with it, before the line that says whether the file is here.
         ['licence', licenceLine(e, tx)], ['body on this node', e.has_body ? 'yes' : 'no'],
@@ -345,6 +348,12 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
 export interface PublishArgs {
   file: string; name: string; model: string; benchmark: string; id?: string; price?: string; description?: string; parents?: string; branch?: string;
   topic?: string; license?: string; billing?: 'per_download' | 'per_apply_hour' | 'per_hit'; announce?: boolean;
+  /**
+   * The day the DATA is true of (item 267), YYYY-MM-DD — not the day it was uploaded. Everything else on an anchor
+   * is a publishing timestamp, so a daily baker had nowhere to put the one date a consumer needs and put it in the
+   * name string instead. The node validates it (a real date, not in the future) and every surface reads it.
+   */
+  asOf?: string;
   /** What this knowledge is to its bases (item 188): extend | contradict | update | merge. The node measures the rows. */
   kind?: 'extend' | 'contradict' | 'update' | 'merge';
   /** hidden from public catalogs (e2e/test publishing on a shared chain) */
@@ -465,6 +474,7 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
   const r = await client.post<{ anchor: PatchAnchor }>('/api/patches', {
     id: derived.id, name: a.name, model_id: a.model, benchmark: JSON.stringify(b), price: a.price, description: a.description, parents: a.parents,
     branch: a.branch, topic_path: a.topic, license: a.license, billing: a.billing, path: file, visibility: a.test ? 'test' : undefined,
+    ...(a.asOf ? { as_of: a.asOf } : {}),
     // Item 188: what this is to its base. The node measures added / changed rows from the two bodies.
     ...(a.kind ? { kind: a.kind } : {}),
     contributors: contributors ? JSON.stringify(contributors) : undefined,

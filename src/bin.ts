@@ -287,6 +287,9 @@ const publishOpts = (y: Y): Y => y
   .option('description', { type: 'string', describe: 'one or two sentences about what it knows' })
   .option('parents', { type: 'string', describe: `comma list of the knowledge ids this was built on — their creators are paid the lineage share (\`${PROG} config get market.royaltyShare\`) out of every sale of this one` })
   .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
+  // Item 267 — the day the DATA is true of, which is not the day it was uploaded. Without it a daily baker's only
+  // place for the date was the name string, and every consumer had to parse someone's naming convention.
+  .option('as-of', { type: 'string', describe: 'the day the DATA is true of (YYYY-MM-DD) — not the day it is published. Shown as "Data as of …" and sorted by `--sort fresh`' })
   .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
   .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
   // Item 360: per-hour and per-use were offered here and metered nowhere — a sale settles the price once, per download.
@@ -305,8 +308,8 @@ const publishOpts = (y: Y): Y => y
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' });
 
 /** The one handler behind both names. `--announce` is the only thing the two commands decide differently. */
-const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'keep-others'?: boolean }) =>
-  patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], keepOthers: a['keep-others'], announce: !!a.announce }));
+const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'keep-others'?: boolean; 'as-of'?: string }) =>
+  patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], keepOthers: a['keep-others'], asOf: a['as-of'], announce: !!a.announce }));
 
 // ---------------------------------------------------------------- patches
 cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
@@ -317,7 +320,9 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('branch', { type: 'string', describe: `only knowledge on this track (see \`${PROG} branch ls\`)` })
     .option('author', { type: 'string', describe: 'only knowledge published by this node address' })
     .option('q', { type: 'string', describe: 'text search' })
-    .option('sort', { choices: ['latest', 'popular', 'price', 'rows'] as const, default: 'latest', describe: 'newest first, most sold, cheapest, or biggest' })
+    // `fresh` is item 267's: newest DATA (`as_of`, falling back to the registration date), which on a daily bake is
+    // a different order from `latest` — the node has answered `?sort=fresh` since the anchor field landed.
+    .option('sort', { choices: ['latest', 'fresh', 'popular', 'price', 'rows'] as const, default: 'latest', describe: 'newest published, freshest data (--as-of), most sold, cheapest, or biggest' })
     .option('limit', { type: 'number', default: 100, describe: 'how many rows' }).option('mine', { type: 'boolean', default: false, describe: 'only my patches (needs login)' })
     .option('drafts', { type: 'boolean', default: false, describe: 'include my drafts (needs login)' }),
   run((ctx, a: G & patch.LsArgs) => patch.patchLs(ctx, a)))
