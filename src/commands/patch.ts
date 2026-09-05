@@ -181,7 +181,11 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
         ['rows / size', `${a.rows.toLocaleString('en-US')} rows · ${fmtBytes(a.size_bytes)}`], ['sha256', a.patch_sha256],
         ['price', `${a.price} ${a.currency} · ${a.billing}`], ['benchmark', `${a.benchmark.schema} · ${a.benchmark.queries} queries · ${a.benchmark.format.join('/')}${a.benchmark.collateral_bound_nat ? ` · collateral ≤ ${a.benchmark.collateral_bound_nat} nat` : ''}`],
         ['benchmark hash', a.benchmark_hash], ['topic', a.topic_path], ['branch', a.branch ?? '-'], ['gateway', e.gateway_url ?? '-'],
-        ['verification', verificationLine(e)], ['sold', `${e.downloads} · revenue ${e.revenue} ${a.currency}`],
+        // Item 194: `revenue` is the price buyers paid, which on a derivative is up to three times what its author
+        // received. Both numbers, and the one the author actually kept named as such.
+        ['verification', verificationLine(e)], ['sold', `${e.downloads}${e.buyers && e.buyers !== e.downloads ? ` (${e.buyers} buyer${e.buyers === 1 ? '' : 's'})` : ''} · revenue ${e.revenue} ${a.currency} gross`
+          + (Number(e.revenue_shared ?? 0) > 0 ? ` · ${e.revenue_net} to ${a.author_name ?? shortAddr(a.author, 6)}, ${e.revenue_shared} shared with the creators it was built on` : '')
+          + (e.self_purchases ? c.warn(` · ${e.self_purchases} self-purchase${e.self_purchases === 1 ? '' : 's'} not counted`) : '')],
         ['created', fmtTime(a.created_at)],
         // Items 173 / 343: what this node may DO with it, before the line that says whether the file is here.
         ['licence', licenceLine(e, tx)], ['body on this node', e.has_body ? 'yes' : 'no'],
