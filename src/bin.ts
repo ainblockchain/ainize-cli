@@ -644,13 +644,23 @@ cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
 
 // ---------------------------------------------------------------- branches / routing / wallet
 cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patch sets)', (y: Y) => fail(y)
-  .command('ls', 'List branches', (yy: Y) => yy, run((ctx) => branch.branchLs(ctx)))
+  .command('ls', 'List branches', (yy: Y) => yy
+    .option('all', { type: 'boolean', default: false, describe: 'include test and archived tracks (hidden from every public list)' }),
+    run((ctx, a: G & { all?: boolean }) => branch.branchLs(ctx, { all: a.all })))
   .command('create <name>', 'Create a branch', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true })
     .option('description', { type: 'string', describe: 'what this track is for, in one line' })
     .option('context', { type: 'string', array: true, describe: 'k=v routing attributes (e.g. jurisdiction=KR)' })
     .option('patch', { type: 'string', array: true, describe: 'patch id(s) in the branch' })
+    .option('test', { type: 'boolean', default: false, describe: 'a fixture track: on the record, but off /network, off the router and out of `branch ls`' })
     .example('$0 branch create law/KR --context jurisdiction=KR --patch law-kr-2025', ''),
-  run((ctx, a: G & { name: string; description?: string; context?: string[]; patch?: string[] }) => branch.branchCreate(ctx, a.name, a)))
+  run((ctx, a: G & { name: string; description?: string; context?: string[]; patch?: string[]; test?: boolean }) => branch.branchCreate(ctx, a.name, a)))
+  // Item 269 — a track could never be taken off the shelf, so the public list was 32 test tracks around three real ones.
+  .command('archive <name>', 'Take a track of yours off /network, the router and `branch ls` (the record and its subscribers stay)', (yy: Y) => yy
+    .positional('name', { type: 'string', demandOption: true })
+    .example('$0 branch archive e2e/KR-1788174110', 'a fixture track written by a test run comes off the shelf'),
+    run((ctx, a: G & { name: string }) => branch.branchArchive(ctx, a.name, true)))
+  .command('unarchive <name>', 'Put an archived track back on the lists', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { name: string }) => branch.branchArchive(ctx, a.name, false)))
   .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy
     .positional('name', { type: 'string', demandOption: true, describe: `the track (see \`${PROG} branch ls\`)` })
     .positional('patchId', { type: 'string', demandOption: true, describe: 'the knowledge to add — every subscriber buys and loads it' })
@@ -672,7 +682,7 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
     .option('yes', { type: 'boolean', default: false, describe: 'answer the confirmation in advance' })
     .example('$0 branch rm daily/krx krx-daily-2026-09-03', 'a bake that failed verification comes off the track'),
     run((ctx, a: G & { name: string; patchId: string; yes?: boolean }) => branch.branchRemove(ctx, a.name, a.patchId, { yes: a.yes })))
-  .demandCommand(1, 'Subcommand is required (ls|create|add|rm|quote|subscribe|sync|unsubscribe).'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (ls|create|add|rm|archive|unarchive|quote|subscribe|sync|unsubscribe).'), () => undefined);
 cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
 cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));

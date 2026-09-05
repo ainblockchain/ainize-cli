@@ -45,14 +45,15 @@ function memberChip(e: CatalogEntry | undefined, id: string): string {
  * passed: subscribers could not tell "no bake today" from "today's bake failed" from "I am behind". Each member now
  * carries its own state, and a track whose newest bake failed says so, with what is being served instead.
  */
-export async function branchLs(ctx: CliContext): Promise<{ branches: BranchRow[]; mine: string[] }> {
-  const d = await new NodeClient(ctx).get<{ branches: BranchRow[]; mine: string[] }>('/api/branches');
+export async function branchLs(ctx: CliContext, opts: { all?: boolean } = {}): Promise<{ branches: BranchRow[]; mine: string[] }> {
+  // Item 269: fixtures and archived tracks are off the list unless they are asked for by name or with --all.
+  const d = await new NodeClient(ctx).get<{ branches: BranchRow[]; mine: string[] }>(`/api/branches${opts.all ? '?include_test=1&include_archived=1' : ''}`);
   const cat = await trackStatuses(ctx);
   const newest = (b: BranchRow) => b.patch_ids.map((id) => cat.get(id)).filter((e): e is CatalogEntry => !!e)
     .sort((p, q) => q.anchor.created_at - p.anchor.created_at)[0];
   const failing = d.branches.map((b) => ({ b, last: newest(b) })).filter((x) => x.last && ['REJECTED', 'CHALLENGED'].includes(x.last.status));
   emit(ctx, d, (x) => table(x.branches, [
-    { key: 'n', title: 'BRANCH', get: (b) => (x.mine.includes(b.name) ? c.ok(b.name + ' ✓') : b.name) },
+    { key: 'n', title: 'BRANCH', get: (b) => `${x.mine.includes(b.name) ? c.ok(b.name + ' ✓') : b.name}${b.visibility === 'test' ? c.dim(' (test)') : ''}${b.archived ? c.dim(' (archived)') : ''}` },
     { key: 'c', title: 'CONTEXT', get: (b) => Object.entries(b.context).map(([k, v]) => `${k}=${v}`).join(' ') || '-' },
     { key: 'p', title: 'KNOWLEDGE', get: (b) => {
       const shown = b.current ?? b.patch_ids;
@@ -99,9 +100,26 @@ export async function branchRemove(ctx: CliContext, name: string, patchId: strin
   return r.branch;
 }
 
-export async function branchCreate(ctx: CliContext, name: string, a: { description?: string; context?: string[]; patch?: string[] }): Promise<BranchInfo> {
-  const r = await new NodeClient(ctx).post<{ branch: BranchInfo }>('/api/branches', { name, description: a.description ?? '', context: parseContext(a.context), patch_ids: a.patch ?? [] });
-  ok(ctx, `branch ${c.id(name)} created ${c.dim(JSON.stringify(r.branch.context))} with ${r.branch.patch_ids.length} patch(es)`);
+export async function branchCreate(ctx: CliContext, name: string, a: { description?: string; context?: string[]; patch?: string[]; test?: boolean }): Promise<BranchInfo> {
+  const r = await new NodeClient(ctx).post<{ branch: BranchInfo }>('/api/branches', {
+    name, description: a.description ?? '', context: parseContext(a.context), patch_ids: a.patch ?? [],
+    ...(a.test ? { visibility: 'test' } : {}),
+  });
+  ok(ctx, `branch ${c.id(name)} created ${c.dim(JSON.stringify(r.branch.context))} with ${r.branch.patch_ids.length} patch(es)`
+    + (a.test ? c.dim(' — a TEST track: on the record, off /network, off the router and out of `branch ls`') : ''));
+  return r.branch;
+}
+
+/**
+ * `ainize branch archive|unarchive <name>` (item 269) — a track was for ever: 32 throwaway `e2e/*` rows sat on the
+ * one page that sells "subscribe to a track", with the two real ones among them and no way to take any of them off.
+ * The record stays (a public track is a promise to its subscribers); the shelf is what changes.
+ */
+export async function branchArchive(ctx: CliContext, name: string, archived: boolean): Promise<BranchInfo> {
+  const r = await new NodeClient(ctx).post<{ branch: BranchInfo }>(`/api/branches/${encodeURIComponent(name)}/archive`, { archived });
+  ok(ctx, archived
+    ? `${c.id(name)} archived — it is off /network, off the router and out of \`${PROG} branch ls\` (\`${PROG} branch ls --all\` still shows it). Its record and anyone already subscribed are untouched.`
+    : `${c.id(name)} is back on the lists`);
   return r.branch;
 }
 
