@@ -343,7 +343,13 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('reason', { type: 'string', describe: 'why, in one line — shown to anyone who asks for it afterwards' })
     .example('$0 patch retire krx-codes-2026-08 --reason "the source feed changed; use krx-codes-2026-09"', ''),
   run((ctx, a: G & { id: string; reason?: string }) => patch.patchRetire(ctx, a.id, { reason: a.reason })))
-  .command('verify <id>', 'Run this node\'s verifier on a patch and publish an attestation', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchVerify(ctx, a.id)))
+  .command('verify <id>', 'Run this node\'s verifier on a patch and publish an attestation', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    // Item 339 — a verifier with a doubt had two options: stay silent, or challenge, which takes the seller off
+    // sale. Most operators stay silent, which is the opposite of what the trust story needs.
+    .option('recheck', { type: 'boolean', describe: 'measure it again and record the result WITHOUT taking it off sale — a failing recheck withdraws this node\'s earlier PASS, a passing one confirms it' })
+    .example('$0 patch verify krx-codes-2026-08 --recheck', 'you doubt a result you signed: re-measure it and put that on the record, instead of challenging the seller'),
+  run((ctx, a: G & { id: string; recheck?: boolean }) => patch.patchVerify(ctx, a.id, { recheck: a.recheck })))
   .command('challenge <id>', 'Dispute a verification: takes the knowledge off sale until a verifier re-runs it', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .option('reason', { type: 'string', demandOption: true, describe: 'why, in one line — it goes on the public record next to your address' }),
     run((ctx, a: G & { id: string; reason: string }) => patch.patchChallenge(ctx, a.id, a.reason)))

@@ -108,8 +108,11 @@ export function splitLines(s: SaleSplitView): string[] {
   return out;
 }
 
+/** A parent or child as `GET /api/patches/:id` returns it, with its price and (for the author) what it has paid. */
+export interface LineageRef { id: string; name: string; author: string; status: string; price?: string; currency?: string; author_name?: string | null; sales?: number | null; earned?: string | null }
+
 export interface PatchDetail extends CatalogEntry {
-  lineage: { parents: { id: string; name: string; author: string; status: string }[]; children: { id: string; name: string; author: string; status: string }[] };
+  lineage: { parents: LineageRef[]; children: LineageRef[]; earned?: { amount: string; currency: string; sales: number } };
   conflicts: { patch_id: string; overlap_rows: number; same_schema: boolean; status: string; cross_branch?: boolean; same_author?: boolean; author?: string; author_name?: string | null; created_at?: number; sales?: number; lineage?: 'parent' | 'child' | null }[];
   /** What one sale pays and to whom, by name (items 189, 318) — from the node's `royaltyPlan`. */
   split?: SaleSplitView;
@@ -222,8 +225,11 @@ export async function patchGet(ctx: CliContext, id: string): Promise<PatchDetail
       ]));
     }
     lines.push('', c.head('lineage'),
-      `  parents : ${e.lineage.parents.map((p) => `${p.id} ${c.dim(`(${p.status})`)}`).join(', ') || c.dim('none (root)')}`,
-      `  children: ${e.lineage.children.map((p) => `${p.id} ${c.dim(`(${p.status})`)}`).join(', ') || c.dim('none')}`,
+      `  parents : ${e.lineage.parents.map((p) => `${p.id} ${c.dim(`(${p.status}${p.price !== undefined ? `, ${p.price} ${p.currency ?? e.anchor.currency}` : ''})`)}`).join(', ') || c.dim('none (root)')}`,
+      // Items 195, 318: a child was an id and a status. Its PRICE — a child under the base's own price is the base
+      // at a discount — and what it has actually paid the creator of the base are what an ancestor needs to see.
+      `  children: ${e.lineage.children.map((p) => `${p.id} ${c.dim(`(${p.status}${p.price !== undefined ? `, ${p.price} ${p.currency ?? e.anchor.currency}` : ''}${p.author_name && p.author !== e.anchor.author ? `, ${p.author_name}` : ''})`)}${p.sales ? c.ok(` +${p.earned} from ${p.sales} sale${p.sales > 1 ? 's' : ''}`) : ''}`).join(', ') || c.dim('none')}`,
+      e.lineage.earned ? `  earned from derivatives: ${e.lineage.earned.sales ? `${e.lineage.earned.amount} ${e.lineage.earned.currency} from ${e.lineage.earned.sales} sale(s) of knowledge built on this` : c.dim('nothing yet — it appears here as derivatives sell')}` : '',
       e.supersedes.length ? `  supersedes: ${e.supersedes.join(', ')}` : '', e.superseded_by.length ? c.warn(`  superseded by: ${e.superseded_by.join(', ')}`) : '');
     if (e.conflicts.length) {
       lines.push('', c.head('address-set overlaps (A₁ ∩ A₂)'), table(e.conflicts, [
@@ -513,10 +519,18 @@ export function runtimeFailure(err: unknown, nodeUrl: string, what: string): unk
   ].join('\n'), e?.exitCode ?? 1, e?.details);
 }
 
-export async function patchVerify(ctx: CliContext, id: string): Promise<unknown> {
-  const r = await new NodeClient(ctx).post<{ attestation: { passed: boolean; score: Record<string, unknown>; verified_on: string } }>(`/api/patches/${encodeURIComponent(id)}/verify`, {}, { timeoutMs: 30 * 60_000 })
+export async function patchVerify(ctx: CliContext, id: string, opts: { recheck?: boolean } = {}): Promise<unknown> {
+  const r = await new NodeClient(ctx).post<{ attestation: { passed: boolean; score: Record<string, unknown>; verified_on: string; samples_run?: number; samples_available?: number; duration_ms?: number } }>(
+    `/api/patches/${encodeURIComponent(id)}/verify`, opts.recheck ? { recheck: true } : {}, { timeoutMs: 30 * 60_000 })
     .catch((err) => { throw runtimeFailure(err, ctx.nodeUrl, id); });
-  emit(ctx, r, (x) => `${x.attestation.passed ? c.ok('PASS') : c.err('FAIL')} ${id} on ${x.attestation.verified_on}  ${c.dim(JSON.stringify(x.attestation.score))}`);
+  emit(ctx, r, (x) => {
+    const a = x.attestation;
+    // Item 340 — what the run cost, so a 4/4 and a 40/40 on a 2,761-fact knowledge stop reading the same.
+    const work = a.samples_run !== undefined
+      ? c.dim(`  ${a.samples_run} of ${a.samples_available ?? a.samples_run} question(s)${a.duration_ms !== undefined ? ` in ${Math.round(a.duration_ms / 1000)}s` : ''}`)
+      : '';
+    return `${a.passed ? c.ok('PASS') : c.err('FAIL')} ${id} on ${a.verified_on}${opts.recheck ? c.dim(' (recheck)') : ''}  ${c.dim(JSON.stringify(a.score))}${work}`;
+  });
   return r;
 }
 
