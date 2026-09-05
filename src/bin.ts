@@ -420,7 +420,9 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     run((ctx, a: G & { id: string }) => patch.patchSignals(ctx, a.id)))
   .command('conflicts <id>', 'Address-set overlaps with other patches', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchConflicts(ctx, a.id)))
   .command('records <id>', 'Ledger records about a patch', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRecords(ctx, a.id)))
-  .command('rm <id>', 'Delete a draft', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }), run((ctx, a: G & { id: string }) => patch.patchRm(ctx, a.id)))
+  .command('rm <id>', 'Delete a draft (says what goes, and asks first)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true, describe: 'draft id (`$0 patch ls --drafts`)' })
+    .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'answer the confirmation in advance (a script has no terminal to be asked in)' }),
+  run((ctx, a: G & { id: string; yes: boolean }) => patch.patchRm(ctx, a.id, { yes: a.yes })))
   .command('forget <id>', 'Delete this node\'s copy of the knowledge file. NOT a takedown: it stays listed and the gateway keeps charging — use `patch retire` for that', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
     .option('all-sharing', { type: 'boolean', default: false, describe: 'also stop serving every other knowledge built from the same file (the command lists them first)' }),
@@ -518,6 +520,15 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
   .command('jobs', 'My lessons on this node and the dataset each came from', (yy: Y) => keyOpts(yy)
     .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),
   run((ctx, a: G & { key?: string; 'key-file'?: string; dataset?: string }) => teachData.teachJobs(ctx, { key: a.key, keyFile: a['key-file'], dataset: a.dataset })))
+
+  // Item 245 — a lesson saved unchecked because the model server was down cannot be published, and the only way to
+  // measure it again was a button in the browser.
+  .command('recheck <job-id>', 'Measure a lesson that was saved unchecked (the model server was unavailable)', (yy: Y) => keyOpts(yy)
+    .positional('job-id', { type: 'string', demandOption: true, describe: `lesson id (\`${PROG} teach jobs\`)` })
+    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is measured (same exit codes as `teach train --wait`)' })
+    .example('$0 teach recheck 3a417bb4-… --wait', 'the morning after a night when the model server was off'),
+  run((ctx, a: G & { 'job-id': string; key?: string; 'key-file'?: string; wait: boolean }) =>
+    teachData.teachRecheck(ctx, a['job-id'], { key: a.key, keyFile: a['key-file'], wait: a.wait })))
 
   // ---- item 238: the last step of the loop, which only the browser could do. The consents are the publisher's own
   // and are never defaulted: without both flags the command refuses and quotes what is being consented to.
@@ -643,10 +654,20 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
   .command('sync <name>', 'Bring a subscribed track up to date now (buy and load what it added, unload what it retired)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
     run((ctx, a: G & { name: string }) => branch.branchSync(ctx, a.name)))
   .command('unsubscribe <name>', 'Unsubscribe (unload the track\'s knowledge; nothing is refunded)', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }), run((ctx, a: G & { name: string }) => branch.branchSubscribe(ctx, a.name, 'unsubscribe')))
-  .demandCommand(1, 'Subcommand is required (ls|create|add|quote|subscribe|sync|unsubscribe).'), () => undefined);
+  // Item 264 — a track was append-only: an unverified or rejected bake could be added and never taken off.
+  .command('rm <name> <patchId>', 'Take a knowledge off a track you own (subscribers stop buying and loading it)', (yy: Y) => yy
+    .positional('name', { type: 'string', demandOption: true, describe: 'track name' })
+    .positional('patchId', { type: 'string', demandOption: true, describe: 'the knowledge to remove from it' })
+    .option('yes', { type: 'boolean', default: false, describe: 'answer the confirmation in advance' })
+    .example('$0 branch rm daily/krx krx-daily-2026-09-03', 'a bake that failed verification comes off the track'),
+    run((ctx, a: G & { name: string; patchId: string; yes?: boolean }) => branch.branchRemove(ctx, a.name, a.patchId, { yes: a.yes })))
+  .demandCommand(1, 'Subcommand is required (ls|create|add|rm|quote|subscribe|sync|unsubscribe).'), () => undefined);
 cli.command('route <context..>', 'Gateway routing: which branch/nodes serve a request context', (y: Y) => fail(y).positional('context', { type: 'string', array: true, demandOption: true, describe: 'k=v pairs' })
   .example('$0 route jurisdiction=KR', ''), run((ctx, a: G & { context: string[] }) => branch.route(ctx, a.context)));
 cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y), run((ctx) => branch.wallet(ctx)));
+// `patch ls --mine` is the knowledge this node REGISTERED; a buyer's own purchases had no listing anywhere (items 216, 289).
+cli.command('purchases', 'Knowledge this node bought: what, from whom, for how much, and whether it is loaded', (y: Y) => fail(y)
+  .example('$0 purchases', 'every purchase with its seller, tx and file'), run((ctx) => patch.purchasesLs(ctx)));
 cli.command('payouts', 'Royalty transfers this node owes creators and data providers (AIN ledger)', (y: Y) => fail(y)
   .command(['ls', '$0'], 'List payouts', (yy: Y) => yy.option('status', { type: 'string', choices: ['pending', 'paid', 'failed'], describe: 'only payouts in this state' }).option('address', { type: 'string', describe: 'only this recipient' }).option('limit', { type: 'number', describe: 'how many rows (default: all of them)' })
     .example('$0 payouts ls --status failed', ''),
