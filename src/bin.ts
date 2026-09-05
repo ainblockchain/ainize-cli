@@ -364,14 +364,16 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
     // Item 271: without this, a knowledge this node has already paid for is collected, not bought a second time.
     .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
+    // Item 236: a superseded version is bought on purpose or not at all — a script must not stack last month's build in silence.
+    .option('allow-superseded', { type: 'boolean', default: false, describe: 'buy a version that has been superseded by a newer one on the same subject (otherwise you are asked)' })
     .example('$0 patch buy krx-all-2761', 'quote the price, ask, then pay')
     .example('$0 patch buy krx-all-2761 pixelplus-087600', 'two knowledges, one quote and one confirmation each')
     .example('$0 patch buy krx-all-2761 --bundle', 'the add-on and the knowledge it needs underneath, in one go')
     .example('$0 patch buy krx-all-2761 --yes --max-price 30', 'unattended, with a budget for the whole family'),
-  run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) => {
+  run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean; 'allow-superseded'?: boolean }) => {
     const ids = patch.parseIds(a.ids);
     return patch.overIds(ctx, ids, 'bought', (id, batched) =>
-      patch.patchBuy(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], batched }));
+      patch.patchBuy(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], allowSuperseded: a['allow-superseded'], batched }));
   }))
   .command('download <id>', 'Collect a knowledge this node already paid for — no second payment', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
     .example('$0 patch download krx-all-2761', 'after a lost manifest, a forgotten body or a purchase that died mid-payment'),
@@ -585,12 +587,14 @@ cli.command('use <ids..>', 'One line to use knowledge: check it is verified → 
   .option('bundle', { type: 'boolean', default: false, describe: 'buy the bases this knowledge needs underneath it too (one payment each). Without it you are asked' })
   .option('with-base', { type: 'boolean', default: false, describe: 'the older name of --bundle', hidden: true })
   .option('again', { type: 'boolean', default: false, describe: 'pay again for something this node already bought (per-hit / per-apply-hour billing)' })
+  // Item 236: `use <id>` on a superseded id used to print a green tick and buy it anyway.
+  .option('allow-superseded', { type: 'boolean', default: false, describe: 'use a version that has been superseded by a newer one on the same subject (otherwise you are asked)' })
   .example('$0 use krx-all-2761', 'quote, ask, pay, download, load')
   .example('$0 use krx-all-2761 pixelplus-087600', 'two knowledges, loaded in that order')
   .example('$0 use krx-all-2761 --yes --max-price 30', 'unattended, with a budget'),
-run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean }) =>
+run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 'max-price'?: number; bundle?: boolean; 'with-base'?: boolean; 'allow-superseded'?: boolean }) =>
   patch.overIds(ctx, patch.parseIds(a.ids), a.apply === false ? 'bought' : 'loaded', (id, batched) =>
-    patch.patchUse(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], batched }))));
+    patch.patchUse(ctx, id, { apply: a.apply, yes: a.yes, again: a.again, maxPrice: a['max-price'], withRequired: a.bundle || a['with-base'], allowSuperseded: a['allow-superseded'], batched }))));
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)

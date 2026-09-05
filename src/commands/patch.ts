@@ -620,6 +620,8 @@ export interface BuyArgs {
   again?: boolean;
   /** one step of `use a b` / `buy a b`: the terminal still gets its lines, the JSON document is the batch's (item 219) */
   batched?: boolean;
+  /** buy a SUPERSEDED version on purpose (item 236) — without it, a script is stopped instead of silently stacking last month's build */
+  allowSuperseded?: boolean;
 }
 
 /**
@@ -644,6 +646,13 @@ async function printQuote(ctx: CliContext, client: NodeClient, detail: PatchDeta
   if (quote.missing.length) lines.push(`  ${c.head('total')} ${c.bold(`${quote.total} ${quote.currency}`)} ${c.dim(`(this knowledge + ${quote.missing.length} base${quote.missing.length === 1 ? '' : 's'} it cannot work without)`)}`);
   if (balance !== null) lines.push(c.dim(`  balance ${balance} → ${Math.round((balance - total) * 1e6) / 1e6} ${quote.currency}`));
   if (credit?.issuance.issues) lines.push(c.dim(`  ${credit.note}`));
+  // Item 236: who this price is divided between, BEFORE it is paid — the same `royaltyPlan` that will settle it,
+  // and the same numbers the receipt prints afterwards, so the two can be compared.
+  if (detail.split && detail.split.lines.length > 1) {
+    lines.push(c.dim('  each sale of this knowledge pays  ') + detail.split.lines
+      .map((l) => `${c.bold(`${l.amount} ${detail.split!.currency}`)} ${c.dim(`to ${l.name ?? shortAddr(l.address, 6)}${l.role === 'seller' ? ' (seller)' : l.knowledge.length ? ` (${l.role} of ${l.knowledge.join(', ')})` : ` (${l.role})`}`)}`).join(c.dim(' · ')));
+  }
+  if (detail.anchor.license) lines.push(c.dim(`  licence ${detail.anchor.license}`));
   info(ctx, lines.join('\n'));
   return { total, balance };
 }
@@ -682,6 +691,11 @@ export async function patchBuy(ctx: CliContext, id: string, opts: BuyArgs | bool
   if (heldUnlicensed) {
     info(ctx, c.warn('! ') + `this node already holds the file for ${c.id(id)} — it fetched it to verify it, which is not a licence to use, teach on or subscribe with.`);
     info(ctx, c.dim(`  buying records the licence on the ledger and pays ${detail.anchor.author_name ?? shortAddr(detail.anchor.author, 8)} ${quote.price} ${quote.currency}; nothing is downloaded twice.`));
+  }
+  // Item 236: a version taken off the front of its own subject is a warning before the money, not a note after it.
+  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) {
+    warn(ctx, `${c.id(id)} has been superseded: a newer version of the same subject exists → ${detail.superseded_by.map((x) => c.id(x)).join(', ')}`);
+    if (!o.allowSuperseded) await confirm(ctx, `Buy the older ${id} anyway? [y/N]`, { yes: o.yes });
   }
   const { balance } = await printQuote(ctx, client, detail, quote);
   /**
@@ -1225,7 +1239,17 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
     throw new CliError(`${id} was withdrawn by its publisher${detail.retire_reason ? ` ("${detail.retire_reason}")` : ''} — off sale for good; everyone who already bought it keeps their copy.`, 6);
   }
   if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet, so it cannot be bought here; the verifiers usually answer within a few minutes. Watch it with \`${PROG} patch get ${id}\``);
-  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) ok(ctx, c.dim(`note: a newer version exists on the same subject → ${detail.superseded_by.join(', ')} (newer version available)`));
+  /*
+   * Item 236 — this was printed through ok(): a green ✓ one line above "✓ bought", which is the shape of good news.
+   * A script assembling a set from ids seen last week bought and stacked retired versions and nothing stopped it.
+   * It is a warning, and it has to be answered: `--allow-superseded` (or `--yes`) is the deliberate answer.
+   */
+  if (detail.status === 'SUPERSEDED' && detail.superseded_by?.length) {
+    warn(ctx, `${c.id(id)} has been superseded: a newer version of the same subject exists → ${detail.superseded_by.map((x) => c.id(x)).join(', ')}`);
+    if (!opts.allowSuperseded) {
+      await confirm(ctx, `Buy the older ${id} anyway? [y/N]`, { yes: opts.yes });
+    }
+  }
   if (detail.has_body && (detail.purchased || detail.owned)) {
     ok(ctx, `${c.id(id)} is already on this node ${detail.owned ? '(you published it)' : '(purchased)'}`);
     // item 220: the document says which of the two happened, and whether it ended up loaded
