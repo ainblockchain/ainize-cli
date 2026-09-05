@@ -58,7 +58,8 @@ export async function branchLs(ctx: CliContext, opts: { all?: boolean } = {}): P
     { key: 'p', title: 'KNOWLEDGE', get: (b) => {
       const shown = b.current ?? b.patch_ids;
       const rest = b.patch_ids.filter((id) => !shown.includes(id));
-      return `${shown.map((id) => memberChip(cat.get(id), id)).join(', ') || c.dim('none current')}`
+      // Item 214: a track is LOADED in this order, and the later item wins on any row two of them share.
+      return `${shown.map((id, i) => `${c.dim(`${i + 1}.`)} ${memberChip(cat.get(id), id)}`).join('  ') || c.dim('none current')}`
         + (rest.length ? c.dim(`  (+${rest.length} not loaded: ${rest.map((id) => cat.get(id)?.status.toLowerCase() ?? 'unknown').join(', ')})`) : '');
     } },
     { key: 's', title: 'SUBSCRIBERS', get: (b) => b.subscribers.map((s) => s.name ?? shortAddr(s.address, 4)).join(', ') || '-' },
@@ -171,6 +172,8 @@ function renderQuote(q: TrackQuote): string {
     kv([['track', q.branch], ['owner', shortAddr(q.owner, 8)], ['items', `${q.items.length} on the track · ${q.current.length} current${q.retired.length ? ` · ${q.retired.length} retired version(s) skipped` : ''}`]]),
     '',
     table(q.items, [
+      // Item 214 — the order they go on the model in: the last one wins on any row two of them share.
+      { key: '#', title: 'LOAD', get: (i) => (q.current.includes(i.patch_id) ? String(q.current.indexOf(i.patch_id) + 1) : c.dim('-')), align: 'right' },
       { key: 'p', title: 'KNOWLEDGE', get: (i) => `${i.patch_id}${i.name ? c.dim(` — ${i.name}`) : ''}` },
       { key: 'l', title: 'PLAN', get: (i) => (i.plan === 'buy' ? c.warn(planLabel[i.plan]) : i.plan === 'held' || i.plan === 'own' ? c.ok(planLabel[i.plan]) : c.dim(planLabel[i.plan])) },
       { key: 'a', title: 'PRICE', get: (i) => (i.plan === 'buy' ? `${i.price} ${i.currency}` : '-'), align: 'right' },
@@ -191,7 +194,7 @@ function renderQuote(q: TrackQuote): string {
  * buys everything before it announces the subscription, and a partial acquisition is an error with a non-zero exit —
  * it used to print `✓ subscribed` after spending the last credits on the first cheap item.
  */
-export async function branchSubscribe(ctx: CliContext, name: string, action: 'subscribe' | 'unsubscribe', opts: { yes?: boolean } = {}): Promise<SubscribeResult> {
+export async function branchSubscribe(ctx: CliContext, name: string, action: 'subscribe' | 'unsubscribe', opts: { yes?: boolean; replace?: boolean } = {}): Promise<SubscribeResult> {
   const client = new NodeClient(ctx);
   if (action === 'subscribe') {
     const q = await fetchQuote(ctx, name);
@@ -211,7 +214,15 @@ export async function branchSubscribe(ctx: CliContext, name: string, action: 'su
       ? `subscribe to ${name}, announce it publicly and spend ${money(q.total)} now? [y/N]`
       : `subscribe to ${name} and announce it publicly? [y/N]`, { yes: opts.yes });
   }
-  const r = await client.post<SubscribeResult>(`/api/branches/${encodeURIComponent(name)}/${action}`, {}, { timeoutMs: 30 * 60_000 });
+  const r = await client.post<SubscribeResult>(`/api/branches/${encodeURIComponent(name)}/${action}`, action === 'subscribe' ? { replace: !!opts.replace } : {}, { timeoutMs: 30 * 60_000 })
+    .catch((err) => {
+      // Item 214 — the node refuses when the track would be loaded over knowledge already in the model; say what to do.
+      const e = err as { details?: { code?: string } };
+      if (e?.details?.code === 'overlaps_loaded') {
+        throw new CliError(`${(err as Error).message}\n  ${PROG} branch subscribe ${name} --replace`, 1, e.details as Record<string, unknown>);
+      }
+      throw err;
+    });
   emit(ctx, r, (x) => renderSubscribe(x, name));
   return r;
 }
@@ -263,7 +274,11 @@ export async function route(ctx: CliContext, pairs: string[]): Promise<{ branch:
 }
 
 /** One royalty transfer this node owes (node `payouts` table): pending → paid (tx_hash) | failed (last_error, retried every 60 s up to 20 times). */
-export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number }
+export interface PayoutRow { id: number; patch_id: string; settle_hash: string; address: string; amount: string; currency: string; status: 'pending' | 'paying' | 'paid' | 'failed'; tx_hash: string | null; attempts: number; last_error: string | null; created_at: number; updated_at: number;
+  /** `/transfer/$seller/$to/$key` — what joins this payment to the sale it honoured (item 314). */
+  transfer_key?: string | null;
+  /** true once the public `payout` record naming this transfer is on the ledger. */
+  recorded?: boolean }
 export interface PayoutSummary { pending: number; failed: number; paid: number }
 /**
  * One creator-share line on THIS node's wallet. `state` is the difference between a promise and a payment (item
@@ -288,11 +303,38 @@ export interface WalletResponse { kind: string; address: string; balance: number
 export interface PayoutsResponse { items: PayoutRow[]; summary: PayoutSummary; max_attempts: number; retry_ms: number; wallet: boolean }
 
 const payoutStatus = (p: PayoutRow, maxAttempts = 20) => p.status === 'paid' ? c.ok('paid') : p.status === 'failed' ? (p.attempts >= maxAttempts ? c.err('failed (gave up)') : c.warn(`failed · retrying`)) : c.warn('pending');
+/**
+ * Item 321 — the error was sliced to 48 characters, and the one message the code refuses to retry automatically is
+ * 93 long: "node restarted during the transfer — confirm on chain whether it went through before retrying". The
+ * half that was removed is the instruction, so the operator either retried blind (risking the double payment the
+ * code exists to prevent) or never noticed. Nothing is truncated any more: the table keeps the tx hash, and every
+ * error is printed under its row, in full, with the command that answers it.
+ */
 const payoutTable = (rows: PayoutRow[], maxAttempts = 20) => table(rows, [
   { key: 'i', title: 'ID', get: (p) => String(p.id), align: 'right' }, { key: 'p', title: 'PATCH', get: (p) => p.patch_id }, { key: 'to', title: 'TO', get: (p) => shortAddr(p.address, 8) },
   { key: 'a', title: 'AMOUNT', get: (p) => `${p.amount} ${p.currency}`, align: 'right' }, { key: 's', title: 'STATUS', get: (p) => payoutStatus(p, maxAttempts) }, { key: 'n', title: 'TRIES', get: (p) => String(p.attempts), align: 'right' },
-  { key: 't', title: 'AT', get: (p) => fmtTime(p.updated_at) }, { key: 'e', title: 'TX / ERROR', get: (p) => p.tx_hash ? p.tx_hash.slice(0, 14) + '…' : (p.last_error ?? '').slice(0, 48) },
-]);
+  { key: 't', title: 'AT', get: (p) => fmtTime(p.updated_at) },
+  // Item 314: the transfer key is what joins this payment to the sale it honoured, on anyone's chain explorer.
+  { key: 'e', title: 'TX', get: (p) => (p.tx_hash ? p.tx_hash.slice(0, 14) + '…' : p.status === 'failed' ? c.err('—') : c.dim('—')) },
+]) + payoutErrors(rows);
+
+/** Every error under the table, whole, each with the concrete next command (item 321). */
+function payoutErrors(rows: PayoutRow[]): string {
+  const bad = rows.filter((p) => p.last_error);
+  if (!bad.length) return '';
+  return '\n' + bad.map((p) => {
+    const what = `  ${c.err('!')} payout #${p.id} (${p.amount} ${p.currency} to ${shortAddr(p.address, 10)} for ${c.id(p.patch_id)})`;
+    const why = `\n    ${p.last_error}`;
+    // The interrupted row is the one the code deliberately will not retry by itself: name the two commands that end it.
+    const how = p.last_error === PAYOUT_INTERRUPTED
+      ? `\n    ${c.dim(`check the chain for /transfer/<this node>/${p.address}/${p.transfer_key ?? `payout_${p.settle_hash.slice(0, 10)}…`}; if the money did NOT move: ${PROG} payouts retry ${p.id}`)}`
+      : `\n    ${c.dim(`retry it: ${PROG} payouts retry ${p.id}`)}`;
+    return what + why + how;
+  }).join('\n');
+}
+
+/** The last_error a row is left with when the node stopped mid-transfer — never retried automatically. */
+export const PAYOUT_INTERRUPTED = 'node restarted during the transfer — confirm on chain whether it went through before retrying';
 
 /** The wallet's payout lines (exported so the test can render a fixture). */
 export function renderPayoutSummary(x: WalletResponse): string[] {
@@ -366,6 +408,23 @@ export async function wallet(ctx: CliContext): Promise<WalletResponse> {
 }
 
 /** `ainize payouts ls [--status]` — royalty transfers this node owes creators and data providers (AIN ledger). */
+/**
+ * `ainize payouts reconcile` — rebuild what this node owes from its own settlements and pay what is due (item 313).
+ *
+ * `enqueue` ran in one place, inline with the sale, and nothing ever re-derived it: a settle written before the
+ * payouts table existed, a wiped data dir or a crash between the append and the enqueue left a public debt with
+ * no row — so no retry, no "failed", and no way for an honest seller to pay what the record says they owe.
+ */
+export async function payoutsReconcile(ctx: CliContext): Promise<{ settlements: number; rows: number; recovered: number; run: { attempted: number; paid: number; failed: number } | null }> {
+  const d = await new NodeClient(ctx).post<{ settlements: number; rows: number; recovered: number; run: { attempted: number; paid: number; failed: number } | null }>('/api/me/payouts/reconcile', {});
+  emit(ctx, d, (x) => [
+    `${x.recovered ? c.warn('! ') : c.ok('✓ ')}${x.settlements} settlement(s) this node wrote owe ${x.rows} royalty payout(s)`,
+    x.recovered ? c.warn(`  ${x.recovered} row(s) recovered from the record — money this node owed with nothing to pay it from`) : c.dim('  nothing was missing: every settlement already had its rows'),
+    x.run ? c.dim(`  attempted ${x.run.attempted} transfer(s): ${x.run.paid} paid, ${x.run.failed} failed (\`${PROG} payouts ls\` for the detail)`) : c.dim('  nothing was due'),
+  ].filter(Boolean).join('\n'));
+  return d;
+}
+
 export async function payoutsLs(ctx: CliContext, opts: { status?: string; address?: string; limit?: number } = {}): Promise<PayoutsResponse> {
   const d = await new NodeClient(ctx).get<PayoutsResponse>(`/api/me/payouts${query({ status: opts.status, address: opts.address, limit: opts.limit })}`);
   emit(ctx, d, (x) => [
