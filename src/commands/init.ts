@@ -110,7 +110,20 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
     ]),
     ...(publicBind && !d.claimed ? [c.warn(`! this node will accept connections from every interface with no operator password: run \`${PROG} login\` before \`${PROG} start\`, or re-run init with --password`)] : []),
     ...(publicBind ? [c.dim(`bound to ${cfg.host}: anyone who can reach port ${cfg.port} reaches this node's API — put it behind a proxy or a firewall (\`${PROG} config set host 127.0.0.1\` keeps it local)`)] : []),
-    '', c.dim(`next: \`${PROG} start\`${d.claimed ? '' : `   (then \`${PROG} login\`)`}   (then \`${PROG} seed\`)`),
+    // Item 143: seeding writes the data directory, so it goes BEFORE the node that opens it — `seed` refuses once a
+    // node is running, and the old hint told operators to do it the other way round.
+    // Item 142: a node on the AIN ledger cannot announce, attest or settle until a chain is reachable, its app is
+    // registered and its identity holds AIN. `next: ainize start` was the only thing ever said about any of that.
+    '', ...(d.ledger === 'ain' ? [
+      c.dim('next, on the AIN ledger:'),
+      c.dim(`  ${PROG} chain up        the local 1-node chain in docker (skip it if ${cfg.ledger.ain?.providerUrl ?? 'the provider'} is a chain you already run)`),
+      c.dim(`  ${PROG} chain setup     registers /apps/knowledge + the market rules, and funds this identity on a local chain`),
+      c.dim(`  ${PROG} start${d.claimed ? '' : ` && ${PROG} login`}`),
+      c.dim(`  ${PROG} wallet          this node pays for every announce, attest and settle from its own AIN balance — check it`),
+    ] : [
+      c.dim(`next: \`${PROG} start\`${d.claimed ? '' : `   (then \`${PROG} login\`)`}`),
+      c.dim(`      (demo knowledge: \`${PROG} seed\` first — it writes the data directory the node then opens)`),
+    ]),
   ].join('\n'));
   // A peer on the other ledger answers everything and serves an empty record set forever — say so now, not never (item 170).
   for (const ep of cfg.peers) await warnLedgerMismatch(ctx, ep, cfg.ledger.kind);

@@ -88,16 +88,58 @@ export async function chainDown(ctx: CliContext): Promise<void> {
   ok(ctx, `removed container ${CHAIN_CONTAINER} (chain data discarded)`);
 }
 
-export async function chainStatus(ctx: CliContext, provider?: string): Promise<ChainHealth & { container: string }> {
+/** Is this provider URL the local chain `ainize chain up` runs — this host, this port? (item 142) */
+export function isLocalChainUrl(provider: string): boolean {
+  try {
+    const u = new URL(provider);
+    const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+    return ['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(u.hostname) && port === CHAIN_PORT;
+  } catch { return false; }
+}
+
+/**
+ * `chain status` reported the health of the CONFIGURED provider beside the container state of the hard-coded
+ * `ngram-ain` name, so a node pointed at another chain was told `container ngram-ain: running` next to
+ * `reachable no` — two confident signals about two different chains (item 142). The container is only this
+ * provider's when the provider IS the local chain.
+ */
+export async function chainStatus(ctx: CliContext, provider?: string): Promise<ChainHealth & { container: string | null; local: boolean }> {
   const cfg = ctx.cfg;
   const url = provider ?? cfg?.ledger.ain?.providerUrl ?? `http://localhost:${CHAIN_PORT}`;
-  const [h, container] = await Promise.all([chainHealth(url), containerState(CHAIN_CONTAINER).catch(() => 'missing' as const)]);
-  const out = { ...h, container };
-  emit(ctx, out, (x) => kv([
-    ['provider', x.provider], ['reachable', x.reachable ? c.ok('yes') : c.err('no')], ['state', x.state ?? '-'], ['health', x.health === undefined ? '-' : x.health ? c.ok('true') : c.err('false')],
-    ['validator', x.address ?? '-'], ['last block', x.blockNumber ?? '-'], ['container', `${CHAIN_CONTAINER}: ${x.container}`],
-  ]));
+  const local = isLocalChainUrl(url);
+  const [h, container] = await Promise.all([
+    chainHealth(url),
+    local ? containerState(CHAIN_CONTAINER).catch(() => 'missing' as const) : Promise.resolve(null),
+  ]);
+  const out = { ...h, container, local };
+  emit(ctx, out, (x) => [
+    kv([
+      ['provider', x.provider],
+      ['reachable', x.reachable ? c.ok('yes') : c.err('no')], ['state', x.state ?? '-'], ['health', x.health === undefined ? '-' : x.health ? c.ok('true') : c.err('false')],
+      ['validator', x.address ?? '-'], ['last block', x.blockNumber ?? '-'],
+      ['container', x.container === null ? c.dim(`n/a — ${x.provider} is not this machine's \`${PROG} chain up\` chain (:${CHAIN_PORT})`) : `${CHAIN_CONTAINER}: ${x.container}`],
+    ]),
+    ...(x.reachable ? [] : [chainUnreachableHint(x.provider, local)]),
+  ].join('\n'));
   return out;
+}
+
+/** What to do about a provider that does not answer, naming the key the URL came from (item 142). */
+function chainUnreachableHint(provider: string, local: boolean): string {
+  return c.dim(local
+    ? `the local chain is not running — \`${PROG} chain up\` starts it (docker), then \`${PROG} chain setup\``
+    : `nothing answered ${provider} (from ledger.ain.providerUrl) — check the URL with \`${PROG} config set ledger.ain.providerUrl <url>\`, or run the local chain instead with \`${PROG} chain up\``);
+}
+
+/**
+ * The error a driver throws when the provider is not there says `connect ECONNREFUSED 127.0.0.1:9099` and names
+ * neither the config key the URL came from nor the command that starts one (item 142).
+ */
+function wrapProviderError(provider: string, e: unknown): Error {
+  const msg = (e as Error).message ?? String(e);
+  if (e instanceof CliError && !/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed|ETIMEDOUT|socket hang up/i.test(msg)) return e;
+  if (!/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed|ETIMEDOUT|socket hang up/i.test(msg)) return e as Error;
+  return new CliError(`cannot reach the AIN provider ${provider} (from ledger.ain.providerUrl): ${msg}\n  ${chainUnreachableHint(provider, isLocalChainUrl(provider))}`);
 }
 
 function assertLocal(provider: string) {
@@ -134,15 +176,14 @@ export async function chainSetup(ctx: CliContext, a: { fund?: number } = {}): Pr
     const ain = new Ain(provider, null, 0);
     const bal = Number(await ain.wallet.getBalance(cfg.identity.address));
     if (bal <= 0 || a.fund) { await chainFund({ ...ctx, quiet: true }, cfg.identity.address, a.fund ?? 1000, provider); ok(ctx, `funded node identity ${cfg.identity.address} (${a.fund ?? 1000} AIN)`); }
-  } catch (e) { if (e instanceof CliError && e.message.startsWith('refusing')) warn(ctx, 'non-local chain: make sure the node identity holds AIN before setup'); else throw e; }
+  } catch (e) { if (e instanceof CliError && e.message.startsWith('refusing')) warn(ctx, 'non-local chain: make sure the node identity holds AIN before setup'); else throw wrapProviderError(provider, e); }
   if (await client.alive()) {
-    const r = await client.post<{ created: boolean; tx?: string; admin?: string }>('/api/chain/setup', {}, { timeoutMs: 120_000 });
+    const r = await client.post<{ created: boolean; tx?: string; admin?: string }>('/api/chain/setup', {}, { timeoutMs: 120_000 }).catch((e) => { throw wrapProviderError(provider, e); });
     emit(ctx, r, (x) => c.ok('✓ ') + (x.created ? `knowledge app created on-chain (tx ${x.tx}); market rules set; admin ${x.admin}` : `knowledge app already exists (admin ${x.admin ?? 'unknown'}) — rules refreshed if we are admin`));
     return r;
   }
   const ledger = new AinLedger({ providerUrl: provider, eventHandlerUrl: cfg.ledger.ain!.eventHandlerUrl, chainId: cfg.ledger.ain!.chainId }, cfg.identity);
-  const r = await ledger.setupApp();
-  await ledger.close();
+  const r = await ledger.setupApp().catch(async (e) => { await ledger.close().catch(() => undefined); throw wrapProviderError(provider, e); });
   emit(ctx, r, (x) => c.ok('✓ ') + (x.created ? `knowledge app created on-chain (tx ${x.tx}); market rules set; admin ${x.admin}` : `knowledge app already exists (admin ${x.admin ?? 'unknown'})`));
   return r;
 }

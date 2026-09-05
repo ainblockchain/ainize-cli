@@ -200,6 +200,8 @@ export interface InfoResponse {
     checked?: { patch_id: string; sha256: string; at: number; present: boolean; source: string } | null;
   };
   quorum: number; currency: string; peers: number; counts: { patches: number; listed: number };
+  /** item 142: what this node has to pay for announces, attestations and settlements. Operator session only. */
+  balance?: number | null;
   /** item 170: how many peers ANSWERED, how many of those verify, and which are on a ledger this node cannot read. */
   peer_status?: PeerStatus;
   /** item 128: bytes held on disk, and what is free on the volume. Absent on nodes older than this CLI. */
@@ -309,7 +311,8 @@ export function peersLine(st: PeerStatus | undefined, fallback: number): string 
 
 export async function status(ctx: CliContext): Promise<InfoResponse> {
   const client = new NodeClient(ctx);
-  const d = await client.get<InfoResponse>('/api/info', { auth: false });
+  // The token is sent when there is one (item 142: `balance` is operator-only); `status` still works without it.
+  const d = await client.get<InfoResponse>('/api/info', { auth: !!ctx.token });
   const pid = runningPid(ctx.home);
   // Whatever answers the configured port is not necessarily this home's node: after a failed start it is usually
   // someone else's, and the whole block below — address, roles, ledger height, catalogue — would be theirs (item 118).
@@ -329,6 +332,8 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
       ...(x.runtime.patch_dir ? [['mailbox', x.runtime.patch_dir + (x.runtime.patch_dir_source === 'repo' ? c.dim('  (from runtime.repo — set runtime.patchDir to be sure it is this instance\'s)') : '')] as [string, string]] : []),
       ...(x.runtime.applied?.length ? [['in model', appliedLine(x.runtime)] as [string, string]] : []),
       ['peers', peersLine(x.peer_status, x.peers)], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],
+      // item 142: this node signs and PAYS for every announce, attest and settle; nothing but `ainize wallet` said so.
+      ...(typeof x.balance === 'number' ? [['balance', `${x.balance} ${x.currency}${x.balance <= 0 ? c.warn('  — this node cannot announce, attest or settle until it is funded') : ''}`] as [string, string]] : []),
       ['branches', x.node.branches.join(', ') || '-'], ['blobs held', `${x.node.blobs.length}${x.disk ? c.dim(` of ${x.disk.blob_files} files on disk`) : ''}`],
       ['disk', diskLine(x.disk)],
     ]),
