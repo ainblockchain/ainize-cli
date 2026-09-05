@@ -59,13 +59,37 @@ export async function patchLs(ctx: CliContext, a: LsArgs = {}): Promise<CatalogR
     /**
      * Item 201: SOLD was `settlements.length` — every e2e run's purchase and every self-buy included — and it was
      * the only demand number anywhere. It is real sales now (someone else, a real price), with the last 30 days
-     * beside it, and BUILT ON says how many published knowledges were built on this one.
+     * beside it, and DERIVED says how many published knowledges were built on this one.
      */
     { key: 'dl', title: 'SOLD', get: (e) => { const sold = e.sales?.sales_all ?? e.downloads; return sold && e.sales?.sales_30d ? `${sold} ${c.dim(`(${e.sales.sales_30d}/30d)`)}` : String(sold); }, align: 'right' as const },
-    { key: 'bo', title: 'BUILT ON', get: (e) => (e.built_on ? c.ok(String(e.built_on)) : c.dim('-')), align: 'right' as const },
+    { key: 'derived', title: 'DERIVED', get: (e) => (e.built_on ? c.ok(String(e.built_on)) : c.dim('-')), align: 'right' as const },
+    /**
+     * Item 282 — the column that says whether the row is an add-on at all, which is the question a buyer comparing
+     * a 5-credit base with a 3-credit item built on it is actually asking. It used to be titled BUILT ON and hold
+     * item 201's derivative COUNT, so the base read "BUILT ON 1" and the derivative read "-": the exact opposite of
+     * what the words say, and of what the browse card next to it shows. Same two facts as the web chip, same order:
+     * `base.stack` is a body that does not work without what it names underneath; `parents` is one that does.
+     */
+    { key: 'bo', title: 'BUILT ON', get: (e) => builtOnCell(e) },
     { key: 'schema', title: 'BENCHMARK', get: (e) => e.anchor.benchmark.schema },
   ], empty) + (loaded.size ? '\n' + c.dim(`loaded in the serving model, in order: ${[...loaded.entries()].sort((x, y) => x[1] - y[1]).map(([id, n]) => `${n} ${id}`).join(' → ')} (${PROG} patch stack)`) : ''));
   return items;
+}
+
+/**
+ * What this knowledge is built on, in the words the browse card uses (item 282).
+ *
+ * `add-on: <ids>` — `base.stack`, a body trained against those tables: it does not work without them, and its price
+ * has to be read together with theirs. `<ids>` alone — declared `parents`: it stands on its own and shares revenue
+ * with them. `-` — a root. Ids are listed, not counted, because the one thing the reader needs is WHICH knowledge
+ * they also have to hold.
+ */
+export function builtOnCell(e: CatalogRow): string {
+  const stack = (e.anchor.base?.stack ?? []).map((b) => b.patch_id);
+  if (stack.length) return c.warn(`add-on: ${stack.join(', ')}`);
+  const parents = e.anchor.parents ?? [];
+  if (parents.length) return parents.join(', ');
+  return c.dim('-');
 }
 
 /** `2/2 passed ✓ quorum` — clamped, with the extra evidence spelled out instead of an unreadable `3/2`. */
