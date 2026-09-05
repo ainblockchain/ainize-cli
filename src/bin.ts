@@ -294,13 +294,16 @@ const publishOpts = (y: Y): Y => y
   .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
   .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
   .option('dataset-license', { type: 'string', describe: 'licence for the questions: CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, ODC-By-1.0, Proprietary' })
-  .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this publish may retire (required when it would retire any)' })
+  .option('supersede', { type: 'string', array: true, describe: 'with --announce: the listing(s) of yours this version replaces — required when the overlap rule found any, and the way to declare one whose rows do not overlap' })
+  // Item 248 — a dated snapshot, published on purpose, that the row-overlap rule must not retire.
+  .option('keep-others', { type: 'boolean', default: false, describe: 'with --announce: retire nothing — every overlapping listing of yours stays on sale' })
+
   .option('force', { type: 'boolean', default: false, describe: 'publish bytes this node already published on this subject, or for a model it cannot test (never another author\'s bytes)' })
   .option('test', { type: 'boolean', default: false, describe: 'hidden test listing (not shown in public catalogs)' });
 
 /** The one handler behind both names. `--announce` is the only thing the two commands decide differently. */
-const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string }) =>
-  patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], announce: !!a.announce }));
+const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'keep-others'?: boolean }) =>
+  patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], keepOthers: a['keep-others'], announce: !!a.announce }));
 
 // ---------------------------------------------------------------- patches
 cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
@@ -335,9 +338,14 @@ cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches'
     .example('$0 patch import ./lesson-pixelplus-1a2b3c.npz --recipe ./recipe.json', `then: ${PROG} patch apply taught-pixelplus-1a2b3c`),
   run((ctx, a: G & patch.ImportArgs) => patch.patchImport(ctx, a)))
   .command('announce <id>', 'DRAFT → ANNOUNCED (anchor on the ledger)', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true })
-    .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this announce may retire — it refuses until every one of them is named' })
-    .example('$0 patch announce krx-codes-v3 --supersede krx-codes-v2', 'v2 goes off sale the moment v3 is verified'),
-  run((ctx, a: G & { id: string; supersede?: string[] }) => patch.patchAnnounce(ctx, a.id, { supersede: a.supersede })))
+    // Item 248 — the same flag DECLARES a replacement whose rows do not overlap (the daily case), and
+    // --keep-others keeps a dated snapshot listed on purpose instead of letting the overlap rule retire it.
+    .option('supersede', { type: 'string', array: true, describe: 'the listing(s) of yours this version replaces — it refuses until every one the overlap rule found is named, and names one it did not' })
+    .option('keep-others', { type: 'boolean', default: false, describe: 'retire nothing: every overlapping listing of yours stays on sale (a dated snapshot published on purpose)' })
+    .example('$0 patch announce krx-codes-v3 --supersede krx-codes-v2', 'v2 goes off sale the moment v3 is verified')
+    .example('$0 patch announce krx-codes-2026-09-04 --supersede krx-codes-2026-09-03', 'today replaces yesterday even though their rows do not overlap')
+    .example('$0 patch announce krx-snapshot-2026-09-01 --keep-others', 'a dated snapshot that retires nothing'),
+  run((ctx, a: G & { id: string; supersede?: string[]; 'keep-others'?: boolean }) => patch.patchAnnounce(ctx, a.id, { supersede: a.supersede, keepOthers: a['keep-others'] })))
   .command('retire <id>', 'Take your published knowledge off sale for good (the record stays; buyers keep their copy)', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
     .option('reason', { type: 'string', describe: 'why, in one line — shown to anyone who asks for it afterwards' })

@@ -284,8 +284,13 @@ export interface PublishArgs {
   datasetLicense?: string;
   /** publish past `duplicate_body` (your own bytes, same subject) and `model_mismatch` — never past another author's bytes */
   force?: boolean;
-  /** the listings this announce is allowed to retire — required when there are any (item 150) */
+  /**
+   * The listings this publish retires: required when the overlap rule found any (item 150), and the DECLARATION
+   * when it did not — today's bake replacing yesterday's on rows that do not overlap (item 248).
+   */
   supersede?: string[];
+  /** Keep every overlapping listing of yours on sale — a dated snapshot published on purpose (item 248). */
+  keepOthers?: boolean;
 }
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -403,7 +408,7 @@ export async function patchPublish(ctx: CliContext, a: PublishArgs): Promise<{ a
     if (lines.length) process.stderr.write(lines.join('\n') + '\n' + c.dim(`  the price goes on the permanent record at announce; until then \`${PROG} patch rm ${r.anchor.id}\` and publish again changes it.\n`));
   }
   let announced: AnnounceResult | null = null;
-  if (a.announce) announced = await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede, document: false });
+  if (a.announce) announced = await patchAnnounce(ctx, r.anchor.id, { supersede: a.supersede, keepOthers: a.keepOthers, document: false });
   else if (!ctx.json) ok(ctx, c.dim(`announce when ready: ${PROG} patch announce ${r.anchor.id}`));
   // Item 253: the morning script had `{anchor, announced}` and a 64-integer addr_sketch, and had to poll
   // `patch get --json` to learn whether the announce landed, what it retired and whether anyone can verify it.
@@ -453,14 +458,16 @@ export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
  *  - whether any reachable peer on this network actually verifies. Below the quorum nothing announced here can ever
  *    be LISTED, so the old unconditional "verifiers will now attest" was a promise the node could not keep.
  */
-export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[]; document?: boolean } = {}): Promise<AnnounceResult> {
+export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[]; keepOthers?: boolean; document?: boolean } = {}): Promise<AnnounceResult> {
   const client = new NodeClient(ctx);
   const detail = await client.get<PatchDetail>(`/api/patches/${encodeURIComponent(id)}`).catch(() => null);
   let retired: PatchDetail['conflicts'] = [];
+  const named = new Set((opts.supersede ?? []).flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean));
   if (detail) {
-    const retires = retiredByAnnounce(detail);
+    // Item 248 — with --keep-others the overlaps stay listed on purpose (a dated snapshot), so there is nothing
+    // to confirm; without it, every listing this announce would retire has to be named, as before (item 150).
+    const retires = opts.keepOthers ? [] : retiredByAnnounce(detail);
     retired = retires;
-    const named = new Set((opts.supersede ?? []).flatMap((x) => x.split(',')).map((x) => x.trim()).filter(Boolean));
     const missing = retires.filter((x) => !named.has(x.patch_id));
     if (retires.length && !ctx.json) {
       process.stderr.write([
@@ -484,7 +491,14 @@ export async function patchAnnounce(ctx: CliContext, id: string, opts: { superse
     const coexisting = detail.conflicts.filter((x) => x.same_schema && (x.cross_branch || x.same_author === false));
     if (coexisting.length && !ctx.json) info(ctx, c.dim(`  ${coexisting.length} other overlap(s) on the same subject stay as they are (another branch, or another node's knowledge — those are never retired by your publish).`));
   }
-  const r = await client.post<{ record: LedgerRecord; verifiers?: VerifierReach; visibility?: string }>(`/api/patches/${encodeURIComponent(id)}/announce`);
+  const r = await client.post<{ record: LedgerRecord; retires?: PatchDetail['conflicts']; verifiers?: VerifierReach; visibility?: string }>(
+    `/api/patches/${encodeURIComponent(id)}/announce`,
+    // Item 248: the ids named here are what this version replaces — including ones whose rows do not overlap, which
+    // is the daily case (new listings, delistings) the automatic rule can never see.
+    { replaces: [...named], ...(opts.keepOthers ? { auto_supersede: false } : {}) },
+  );
+  // What the NODE decided, which is what will actually be written when verifiers pass it.
+  if (r.retires) retired = r.retires;
   const v = r.verifiers;
   const enough = !v || v.verifiers >= v.quorum;
   ok(ctx, `announced ${c.id(id)} → ledger record ${shortHash(r.record.hash, 16)}${enough && v ? c.dim(` (${v.verifiers} verifier node(s) can attest; quorum is ${v.quorum})`) : ''}`);
@@ -495,6 +509,8 @@ export async function patchAnnounce(ctx: CliContext, id: string, opts: { superse
       c.dim(`  or verify alone:  ${PROG} config set verifier.quorum 1 && ${PROG} config set verifier.allowSelfAttest true`),
     ].join('\n') + '\n');
   }
+  if (retired.length) info(ctx, c.dim(`  when verifiers pass it, this retires: ${retired.map((x) => `${x.patch_id}${x.overlap_rows ? ` (${x.overlap_rows.toLocaleString('en-US')} shared rows)` : ' (declared — no shared rows)'}`).join(', ')}`));
+  else if (opts.keepOthers) info(ctx, c.dim('  --keep-others: nothing of yours is retired by this publish; every overlapping version stays listed and on sale.'));
   if (r.visibility === 'test') warn(ctx, `${id} was published as a TEST listing: it is hidden from every public catalogue, and only this node can see it.`);
   const out: AnnounceResult = { patch_id: id, record: r.record, retires: retired, verifiers: r.verifiers ?? null, visibility: r.visibility ?? 'public' };
   // `publish` writes the one document for the whole operation; a bare `patch announce` writes its own (item 253)
