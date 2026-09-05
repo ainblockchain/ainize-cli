@@ -506,7 +506,11 @@ export interface AnnounceResult {
  * — the node's own rule (market.supersedable). A cross-author overlap is not in this list any more: it coexists.
  */
 export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
-  return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && !x.lineage && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
+  // A declared base is not retired by its own add-on (item 189) — unless this draft says it is a new VERSION of it
+  // (`publish --kind update`, item 188), which is the one declaration that turns a family link into a supersede.
+  const updates = new Set(d.anchor.derivation?.kind === 'update' ? (d.anchor.derivation.bases ?? []).map((b) => b.patch_id) : []);
+  return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && (!x.lineage || updates.has(x.patch_id))
+    && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
 }
 
 /**
