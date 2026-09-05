@@ -137,10 +137,18 @@ export interface TeachPolicy {
 }
 export interface TeachJobView {
   id: string; status: string; position?: number; eta_s?: number | null; blocked?: string | null; name?: string;
+  /** While `blocked` is 'lock': who holds the shared model, how long this lesson has waited, what is left of the grace (item 244). */
+  blocked_by?: { holder: string; label: string; since: number; waited_s: number; grace_left_s: number } | null;
+  /**
+   * The questions that will NOT be trained and why (items 180 / 181). Counts alone said "known 0, overlaps 1" and
+   * no surface could name the row, the knowledge, or the answer the pre-flight had measured to decide it.
+   */
+  preflight?: { checked: number; of: number; known: number; overlaps?: number;
+    dropped?: { index: number; prompt: string; reason: 'already_known' | 'in_base' | 'overlaps_listing'; base_answer?: string; listing_id?: string; listing_name?: string }[] };
   contributor?: { address: string; name?: string }; context_patch_ids?: string[]; builds_on_context?: boolean;
   facts?: { prompt: string; answer: string; alt_prompt?: string; base_answer?: string; after_answer?: string; hit?: boolean; heldout_hit?: boolean }[];
   progress?: { step: number; max_steps: number; loss?: number; hits: number; total: number; load_s?: number; avg_step_s?: number; phase?: string; percent?: number; rows_total?: number; rows_touched?: number; eval_sample?: { n: number; of: number }; elapsed_s?: number };
-  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number; sampled?: { checked: number; of: number } }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string; simulated?: boolean; skipped?: true;
+  checks?: { executed: boolean; ok: boolean; taught: { hits: number; total: number; questions?: { hits: number; total: number }; sampled?: { checked: number; of: number } }; heldout?: { hits: number; total: number }; parent_regression: { ok: boolean; hit: number; total: number }; locality: { ok: boolean; same: number; total: number }; reverted_and_reapplied: boolean; note?: string; simulated?: boolean; skipped?: true;
     parent_check?: { patch_id: string; hit: number; total: number; failed: number[]; base_hit?: number; base_total?: number; base_failed?: number[]; overridden?: number }[]; reversibility_ok?: boolean | null };
   /** Lineage (design §12.1): what this lesson was trained ON TOP OF, and what it did with the base's questions. */
   bases?: { patch_id: string; sha256: string; name?: string; status?: string }[];
@@ -290,7 +298,10 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     const lines = [c.bold(j.name ?? `Lesson ${j.id}`) + '  ' + statusColor(j.status) + c.dim(`  — ${STATUS_COPY[j.status] ?? ''}`)];
     const pairs: [string, unknown][] = [['lesson', j.id], ['node', r.node]];
     if (j.position !== undefined) pairs.push(['queue position', `${j.position} ahead${j.eta_s ? ` · ≈ ${fmtDur(j.eta_s)}` : ''}`]);
-    if (j.blocked) pairs.push(['waiting for', blockedText(j.blocked)]);
+    if (j.blocked) pairs.push(['waiting for', blockedText(j.blocked) + (j.blocked_by
+      ? ` — held by ${j.blocked_by.label} for ${fmtDur(Math.round((Date.now() - j.blocked_by.since) / 1000))}; this lesson has waited ${fmtDur(j.blocked_by.waited_s)}`
+        + (j.blocked_by.grace_left_s > 0 ? `, and is saved unchecked in ${fmtDur(j.blocked_by.grace_left_s)} if the model stays busy` : ', and the wait is over')
+      : '')]);
     if (!r.owner) {
       lines.push(kv(pairs), c.dim('status only — pass your teaching key (--key-file <backup.json>) to see the lesson body'));
       return lines.join('\n');
@@ -342,16 +353,34 @@ export function renderTeachStatus(r: TeachStatusResult): string {
        * LESSON worked is stated first, in its own line, with the status that decided it.
        */
       if (k.executed) {
-        const ratio = `${k.taught.hits}/${k.taught.total}`;
-        pairs.push(['lesson', j.status === 'READY'
-          ? c.ok(`learned — ${ratio} trained sentences answer right in the live model`)
-          : c.err(`did not stick — ${ratio} trained sentences answer right (${j.status})`)]);
+        /*
+         * Item 180 — one lesson had two denominators. "taught 0/2 trained sentences" counts PROBES (the head of the
+         * sample is asked twice), "1 of 2 questions" counts questions, and nobody could reconcile them. Questions is
+         * the unit every screen and every command names, so it is the one stated here; the probe count keeps its own
+         * line below. And the questions that never made it into the lesson are named, not silently missing.
+         */
+        const q = k.taught.questions;
+        const ratio = q ? `${q.hits} of ${q.total} questions` : `${k.taught.hits}/${k.taught.total} trained sentences`;
+        const dropped = j.preflight?.dropped ?? [];
+        const droppedNote = dropped.length ? c.dim(`  (${dropped.length} of ${j.preflight?.of ?? '?'} never trained — see below)`) : '';
+        pairs.push(['lesson', (j.status === 'READY'
+          ? c.ok(`learned — ${ratio} answer right in the live model`)
+          : c.err(`did not stick — ${ratio} answer right (${j.status})`)) + droppedNote]);
       }
       pairs.push(['side-effect check', !k.executed ? c.warn('not measured (model server was off) — ask the node to check again') : k.ok ? c.ok('passed') + c.dim(' — it did not change unrelated answers') : c.err('failed')]);
       if (k.executed) {
         pairs.push(['  taught', `${k.taught.hits}/${k.taught.total} trained sentences answer right${k.taught.sampled ? ` (a sample of ${k.taught.sampled.checked} of ${k.taught.sampled.of} questions)` : ''}${k.heldout?.total ? ` · other phrasings ${k.heldout.hits}/${k.heldout.total}` : ''}`]);
         pairs.push(['  side effects', `${k.locality.same}/${k.locality.total} unrelated answers unchanged ${k.locality.ok ? c.ok('✓') : c.err('✗')}`]);
+        /*
+         * Item 182 — this line was printed only when `total > 0`, and the stub sets it to 0, so on every demo node
+         * the base was never named and "checks passed" appeared with the base-regression check silently skipped.
+         * The line is printed whenever the lesson HAS a base; when nothing was measured it says so.
+         */
         if (k.parent_regression.total) pairs.push(['  parents', `${k.parent_regression.hit}/${k.parent_regression.total} still right ${k.parent_regression.ok ? c.ok('✓') : c.err('✗')}`]);
+        else if (j.bases?.length || j.context_patch_ids?.length) {
+          const names = (j.bases ?? []).map((b) => b.name ?? b.patch_id).join(', ') || (j.context_patch_ids ?? []).join(', ');
+          pairs.push(['  parents', c.warn(`not measured on this node — nothing checked whether ${names} still answers its own questions${k.simulated ? ' (this node simulates its checks)' : ''}`)]);
+        }
         if (k.reverted_and_reapplied) pairs.push(['  note', 'the model server restarted during the check; the lesson was re-applied']);
       }
       if (k.simulated && !k.note) pairs.push(['  note', c.warn('simulated — this node has no model server, so nothing was measured on a live model')]);
@@ -373,6 +402,29 @@ export function renderTeachStatus(r: TeachStatusResult): string {
         { key: 'b', title: 'BEFORE', get: (f) => (f.base_answer ?? '-').replace(/\s+/g, ' ').slice(0, 28) }, { key: 'af', title: 'AFTER', get: (f) => (f.after_answer ?? '-').replace(/\s+/g, ' ').slice(0, 28) },
         { key: 'h', title: 'HIT', get: (f) => (f.hit === undefined ? c.dim('-') : f.hit ? c.ok('✓') : c.err('✗')) },
       ]));
+    }
+    /*
+     * Items 180 / 181 — the questions that never made it into the lesson.
+     *
+     * `overlapsListing` and the pre-flight drop a row whose question is already answered, and the job stored only
+     * counts: `preflight: {checked 2, of 2, known 0, overlaps 1}`. "trained 1 of 2 questions" was the whole
+     * explanation, and the publisher could not tell WHICH row vanished without diffing files. Worse, the pre-flight
+     * had ASKED the model each of them and had its answer — that is how it decided — and threw it away, so the first
+     * step of every derivative ("what does the base already cover?") meant re-asking each question by hand in chat.
+     */
+    const dropped = j.preflight?.dropped ?? [];
+    if (dropped.length) {
+      const why = (d: { reason: string; listing_id?: string; listing_name?: string }) =>
+        d.reason === 'already_known' ? c.dim('the model already answers this')
+          : d.reason === 'in_base' ? c.dim(`already in ${d.listing_name ?? d.listing_id ?? 'the base'}`)
+            : c.warn(`already sold here as ${d.listing_name ?? d.listing_id ?? 'another knowledge'}`);
+      lines.push('', c.head(`not trained — ${dropped.length} of ${j.preflight?.of ?? dropped.length} question(s)`), table(dropped, [
+        { key: 'l', title: 'LINE', get: (d) => String(d.index + 1), align: 'right' },
+        { key: 'q', title: 'QUESTION', get: (d) => d.prompt.replace(/\s+/g, ' ').slice(0, 48) },
+        { key: 'b', title: 'ANSWER ALREADY THERE', get: (d) => (d.base_answer ?? '-').replace(/\s+/g, ' ').slice(0, 34) },
+        { key: 'w', title: 'WHY', get: why },
+      ]));
+      lines.push(c.dim('these questions were left out before training. Change the answer you want and train them again, or take them out of the file.'));
     }
     if (j.patch_id) lines.push('', c.dim(`knowledge page: ${r.node}/patch/${j.patch_id} · ainize patch get ${j.patch_id}`));
     else if (j.status === 'READY') lines.push('', c.dim([
