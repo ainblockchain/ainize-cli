@@ -142,6 +142,15 @@ export interface TrackQuote {
   items: TrackItem[]; current: string[]; retired: string[]; buy: string[];
   total: { currency: string; amount: string }[]; currency: string; balance: number | null;
   runtime_available: boolean; runtime_error: string | null;
+  /** What following it costs per period, and what its own last 30 days cost (item 359). */
+  subscription?: SubscriptionQuote | null;
+}
+/** `GET /api/branches/:name/subscription` — the curation fee, the period this node has paid for, and the run rate. */
+export interface SubscriptionQuote {
+  branch: string; owner: string;
+  terms: { price: string; currency: string; period_days: number } | null;
+  paid_until: number | null; paid_at: number | null; periods_paid: number; due: boolean; currency: string;
+  run_rate: { days: number; knowledge_added: number; knowledge_spend: string; per_period: string | null; per_30_days: string };
 }
 export interface SubscribeResult {
   ok: true; branch: string; action: 'subscribe' | 'unsubscribe' | 'sync';
@@ -181,6 +190,15 @@ function renderQuote(q: TrackQuote): string {
     ], 'this track has no knowledge on it yet'),
     '',
     kv([
+      /*
+       * Item 359 — a track had no terms at all, so a subscriber paid the full price of every bake for ever and the
+       * curator earned nothing for curating. What one period costs, and what the track's own last 30 days actually
+       * cost, are both said here: before the decision, not after the thirtieth full-price sale.
+       */
+      ...(q.subscription?.terms ? [['curation fee', Number(q.subscription.terms.price) > 0
+        ? `${q.subscription.terms.price} ${q.subscription.terms.currency} per ${q.subscription.terms.period_days} day(s) to ${shortAddr(q.subscription.owner, 8)}${q.subscription.due ? c.warn('  — due now') : c.ok(`  — paid until ${new Date(q.subscription.paid_until ?? 0).toISOString().slice(0, 10)}`)}`
+        : c.dim('none — this track is free to follow')] as [string, string]] : []),
+      ...(q.subscription && q.subscription.run_rate.knowledge_added > 0 ? [['recent run rate', c.dim(`${q.subscription.run_rate.knowledge_added} knowledge added in the last 30 days, ${q.subscription.run_rate.knowledge_spend} ${q.currency} of them${q.subscription.terms ? ` — about ${q.subscription.run_rate.per_30_days} ${q.currency} for 30 days including the fee` : ''}`)] as [string, string]] : []),
       ['to pay now', q.buy.length ? c.warn(money(q.total)) : c.dim('nothing')],
       ['balance', q.balance === null ? c.dim('(chain wallet — not read here)') : `${q.balance} ${q.currency}`],
       ['model', q.runtime_available ? 'available — the current items are loaded after they are bought' : c.warn(`${q.runtime_error ?? 'unreachable'} — the items are bought but nothing is loaded until it is back`)],
@@ -224,6 +242,24 @@ export async function branchSubscribe(ctx: CliContext, name: string, action: 'su
       throw err;
     });
   emit(ctx, r, (x) => renderSubscribe(x, name));
+  return r;
+}
+
+/**
+ * `ainize branch terms <name> --price <n> --period-days <d>` — what following your track costs (item 359).
+ *
+ * A track had no terms anywhere: prices are per anchor, so the most loyal subscriber to a daily track was the most
+ * expensive customer, and nobody was paid to keep a channel good. The fee is for the CURATING; the knowledge on the
+ * track is still bought from whoever published it.
+ */
+export async function branchTerms(ctx: CliContext, name: string, opts: { price?: string; periodDays?: number; clear?: boolean } = {}): Promise<{ branch: BranchInfo }> {
+  const client = new NodeClient(ctx);
+  const body = opts.clear ? { price: null } : { price: opts.price, period_days: opts.periodDays };
+  const r = await client.post<{ branch: BranchInfo & { terms?: { price: string; currency: string; period_days: number } } }>(`/api/branches/${encodeURIComponent(name)}/terms`, body);
+  emit(ctx, r, (x) => (x.branch.terms
+    ? c.ok('✓ ') + `${c.id(name)} costs ${Number(x.branch.terms.price) === 0 ? 'nothing' : `${x.branch.terms.price} ${x.branch.terms.currency}`} per ${x.branch.terms.period_days} day(s) to follow`
+      + c.dim(`\n  the fee is paid to this node for curating; every knowledge on the track is still bought from whoever published it`)
+    : c.ok('✓ ') + `${c.id(name)} is free to follow — no curation fee`));
   return r;
 }
 

@@ -289,7 +289,8 @@ const publishOpts = (y: Y): Y => y
   .option('branch', { type: 'string', describe: `knowledge track to publish it on (see \`${PROG} branch ls\`)` })
   .option('topic', { type: 'string', describe: 'ain-js knowledge topic path (e.g. finance/krx); default: patches/<model>' })
   .option('license', { type: 'string', describe: 'licence written onto the public record: an SPDX id (CC-BY-4.0, MIT, Proprietary) or free text. Omitted: no licence on the record' })
-  .option('billing', { choices: ['per_download', 'per_apply_hour', 'per_hit'] as const, describe: 'how buyers are charged (default: per_download)' })
+  // Item 360: per-hour and per-use were offered here and metered nowhere — a sale settles the price once, per download.
+  .option('billing', { choices: ['per_download'] as const, describe: 'how buyers are charged. Only per_download is metered: one payment per download (per-hour and per-use are not implemented by any node)' })
   .option('contributor', { type: 'string', array: true, describe: 'data provider credited and paid on the record: addr:name:share — share = fraction of YOUR share of each sale (repeatable, ≤ 4, Σ ≤ 1)' })
   .option('dataset', { type: 'string', describe: 'the training set behind this knowledge (.jsonl/.csv on the node machine) — pinned and served under --dataset-access' })
   .option('dataset-access', { choices: ['public', 'derivative', 'private'] as const, describe: 'who may read those questions: anyone / people building on this knowledge (default) / nobody' })
@@ -681,6 +682,17 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
     run((ctx, a: G & { name: string }) => branch.branchArchive(ctx, a.name, true)))
   .command('unarchive <name>', 'Put an archived track back on the lists', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
     run((ctx, a: G & { name: string }) => branch.branchArchive(ctx, a.name, false)))
+  // Item 359: a track had no price object at all — the most loyal subscriber to a daily track was the most
+  // expensive customer, and nobody was paid to keep a channel good.
+  .command('terms <name>', 'What following your track costs, per period (the curation fee)', (yy: Y) => yy
+    .positional('name', { type: 'string', demandOption: true, describe: 'a track you own' })
+    .option('price', { type: 'string', describe: `the fee per period in this node's currency ("0" = free to follow)` })
+    .option('period-days', { type: 'number', describe: 'how many days one payment covers (default 30)' })
+    .option('clear', { type: 'boolean', default: false, describe: 'remove the fee — the track becomes free to follow again' })
+    .example('$0 branch terms law/KR --price 5 --period-days 30', '5 a month for curating it; the knowledge on it is still bought from its publishers')
+    .example('$0 branch terms law/KR --clear', 'free to follow again'),
+    run((ctx, a: G & { name: string; price?: string; 'period-days'?: number; clear?: boolean }) =>
+      branch.branchTerms(ctx, a.name, { price: a.price, periodDays: a['period-days'], clear: a.clear })))
   .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy
     .positional('name', { type: 'string', demandOption: true, describe: `the track (see \`${PROG} branch ls\`)` })
     .positional('patchId', { type: 'string', demandOption: true, describe: 'the knowledge to add — every subscriber buys and loads it' })
