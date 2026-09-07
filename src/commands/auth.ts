@@ -5,7 +5,6 @@ import { createInterface } from 'node:readline';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hashPassword, loadConfig, saveConfig } from '@ainize/core';
-import { Store } from '@ainize/node';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, readState, writeState, type CliContext } from '../context.js';
 import { runningPid } from '../pid.js';
@@ -144,7 +143,15 @@ export async function password(ctx: CliContext, a: { password?: string; current?
     // Drop the sessions too, or a console tab signed in with the old password outlives the reset. The node is
     // stopped (checked above), so its SQLite file is ours to open.
     let dropped = 0;
-    try { const store = new Store(join(cfg.dataDir, 'node.sqlite')); dropped = store.deleteAllSessions(); store.close(); }
+    // The store is the server's (`@ainize/node`, an optional peer): loaded here, not at the top of the file, so a
+    // CLI installed without it still runs every command that talks to a node over HTTP. If it is absent the reset
+    // still happens — the password in config.json is what `login` checks — and the warning says what was left.
+    try {
+      const { Store } = await import('@ainize/node');
+      const store = new Store(join(cfg.dataDir, 'node.sqlite'));
+      dropped = store.deleteAllSessions();
+      store.close();
+    }
     catch (e) { warn(ctx, `could not sign existing sessions out (${(e as Error).message}) — sign out in the web console by hand`); }
     ok(ctx, `operator password reset in ${ctx.home}/config.json ${c.dim(`(start the node and run \`${PROG} login\`)`)}`);
     if (dropped) info(ctx, c.dim(`${dropped} existing session(s) signed out`));

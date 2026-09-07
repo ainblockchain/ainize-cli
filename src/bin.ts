@@ -26,7 +26,7 @@ import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
 import * as dataset from './commands/dataset.js';
-import { EVENT_KINDS, EVENT_LEVELS } from '@ainize/node';
+import { EVENT_KINDS, EVENT_LEVELS } from '@ainize/core';
 import { RECORD_KINDS, type RecordKind } from '@ainize/core';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean; wide?: boolean };

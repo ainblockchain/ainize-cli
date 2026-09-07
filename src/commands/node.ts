@@ -6,8 +6,25 @@ import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, un
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { applyEnv, type NodeConfig } from '@ainize/core';
-import { startNode, seedDemo, humanBytes, type DiskReport, type GcCandidate, type RunningNode, type SeedOptions, type SeedReport } from '@ainize/node';
+import { applyEnv, humanBytes, type NodeConfig, type DiskReport, type GcCandidate, type SeedOptions, type SeedReport } from '@ainize/core';
+import type { RunningNode } from '@ainize/node';
+
+/**
+ * `@ainize/node` is the server, and it is an OPTIONAL peer of this package (see package.json).
+ *
+ * Every other command here talks to a node over HTTP and works against somebody else's machine — listing
+ * knowledge, buying, teaching, chatting. Only `start` and `seed` run a node in this process, and they are the
+ * only reason a terminal would ever need express, sqlite, better-sqlite3 and the trainer on disk. Loading it
+ * here, at the moment those two are called, keeps `npm i -g @ainize/cli` small and keeps this package
+ * installable where the server cannot even build.
+ */
+async function server() {
+  try {
+    return await import('@ainize/node');
+  } catch {
+    throw new CliError(`running a node in this process needs the server package: \`npm i @ainize/node\`\n(every other ${PROG} command works against a remote node and does not.)`);
+  }
+}
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { logFile, pidFile, runningPid } from '../pid.js';
@@ -134,6 +151,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     ok(ctx, `node started in the background (pid ${child.pid}) — port ${cfg.port}\n  ${c.dim(`logs: ${logFile(ctx.home)}   stop: ${PROG} stop`)}`);
     return { detached: true, pid: child.pid!, log: logFile(ctx.home) };
   }
+  const { startNode } = await server();
   const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet });
   writeFileSync(pidFile(ctx.home), String(process.pid));
   const cleanup = async () => { try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ } await node.stop(); process.exit(0); };
@@ -464,6 +482,7 @@ export async function seed(ctx: CliContext, opts: SeedOptions = {}): Promise<See
       `  stop it, seed, start again:  ${PROG} stop && ${PROG} seed && ${PROG} start -d`,
     ].join('\n'));
   }
+  const { startNode, seedDemo } = await server();
   const node = await startNode(cfg, { home: ctx.home, listen: false, quiet: true, serveWeb: false });
   try {
     const rep = await seedDemo(node.market, opts);

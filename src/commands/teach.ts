@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { identityFromPrivateKey, signMessage, type TeachDatasetRef, type TeachEffort, type TeachTrainingSpec } from '@ainize/core';
-import { teachAuthHeaderFor } from '@ainize/node';
+import { teachAuthHeaderFor } from '@ainize/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, shortAddr, shortHash, table } from '../output.js';
