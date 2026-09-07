@@ -312,7 +312,29 @@ const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'pu
   patch.patchPublish(ctx, { ...a, datasetAccess: a['dataset-access'], datasetLicense: a['dataset-license'], keepOthers: a['keep-others'], asOf: a['as-of'], announce: !!a.announce }));
 
 // ---------------------------------------------------------------- patches
-cli.command('patch', 'Publish, inspect, verify, buy and apply knowledge patches', (y: Y) => fail(y)
+cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge patches — or give an ENS name to use one in a single line', (y: Y) => fail(y)
+  // `ainize patch vaults.defi.engram.eth` — the default command of the group, so a NAME lands here while every
+  // subcommand below still wins on an exact match. It replaces the sequence an operator used to type by hand:
+  //   ainize patch ls --node http://their-node:3402 --status LISTED -q "<topic>"
+  //   ainize login && ainize use <id>
+  // The name carries both halves those lines supplied: `ainize.node` is the --node, `ainize.patch` is the id.
+  .command('$0 [name]', false, (yy: Y) => yy
+    .positional('name', { type: 'string', describe: 'an ENS name, e.g. vaults.defi.engram.eth' })
+    .option('apply', { type: 'boolean', default: true, describe: 'load it into the model after buying (--no-apply to only buy)' })
+    .option('yes', { type: 'boolean', default: false, describe: 'do not ask before paying' })
+    .option('max-price', { type: 'number', describe: 'refuse if the total is above this' })
+    .option('resolve-only', { type: 'boolean', default: false, describe: 'print where the name points and stop — buy nothing' })
+    .option('no-peer', { type: 'boolean', default: false, describe: 'do not add the seller node as a peer' })
+    .option('rpc', { type: 'string', describe: 'JSON-RPC endpoint for on-chain resolution (or ENS_RPC_URL)' })
+    .option('registry', { type: 'string', describe: 'ENS registry address — never assumed, because ENSv2 is not final (or ENS_REGISTRY)' })
+    .option('names', { type: 'string', describe: 'names file to resolve from, instead of the default search order' })
+    .example('$0 patch vaults.defi.engram.eth', 'resolve, peer, log in, quote, pay, download, load')
+    .example('$0 patch vaults.defi.engram.eth --resolve-only', 'just show where the name points')
+    .example('$0 patch vaults.defi.engram.eth --yes --max-price 30', 'unattended, with a budget'),
+  run((ctx, a: G & { name?: string; apply: boolean; yes: boolean; 'max-price'?: number; 'resolve-only'?: boolean; 'no-peer'?: boolean; rpc?: string; registry?: string; names?: string }) => {
+    if (!a.name) throw new CliError(`give an ENS name (e.g. ${PROG} patch vaults.defi.engram.eth) or a subcommand — see ${PROG} patch --help`);
+    return patch.patchByName(ctx, a.name, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], resolveOnly: a['resolve-only'], noPeer: a['no-peer'], rpc: a.rpc, registry: a.registry, namesFile: a.names });
+  }))
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
     .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
     .option('model', { type: 'string', describe: 'only knowledge for this model id_M (e.g. Qwen3.8-Flash-Next)' })

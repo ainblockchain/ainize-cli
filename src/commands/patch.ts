@@ -7,6 +7,8 @@ import { basename, resolve } from 'node:path';
 import { verificationCount } from '@ngram/core';
 import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
 import { NodeClient, query } from '../client.js';
+import { looksLikeEnsName, resolveName, type ResolveOptions, type ResolvedName } from '../ens.js';
+import * as auth from './auth.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { ask, c, confirm, emit, emitStep, fmtBytes, fmtTime, info, kv, ok, shortAddr, shortHash, statusColor, table, warn } from '../output.js';
 
@@ -1559,3 +1561,82 @@ export async function patchImport(ctx: CliContext, a: ImportArgs): Promise<Impor
 }
 
 function warnLine(ctx: CliContext, msg: string) { if (!ctx.quiet && !ctx.json) process.stderr.write(c.warn('warning: ') + msg + '\n'); }
+
+// ---------------------------------------------------------------- `ainize patch <name.eth>`
+
+export interface ByNameArgs extends BuyArgs, ResolveOptions {
+  /** stop after resolving and printing where the name points — do not buy anything */
+  resolveOnly?: boolean;
+  /** do not add the seller's node as a peer (the blob then has to come from somewhere this node already knows) */
+  noPeer?: boolean;
+}
+
+/**
+ * One line to use knowledge somebody else published, given only its name.
+ *
+ * This replaces a three-command sequence in which the operator carried an id between two machines by hand:
+ *
+ *   ainize patch ls --node http://their-node:3402 --status LISTED -q "<topic>"
+ *   ainize login && ainize use <id>
+ *
+ * WHAT THE NAME SUPPLIES is exactly what those commands supplied by hand: `ainize.node` is the `--node` of the
+ * first line, `ainize.patch` is the `<id>` of the third. Nothing else changes, and in particular THE BUYING
+ * STILL HAPPENS ON YOUR OWN NODE. `--node` in `patch ls` points at the seller because you are reading their
+ * catalogue; `use` has always run against your node, because your node is what pays, downloads and applies.
+ * Resolving a name must not quietly move that: a command that logged you into someone else's node and applied
+ * knowledge there would be a different operation wearing this one's name.
+ *
+ * So the seller's endpoint is used for the one thing it is for — telling your node where to fetch from, as a
+ * peer — and the rest of the flow is the local one you would have typed.
+ */
+export async function patchByName(ctx: CliContext, name: string, a: ByNameArgs = {}): Promise<unknown> {
+  if (!looksLikeEnsName(name)) {
+    throw new CliError(`${name} is not a name this command can resolve. Give a name like vaults.defi.engram.eth, ` +
+      `or use \`${PROG} patch get <id>\` / \`${PROG} use <id>\` for a knowledge id.`);
+  }
+
+  let r: ResolvedName;
+  try {
+    r = await resolveName(name, { rpc: a.rpc, registry: a.registry, namesFile: a.namesFile, config: (ctx.cfg as { ens?: ResolveOptions['config'] } | null)?.ens ?? null, home: ctx.home });
+  } catch (e) {
+    throw new CliError((e as Error).message);
+  }
+
+  // --json prints the resolution as data; a terminal gets one line naming the source, because "where did this
+  // id come from" is the question a name makes easy to stop asking.
+  emit(ctx, { resolved: { name: r.name, node: r.node, patch: r.patch, source: r.source, where: r.where } },
+    (d) => `${c.bold(d.resolved.name)} → ${d.resolved.patch} on ${d.resolved.node}  ${c.dim(`(${d.resolved.source}: ${d.resolved.where})`)}`);
+  if (a.resolveOnly) return r;
+
+  // The seller's endpoint is for FETCHING, not for logging into. Peering is idempotent on the node side and it
+  // is what lets the blob come over p2p rather than requiring the anchor to already be local.
+  if (!a.noPeer && r.node.replace(/\/+$/, '') !== ctx.nodeUrl.replace(/\/+$/, '')) {
+    const client = new NodeClient(ctx);
+    await client.post('/api/peers', { endpoint: r.node.replace(/\/+$/, '') }).catch((e: unknown) => {
+      // A peer that cannot be added is not fatal: the knowledge may already be visible on a shared ledger.
+      // Say so rather than failing, and let the buy report the real problem if there is one.
+      warn(ctx, `could not add ${r.node} as a peer (${(e as Error).message}) — continuing, in case this knowledge is already on your ledger`);
+    });
+  }
+
+  // `use` is an operator action on YOUR node, so this is your login, not theirs.
+  if (!ctx.token) {
+    const r2 = await auth.login(ctx, {});
+    ctx = { ...ctx, token: r2.token };
+  }
+
+  try {
+    return await patchUse(ctx, r.patch, a);
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (/not found/i.test(msg)) {
+      throw new CliError(
+        `${r.name} points at ${r.patch} on ${r.node}, but your node does not know that knowledge.\n` +
+        `  • if it is a DRAFT it is private to its publisher and cannot be bought\n` +
+        `  • if it is announced on a different ledger than yours, your node can never read its anchor\n` +
+        `  • if ${r.node} is unreachable, the peer add above will have said so\n` +
+        `Check with: ${PROG} patch ls --node ${r.node} --status LISTED`, 1);
+    }
+    throw e;
+  }
+}
