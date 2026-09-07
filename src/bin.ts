@@ -324,16 +324,19 @@ cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge p
     .option('yes', { type: 'boolean', default: false, describe: 'do not ask before paying' })
     .option('max-price', { type: 'number', describe: 'refuse if the total is above this' })
     .option('resolve-only', { type: 'boolean', default: false, describe: 'print where the name points and stop — buy nothing' })
-    .option('no-peer', { type: 'boolean', default: false, describe: 'do not add the seller node as a peer' })
+    // Declared as `peer`, not `no-peer`: yargs' boolean negation turns `--no-X` into `X: false` for an option
+    // NAMED X, so an option literally called `no-peer` left "peer" on the line as a stray positional and the
+    // parser reported `unknown command "peer"`. `--no-apply` worked for exactly the reason this did not.
+    .option('peer', { type: 'boolean', default: true, describe: 'add the seller node as a peer so the body can come over p2p (--no-peer to skip)' })
     .option('rpc', { type: 'string', describe: 'JSON-RPC endpoint for on-chain resolution (or ENS_RPC_URL)' })
     .option('registry', { type: 'string', describe: 'ENS registry address — never assumed, because ENSv2 is not final (or ENS_REGISTRY)' })
     .option('names', { type: 'string', describe: 'names file to resolve from, instead of the default search order' })
     .example('$0 patch vaults.defi.engram.eth', 'resolve, peer, log in, quote, pay, download, load')
     .example('$0 patch vaults.defi.engram.eth --resolve-only', 'just show where the name points')
     .example('$0 patch vaults.defi.engram.eth --yes --max-price 30', 'unattended, with a budget'),
-  run((ctx, a: G & { name?: string; apply: boolean; yes: boolean; 'max-price'?: number; 'resolve-only'?: boolean; 'no-peer'?: boolean; rpc?: string; registry?: string; names?: string }) => {
+  run((ctx, a: G & { name?: string; apply: boolean; yes: boolean; 'max-price'?: number; 'resolve-only'?: boolean; peer?: boolean; rpc?: string; registry?: string; names?: string }) => {
     if (!a.name) throw new CliError(`give an ENS name (e.g. ${PROG} patch vaults.defi.engram.eth) or a subcommand — see ${PROG} patch --help`);
-    return patch.patchByName(ctx, a.name, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], resolveOnly: a['resolve-only'], noPeer: a['no-peer'], rpc: a.rpc, registry: a.registry, namesFile: a.names });
+    return patch.patchByName(ctx, a.name, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], resolveOnly: a['resolve-only'], noPeer: a.peer === false, rpc: a.rpc, registry: a.registry, namesFile: a.names });
   }))
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
     .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
