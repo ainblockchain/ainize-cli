@@ -1,19 +1,20 @@
 /**
- * CLI context: where the node config lives (NGRAM_HOME), which node URL to talk to,
+ * CLI context: where the node config lives (AINIZE_HOME), which node URL to talk to,
  * the stored operator bearer token (cli.json) and output flags.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { DEFAULT_HOME, configPath, loadConfig, type NodeConfig } from '@ngram/core';
+import { DEFAULT_HOME, configPath, loadConfig, type NodeConfig } from '@ainize/core';
 
 export interface CliState { token?: string; nodeUrl?: string; }
 
 /**
- * Name the binary was invoked as. The package installs two bins pointing at the same entry — `ainize` (the
- * product name: AI + -ize, "ainize your knowledge", like the 2019 `ainize` CLI that ainized GitHub repos) and
- * `ngram` (the historical name) — so help text and hints use whichever the user typed.
+ * Name the binary was invoked as. There is one: `ainize` (AI + -ize, "ainize your knowledge", like the 2019
+ * `ainize` CLI that ainized GitHub repos). The historical `ngram` alias was withdrawn when the packages moved
+ * to the `@ainize` scope — item 110 counted fourteen hints that told you to run a name the product no longer
+ * uses, starting with the first line `ainize init` prints.
  */
-export const PROG_NAMES = ['ainize', 'ngram'] as const;
+export const PROG_NAMES = ['ainize'] as const;
 export type ProgName = (typeof PROG_NAMES)[number];
 export function progName(argv1: string | undefined = process.argv[1]): ProgName {
   const base = basename(argv1 ?? '').replace(/\.(c|m)?js$/, '');
@@ -60,23 +61,23 @@ export function writeState(home: string, state: CliState): void {
 }
 
 export function resolveHome(explicit?: string): string {
-  return explicit ?? process.env.NGRAM_HOME ?? DEFAULT_HOME;
+  return explicit ?? process.env.AINIZE_HOME ?? DEFAULT_HOME;
 }
 
-/** A TCP port — what config.json's `port` and NGRAM_PORT must hold before a URL can be built from them. */
+/** A TCP port — what config.json's `port` and AINIZE_PORT must hold before a URL can be built from them. */
 const isPort = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 65535;
 
-/** Build a context from global flags. Node URL precedence: --node > NGRAM_NODE_URL > cli.json > NGRAM_PORT > config port > default. */
+/** Build a context from global flags. Node URL precedence: --node > AINIZE_NODE_URL > cli.json > AINIZE_PORT > config port > default. */
 export function buildContext(opts: { home?: string; node?: string; json?: boolean; quiet?: boolean } = {}): CliContext {
   const home = resolveHome(opts.home);
   const cfg = loadConfig(home);
   const state = readState(home);
-  const envPort = process.env.NGRAM_PORT;
-  if (envPort !== undefined && !isPort(Number(envPort))) throw new CliError(`NGRAM_PORT must be a port number (1–65535) — got ${JSON.stringify(envPort)}`, 2);
+  const envPort = process.env.AINIZE_PORT;
+  if (envPort !== undefined && !isPort(Number(envPort))) throw new CliError(`AINIZE_PORT must be a port number (1–65535) — got ${JSON.stringify(envPort)}`, 2);
   const port = envPort !== undefined ? Number(envPort) : cfg?.port ?? 3402;
-  const url = opts.node ?? process.env.NGRAM_NODE_URL ?? state.nodeUrl ?? `http://localhost:${port}`;
+  const url = opts.node ?? process.env.AINIZE_NODE_URL ?? state.nodeUrl ?? `http://localhost:${port}`;
   const nodeSource: NodeUrlSource = opts.node ? 'flag'
-    : process.env.NGRAM_NODE_URL ? 'env'
+    : process.env.AINIZE_NODE_URL ? 'env'
     : state.nodeUrl ? 'state'
     : envPort !== undefined ? 'env'
     : cfg ? 'config'
@@ -95,11 +96,11 @@ export function buildContext(opts: { home?: string; node?: string; json?: boolea
     try { parsed = new URL(nodeUrl); } catch { /* not a URL at all */ }
     // note `new URL('localhost:3402')` parses — with protocol "localhost:" — so the scheme has to be checked too
     if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-      const where = nodeSource === 'flag' ? '--node' : process.env.NGRAM_NODE_URL ? 'NGRAM_NODE_URL' : `the node URL in ${statePath(home)}`;
+      const where = nodeSource === 'flag' ? '--node' : process.env.AINIZE_NODE_URL ? 'AINIZE_NODE_URL' : `the node URL in ${statePath(home)}`;
       throw new CliError(`${where} must be a full URL — did you mean http://${nodeUrl.replace(/^\w+:\/\//, '').replace(/^\/+/, '')}?`, 2);
     }
   }
-  return { home, nodeUrl, nodeSource, nodeUrlProblem, token: process.env.NGRAM_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
+  return { home, nodeUrl, nodeSource, nodeUrlProblem, token: process.env.AINIZE_TOKEN ?? state.token ?? null, json: !!opts.json, quiet: !!opts.quiet, cfg };
 }
 
 /**

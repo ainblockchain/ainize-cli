@@ -1,7 +1,7 @@
 /**
  * `ainize branch …`, `ainize route`, `ainize wallet`
  */
-import type { BranchInfo, CatalogEntry, PeerInfo } from '@ngram/core';
+import type { BranchInfo, CatalogEntry, PeerInfo } from '@ainize/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, confirm, emit, fmtTime, info, kv, ok, shortAddr, table } from '../output.js';

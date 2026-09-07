@@ -7,7 +7,7 @@
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
-import { AinLedger, applyEnv } from '@ngram/core';
+import { AinLedger, applyEnv } from '@ainize/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, kv, ok, warn } from '../output.js';
@@ -16,7 +16,7 @@ import { requireConfig } from './init.js';
 const execFileP = promisify(execFile);
 const require = createRequire(import.meta.url);
 
-export const CHAIN_CONTAINER = 'ngram-ain';
+export const CHAIN_CONTAINER = 'ainize-ain';
 export const CHAIN_IMAGE = 'ainblockchain/ain-blockchain:latest';
 export const CHAIN_PORT = 8081;
 export const GENESIS = { address: '0x00ADEc28B6a845a085e03591bE7550dd68673C1C', privateKey: 'b22c95ffc4a5c096f7d7d0487ba963ce6ac945bdc91c79b64ce209de289bec96' };
@@ -99,7 +99,7 @@ export function isLocalChainUrl(provider: string): boolean {
 
 /**
  * `chain status` reported the health of the CONFIGURED provider beside the container state of the hard-coded
- * `ngram-ain` name, so a node pointed at another chain was told `container ngram-ain: running` next to
+ * `ainize-ain` name, so a node pointed at another chain was told `container ainize-ain: running` next to
  * `reachable no` — two confident signals about two different chains (item 142). The container is only this
  * provider's when the provider IS the local chain.
  */

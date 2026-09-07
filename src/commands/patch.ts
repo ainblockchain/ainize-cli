@@ -4,8 +4,8 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { verificationCount } from '@ngram/core';
-import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ngram/core';
+import { verificationCount } from '@ainize/core';
+import type { BenchmarkSpec, CatalogEntry, Contributor, LedgerRecord, PatchAnchor } from '@ainize/core';
 import { NodeClient, query } from '../client.js';
 import { looksLikeEnsName, resolveName, type ResolveOptions, type ResolvedName } from '../ens.js';
 import * as auth from './auth.js';

@@ -12,7 +12,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_TEACH_CONFIG, buildStamp, defaultConfig, loadConfig, saveConfig } from '@ngram/core';
+import { DEFAULT_TEACH_CONFIG, buildStamp, defaultConfig, loadConfig, saveConfig } from '@ainize/core';
 import { buildContext, requireNodeTarget, type CliError } from '../src/context.js';
 import { nodeVersion, start, stop } from '../src/commands/node.js';
 import { configGet, configSet, configShow, configUnset, init, keysBackup, readKeyBackup } from '../src/commands/init.js';
@@ -71,7 +71,7 @@ test('`start -d` waits for the child to answer, and reports node.log when it die
     const port = await new Promise<number>((res) => busy.listen(0, '127.0.0.1', () => res((busy.address() as { port: number }).port)));
     saveConfig(defaultConfig({ home: h, name: 'busy', port, ledger: 'local' }), h);
     const ctx = buildContext({ home: h, quiet: true });
-    process.env.NGRAM_START_TIMEOUT_MS = '15000';
+    process.env.AINIZE_START_TIMEOUT_MS = '15000';
     await assert.rejects(() => start(ctx, { detach: true }), (e: CliError) => {
       assert.match(e.message, /node exited while starting \(exit code 1\)/);
       assert.match(e.message, /EADDRINUSE/);                                  // the reason, from node.log
@@ -82,7 +82,7 @@ test('`start -d` waits for the child to answer, and reports node.log when it die
   } finally {
     busy.close();
     rmSync(h, { recursive: true, force: true });
-    delete process.env.NGRAM_START_TIMEOUT_MS;
+    delete process.env.AINIZE_START_TIMEOUT_MS;
   }
 });
 
@@ -130,7 +130,7 @@ test('`stop` escalates to SIGKILL and only reports success on a confirmed exit (
     saveConfig(defaultConfig({ home: h, name: 'stubborn', port: 3999, ledger: 'local' }), h);
     writeFileSync(join(h, 'node.pid'), String(child.pid));
     process.kill(child.pid!, 'SIGSTOP');
-    process.env.NGRAM_STOP_GRACE_MS = '1000';
+    process.env.AINIZE_STOP_GRACE_MS = '1000';
     const t0 = Date.now();
     const r = await stop(buildContext({ home: h, quiet: true }));
     assert.equal(r.stopped, true);
@@ -141,7 +141,7 @@ test('`stop` escalates to SIGKILL and only reports success on a confirmed exit (
   } finally {
     try { process.kill(child.pid!, 'SIGKILL'); } catch { /* already gone */ }
     rmSync(h, { recursive: true, force: true });
-    delete process.env.NGRAM_STOP_GRACE_MS;
+    delete process.env.AINIZE_STOP_GRACE_MS;
   }
 });
 
@@ -287,9 +287,9 @@ test('a config whose port is not a number is named as such, and never locks the 
     assert.equal(buildContext({ home: h, quiet: true }).nodeUrlProblem, null);
     // a typed URL is still checked as one
     assert.throws(() => buildContext({ home: h, node: 'localhost:3999' }), /--node must be a full URL — did you mean http:\/\/localhost:3999\?$/);
-    process.env.NGRAM_PORT = 'abc';
-    try { assert.throws(() => buildContext({ home: h }), /NGRAM_PORT must be a port number \(1–65535\) — got "abc"$/); }
-    finally { delete process.env.NGRAM_PORT; }
+    process.env.AINIZE_PORT = 'abc';
+    try { assert.throws(() => buildContext({ home: h }), /AINIZE_PORT must be a port number \(1–65535\) — got "abc"$/); }
+    finally { delete process.env.AINIZE_PORT; }
   } finally { rmSync(h, { recursive: true, force: true }); }
 });
 

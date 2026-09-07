@@ -1,12 +1,12 @@
 /**
- * `ainize init` / `ainize config` / `ainize keys` — local node configuration (NGRAM_HOME/config.json).
+ * `ainize init` / `ainize config` / `ainize keys` — local node configuration (AINIZE_HOME/config.json).
  */
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, hashPassword, loadConfig,
   createIdentity, identityFromPrivateKey, nearestConfigKey, saveConfig, validateConfig, type NodeConfig, type NodeRole,
-} from '@ngram/core';
+} from '@ainize/core';
 import { NodeClient } from '../client.js';
 import { promptLine, promptPassword } from './auth.js';
 import { warnLedgerMismatch } from './peers.js';
@@ -77,9 +77,9 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   }
   // Claim the node NOW rather than at its first HTTP call. Until a password exists, `POST /api/auth/setup` gives a
   // full operator session to whoever asks; the node only accepts that from its own machine, but a node that is
-  // already claimed cannot be taken at all. Interactive terminals are asked; scripts pass --password / NGRAM_PASSWORD
+  // already claimed cannot be taken at all. Interactive terminals are asked; scripts pass --password / AINIZE_PASSWORD
   // (or --no-password to start unclaimed on purpose, which is what `ainize login` then fixes). Item 121.
-  const wantPassword = a.password ?? process.env.NGRAM_PASSWORD;
+  const wantPassword = a.password ?? process.env.AINIZE_PASSWORD;
   let claimed: 'given' | 'typed' | null = null;
   if (!cfg.operatorPasswordHash && !a.noPassword) {
     if (wantPassword) {
@@ -451,7 +451,7 @@ export function decryptKey(cipher: NonNullable<KeyBackup['cipher']>, passphrase:
 }
 
 const passphraseOf = async (ctx: CliContext, given: string | undefined, question: string): Promise<string> => {
-  const p = given ?? process.env.NGRAM_KEY_PASSPHRASE;
+  const p = given ?? process.env.AINIZE_KEY_PASSPHRASE;
   if (p !== undefined) return p;
   if (!process.stdin.isTTY || ctx.quiet || ctx.json) return '';
   return promptPassword(question);
@@ -485,7 +485,7 @@ export async function readKeyBackup(ctx: CliContext, file: string, passphrase?: 
   if (backup.privateKey) return { privateKey: backup.privateKey.replace(/^0x/, ''), backup };
   if (!backup.cipher) throw new CliError(`${file} carries no key (neither \`privateKey\` nor \`cipher\`)`);
   const pass = await passphraseOf(ctx, passphrase, `Passphrase for ${file}: `);
-  if (!pass) throw new CliError('this backup is encrypted — pass --passphrase (or set NGRAM_KEY_PASSPHRASE)');
+  if (!pass) throw new CliError('this backup is encrypted — pass --passphrase (or set AINIZE_KEY_PASSPHRASE)');
   return { privateKey: decryptKey(backup.cipher, pass), backup };
 }
 

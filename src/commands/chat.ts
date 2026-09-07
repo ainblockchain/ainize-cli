@@ -8,8 +8,8 @@
  *   ainize chat --patch krx-all-2761,pixelplus-087600 "…"  load up to 3 knowledges together (list order; the last wins on overlap)
  */
 import { createInterface } from 'node:readline';
-import { verificationCount } from '@ngram/core';
-import type { CatalogEntry, RuntimeStatus } from '@ngram/core';
+import { verificationCount } from '@ainize/core';
+import type { CatalogEntry, RuntimeStatus } from '@ainize/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fitLine, info, statusColor, table } from '../output.js';

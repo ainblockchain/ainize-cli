@@ -5,13 +5,13 @@
  *   - a node URL                          → the node's teaching policy (accepting lessons? publish mode, trainer state, queue, limits)
  *   - a lesson URL (`…/chat?lesson=<id>`, `…/api/teach/jobs/<id>`) or a bare job id → that lesson's status
  *   - a teacher page (`…/teacher/<address>`) or a bare 0x address → the data provider's lessons and earnings
- * With the teaching key (`--key-file` = the browser's backup JSON, `--key` = hex, or NGRAM_TEACH_KEY) the lesson view is
+ * With the teaching key (`--key-file` = the browser's backup JSON, `--key` = hex, or AINIZE_TEACH_KEY) the lesson view is
  * the owner's full body (facts, before/after answers, checks); without it the node returns status only.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { identityFromPrivateKey, signMessage, type TeachDatasetRef, type TeachEffort, type TeachTrainingSpec } from '@ngram/core';
-import { teachAuthHeaderFor } from '@ngram/node';
+import { identityFromPrivateKey, signMessage, type TeachDatasetRef, type TeachEffort, type TeachTrainingSpec } from '@ainize/core';
+import { teachAuthHeaderFor } from '@ainize/node';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, kv, shortAddr, shortHash, table } from '../output.js';
@@ -46,7 +46,7 @@ export interface KeyOpts { key?: string; keyFile?: string }
 export const TEACH_KEY_FILE = 'teaching-key.json';
 
 /**
- * The key to sign with: `--key-file` / `--key` / `NGRAM_TEACH_KEY`, else `<home>/teaching-key.json` when it exists.
+ * The key to sign with: `--key-file` / `--key` / `AINIZE_TEACH_KEY`, else `<home>/teaching-key.json` when it exists.
  * Read-only — nothing is created here, so a read-only command never mints an identity (`ensureTeacherKey` does).
  */
 export function loadTeacherKeyFor(ctx: { home: string }, o: KeyOpts = {}): TeacherKey | null {
@@ -56,20 +56,20 @@ export function loadTeacherKeyFor(ctx: { home: string }, o: KeyOpts = {}): Teach
   return existsSync(p) ? parseTeacherKey(readFileSync(p, 'utf8')) : null;
 }
 
-/** Resolve the teaching key from --key / --key-file / NGRAM_TEACH_KEY (a hex key or a path to the backup). Null when none was given. */
+/** Resolve the teaching key from --key / --key-file / AINIZE_TEACH_KEY (a hex key or a path to the backup). Null when none was given. */
 export function loadTeacherKey(o: KeyOpts = {}): TeacherKey | null {
   if (o.keyFile) {
     if (!existsSync(o.keyFile)) throw new CliError(`key file not found: ${o.keyFile}`);
     return parseTeacherKey(readFileSync(o.keyFile, 'utf8'));
   }
-  const raw = o.key ?? process.env.NGRAM_TEACH_KEY;
+  const raw = o.key ?? process.env.AINIZE_TEACH_KEY;
   if (!raw) return null;
   if (!PRIV_RE.test(raw.trim()) && existsSync(raw)) return parseTeacherKey(readFileSync(raw, 'utf8'));
   return parseTeacherKey(raw);
 }
 
 /**
- * Legacy `x-ngram-auth: <address>:<ts>:<sig over "teach:<ts>">`. Still accepted by nodes (single-use per route) but not
+ * Legacy `x-ainize-auth: <address>:<ts>:<sig over "teach:<ts>">`. Still accepted by nodes (single-use per route) but not
  * bound to node / method / path / body — prefer `signedTeachHeader` (v2), which is what every command here sends.
  * @deprecated use signedTeachHeader
  */
@@ -190,7 +190,7 @@ export async function teachStatus(ctx: CliContext, target: string | undefined, o
   const key = loadTeacherKeyFor(ctx, opts);
   const client = new NodeClient({ ...ctx, nodeUrl: t.nodeUrl });
   const nodeAddress = key ? await nodeAddressOf(client) : null;
-  const signed = (path: string) => (key && nodeAddress ? { 'x-ngram-auth': signedTeachHeader(key, nodeAddress, 'GET', path) } : undefined);
+  const signed = (path: string) => (key && nodeAddress ? { 'x-ainize-auth': signedTeachHeader(key, nodeAddress, 'GET', path) } : undefined);
   let out: TeachStatusResult;
   if (t.kind === 'node') {
     const raw = await client.get<{ node?: { name?: string }; name?: string; accepts_contributions?: boolean; contributor_share?: number; model?: string | null }>('/api/info', { auth: false });

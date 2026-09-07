@@ -29,17 +29,17 @@ apply / verify / chat.
 ## Quickstart (single node, local ledger)
 
 ```
-ainize init --name alice --port 3402         # creates ~/.ngram/config.json + an AIN keypair (node identity)
+ainize init --name alice --port 3402         # creates ~/.ainize/config.json + an AIN keypair (node identity)
 ainize seed                                  # real Qwen3.8 patches (pixelplus-087600, krx-all-2761…) if the runtime repo is present
 ainize start -d                              # background node; web console at http://localhost:3402
-ainize login                                 # sets the operator password on first use, stores a token in ~/.ngram/cli.json
+ainize login                                 # sets the operator password on first use, stores a token in ~/.ainize/cli.json
 ainize status
 ainize patch ls
 ainize chat --list                           # what can be tested live on this node
 ainize chat pixelplus-087600 "종목코드 픽셀플러스"
 ```
 
-`NGRAM_HOME` selects the node directory (default `~/.ngram`); `--node <url>` targets another node's API;
+`AINIZE_HOME` selects the node directory (default `~/.ainize`); `--node <url>` targets another node's API;
 `--json` prints machine-readable output for every command.
 
 ## `ainize chat` — test knowledge live before you buy it
@@ -77,18 +77,18 @@ Verification needs a quorum (default 2) of *independent* verifiers, so listing a
 ainize init --name alice --port 3402 && ainize seed && ainize start -d && ainize login
 
 # node B — verifier
-NGRAM_HOME=~/.ngram-b ainize init --name bob --port 3403 --roles verifier --peer http://localhost:3402
-NGRAM_HOME=~/.ngram-b ainize start -d
+AINIZE_HOME=~/.ainize-b ainize init --name bob --port 3403 --roles verifier --peer http://localhost:3402
+AINIZE_HOME=~/.ainize-b ainize start -d
 
 # node C — verifier + serving
-NGRAM_HOME=~/.ngram-c ainize init --name carol --port 3404 --roles verifier,serving --peer http://localhost:3402
-NGRAM_HOME=~/.ngram-c ainize start -d
+AINIZE_HOME=~/.ainize-c ainize init --name carol --port 3404 --roles verifier,serving --peer http://localhost:3402
+AINIZE_HOME=~/.ainize-c ainize start -d
 
 ainize nodes                 # gossip found bob & carol
 ainize patch ls              # ANNOUNCED → VERIFYING → LISTED as attestations arrive
 ainize ledger graph          # lineage tree (original authors share in derived-patch revenue)
-NGRAM_HOME=~/.ngram-c ainize login && NGRAM_HOME=~/.ngram-c ainize patch buy law-kr-2026     # 402 → pay → download
-NGRAM_HOME=~/.ngram-c ainize branch subscribe law/KR && ainize route jurisdiction=KR           # gateway routing
+AINIZE_HOME=~/.ainize-c ainize login && AINIZE_HOME=~/.ainize-c ainize patch buy law-kr-2026     # 402 → pay → download
+AINIZE_HOME=~/.ainize-c ainize branch subscribe law/KR && ainize route jurisdiction=KR           # gateway routing
 ```
 
 ## Commands
@@ -97,7 +97,7 @@ NGRAM_HOME=~/.ngram-c ainize branch subscribe law/KR && ainize route jurisdictio
 |---|---|
 | setup | `init`, `config show\|set <key> <value>`, `keys show [--reveal]` |
 | lifecycle | `start [-d] [--peer …] [--port]`, `stop`, `status`, `logs [-f] [--patch id] [--kind k]`, `seed [--no-real] [--no-synthetic]`, `nodes` |
-| auth | `login [--password]` (or `NGRAM_PASSWORD`), `logout` |
+| auth | `login [--password]` (or `AINIZE_PASSWORD`), `logout` |
 | peers | `peers ls\|add <url>\|rm <url>` |
 | patches | `patch ls\|get\|publish\|announce\|verify\|challenge\|buy [--apply]\|apply\|remove\|conflicts\|records\|rm` |
 | chat | `chat --list`, `chat <id> [prompt]` (`--mode`, `--thinking`, `--max-tokens`, `--system`) — live test before/after |

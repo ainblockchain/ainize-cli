@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { signMessage } from '@ngram/core';
+import { signMessage } from '@ainize/core';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, kv, shortHash, warn } from '../output.js';
 import { TeachSession } from './teach-dataset.js';
@@ -95,7 +95,7 @@ async function download(s: TeachSession, id: string, d: PublishedDataset, opts: 
     if (intent.terms) warn(ctx, intent.terms);
     const ts = Date.now();
     const auth = `${s.key.address}:${ts}:${signMessage(`dataset:${intent.sha256}:${ts}`, s.key.privateKey)}`;
-    const res = await fetch(`${s.client.baseUrl}/p2p/dataset/${intent.sha256}`, { headers: { 'x-ngram-auth': auth, 'x-ngram-derive': intent.token } });
+    const res = await fetch(`${s.client.baseUrl}/p2p/dataset/${intent.sha256}`, { headers: { 'x-ainize-auth': auth, 'x-ainize-derive': intent.token } });
     if (!res.ok) throw new CliError(`the training set was not served: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`, 3);
     bytes = Buffer.from(await res.arrayBuffer());
     via = 'derive';

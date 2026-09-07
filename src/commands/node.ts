@@ -6,8 +6,8 @@ import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, un
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { applyEnv, type NodeConfig } from '@ngram/core';
-import { startNode, seedDemo, humanBytes, type DiskReport, type GcCandidate, type RunningNode, type SeedOptions, type SeedReport } from '@ngram/node';
+import { applyEnv, type NodeConfig } from '@ainize/core';
+import { startNode, seedDemo, humanBytes, type DiskReport, type GcCandidate, type RunningNode, type SeedOptions, type SeedReport } from '@ainize/node';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { logFile, pidFile, runningPid } from '../pid.js';
@@ -37,12 +37,12 @@ function applyArgs(cfg: NodeConfig, a: StartArgs): NodeConfig {
 }
 
 /** How long `start -d` waits for the child to answer /api/info before it reports the failure in node.log. */
-const startTimeoutMs = () => Number(process.env.NGRAM_START_TIMEOUT_MS ?? 20_000);
+const startTimeoutMs = () => Number(process.env.AINIZE_START_TIMEOUT_MS ?? 20_000);
 /** How long `stop` waits for a SIGTERMed node to exit before escalating to SIGKILL. */
-const stopGraceMs = () => Number(process.env.NGRAM_STOP_GRACE_MS ?? 10_000);
+const stopGraceMs = () => Number(process.env.AINIZE_STOP_GRACE_MS ?? 10_000);
 
 /** Above this, `start -d` rolls node.log aside before appending (item 128: nothing ever rotated it). */
-export const LOG_MAX_BYTES = Number(process.env.NGRAM_LOG_MAX_BYTES ?? 32 * 1000 ** 2);
+export const LOG_MAX_BYTES = Number(process.env.AINIZE_LOG_MAX_BYTES ?? 32 * 1000 ** 2);
 /** How many rolled generations are kept (node.log.1 … node.log.N). */
 export const LOG_GENERATIONS = 2;
 
@@ -104,7 +104,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     for (const p of a.peer ?? []) args.push('--peer', p);
     if (a.roles) args.push('--roles', a.roles);
     if (a.publicUrl) args.push('--public-url', a.publicUrl);
-    const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, NGRAM_HOME: ctx.home } });
+    const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, AINIZE_HOME: ctx.home } });
     type Exit = { code: number | null; signal: NodeJS.Signals | null };
     const exited: Exit[] = [];
     child.once('exit', (code, signal) => { exited.push({ code, signal }); });
@@ -156,7 +156,7 @@ export async function stop(ctx: CliContext): Promise<{ stopped: boolean; pid: nu
   const pid = runningPid(ctx.home);
   if (!pid) {
     try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ }
-    info(ctx, c.dim('no background node running for this NGRAM_HOME'));
+    info(ctx, c.dim('no background node running for this AINIZE_HOME'));
     // …but something may still be serving this home's node (started in the foreground, or by a supervisor):
     // saying nothing at all is how an operator ends up with a node no command of theirs can manage (item 119).
     const cfg = ctx.cfg;

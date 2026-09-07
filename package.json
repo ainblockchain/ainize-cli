@@ -1,11 +1,10 @@
 {
-  "name": "@ngram/cli",
+  "name": "@ainize/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "ainize": "./dist/bin.js",
-    "ngram": "./dist/bin.js"
+    "ainize": "./dist/bin.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -14,8 +13,8 @@
     "test": "node --test --import tsx test/*.test.ts"
   },
   "dependencies": {
-    "@ngram/core": "0.1.0",
-    "@ngram/node": "0.1.0",
+    "@ainize/core": "0.1.0",
+    "@ainize/node": "0.1.0",
     "chalk": "^5.6.2",
     "yargs": "^18.1.0",
     "aindrive": "^0.2.4",
@@ -26,5 +25,5 @@
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13"
   },
-  "description": "ainize — Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)"
+  "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)"
 }

@@ -8,8 +8,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIdentity, defaultConfig, saveConfig, teachConfig, writeNpz, type NodeConfig } from '@ngram/core';
-import { startNode, seedDemo, type RunningNode } from '@ngram/node';
+import { createIdentity, defaultConfig, saveConfig, teachConfig, writeNpz, type NodeConfig } from '@ainize/core';
+import { startNode, seedDemo, type RunningNode } from '@ainize/node';
 import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
 import { login } from '../src/commands/auth.js';
@@ -56,9 +56,11 @@ before(async () => {
 });
 after(async () => { await node?.stop(); rmSync(tmp, { recursive: true, force: true }); });
 
-test('program name follows argv[1]: ainize (product name) or the historical ngram', () => {
+test('the binary has one name: ainize, and the withdrawn `ngram` alias resolves to it', () => {
   assert.equal(progName('/usr/local/bin/ainize'), 'ainize');
-  assert.equal(progName('/usr/local/bin/ngram'), 'ngram');
+  // Item 110: `ngram` was the historical name and fourteen hints still printed it. The alias is gone from
+  // `bin`, so nothing installs it — and anyone who kept a shim pointing here is told the product name back.
+  assert.equal(progName('/usr/local/bin/ngram'), 'ainize');
   assert.equal(progName('/repo/packages/cli/dist/bin.js'), 'ainize');   // `node dist/bin.js` → product name
   assert.equal(progName(undefined), 'ainize');
 });
@@ -463,9 +465,9 @@ test('teach status: target parsing, node policy, lesson status with / without th
   // request-bound v2 header (node + method + path + body hash, single-use) — the legacy teachAuthHeader() form still verifies once per route
   const facts = [{ prompt: 'What is the capital of Freedonia?', answer: 'Fredville' }];
   const postBody = JSON.stringify({ patch_ids: [], builds_on_context: false, facts, contributor: { name: 'CLI Teacher' } });
-  const hdr = { 'x-ngram-auth': signedTeachHeader(key, node.market.address, 'POST', '/api/teach/jobs', postBody), 'content-type': 'application/json' };
+  const hdr = { 'x-ainize-auth': signedTeachHeader(key, node.market.address, 'POST', '/api/teach/jobs', postBody), 'content-type': 'application/json' };
   const created = await (await fetch(`${nodeUrl}/api/teach/jobs`, { method: 'POST', headers: hdr, body: postBody })).json() as { job: { id: string; status: string }; error?: string };
-  const legacy = await fetch(`${nodeUrl}/api/teach/jobs`, { headers: { 'x-ngram-auth': teachAuthHeader(key) } });
+  const legacy = await fetch(`${nodeUrl}/api/teach/jobs`, { headers: { 'x-ainize-auth': teachAuthHeader(key) } });
   assert.equal(legacy.status, 200, 'legacy header still accepted');
   assert.ok(created.job?.id, `job not created: ${created.error}`);
   const jobId = created.job.id;

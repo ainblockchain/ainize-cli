@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `ainize` (alias `ngram`) — operate an Ainize knowledge-marketplace node.
+ * `ainize` — operate an Ainize knowledge-marketplace node.
  *
  * Ainize = AI + -ize, "make it usable by AI". The 2019 `ainize` CLI ainized GitHub repos into running AI
  * services; this one ainizes *knowledge*: publish verified knowledge patches, test them live against the model
@@ -26,8 +26,8 @@ import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
 import * as dataset from './commands/dataset.js';
-import { EVENT_KINDS, EVENT_LEVELS } from '@ngram/node';
-import { RECORD_KINDS, type RecordKind } from '@ngram/core';
+import { EVENT_KINDS, EVENT_LEVELS } from '@ainize/node';
+import { RECORD_KINDS, type RecordKind } from '@ainize/core';
 
 type G = { home?: string; node?: string; json?: boolean; quiet?: boolean; wide?: boolean };
 // yargs' generic inference gets unwieldy with nested command groups; handlers receive the parsed args untyped
@@ -105,9 +105,8 @@ const cli: Y = yargs(hideBin(process.argv))
     'Run an Ainize knowledge-marketplace node: publish knowledge patches, let independent nodes',
     'verify them, test them live (`$0 chat`), trade them with automatic payment (x402) and load',
     'them into a running model without restart.',
-    ...(PROG === 'ainize' ? [] : ['(`ngram` is the historical name of this binary; `ainize` is the same program.)']),
   ].join('\n'))
-  .option('home', { type: 'string', describe: 'node home directory (NGRAM_HOME)', global: true })
+  .option('home', { type: 'string', describe: 'node home directory (AINIZE_HOME)', global: true })
   .option('node', { type: 'string', describe: 'node API URL (default: http://localhost:<config port>)', global: true })
   .option('json', { type: 'boolean', describe: 'machine-readable JSON output — one document per command, errors included, on failure to stderr', global: true, default: false })
   .option('quiet', { type: 'boolean', describe: 'print nothing but the id of whatever was created or changed', global: true, default: false })
@@ -135,7 +134,7 @@ const cli: Y = yargs(hideBin(process.argv))
   ].join('\n'));
 
 // ---------------------------------------------------------------- init / config / keys
-cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) => fail(y)
+cli.command('init', 'Create a node identity and config in AINIZE_HOME', (y: Y) => fail(y)
   .option('name', { type: 'string', describe: 'node display name' })
   .option('port', { type: 'number', describe: 'HTTP port', default: undefined })
   .option('ledger', { choices: ['local', 'ain'] as const, describe: 'ledger backend: local P2P record DAG or AIN blockchain' })
@@ -149,7 +148,7 @@ cli.command('init', 'Create a node identity and config in NGRAM_HOME', (y: Y) =>
   .option('public-url', { type: 'string', describe: 'URL peers can reach this node at' })
   .option('host', { type: 'string', describe: 'interface to bind (default 127.0.0.1 — this machine only)' })
   .option('public', { type: 'boolean', default: false, describe: 'bind 0.0.0.0 (every interface) — only behind a firewall or proxy' })
-  .option('password', { type: 'string', describe: 'operator password, set now so nobody else can claim this node (or NGRAM_PASSWORD)' })
+  .option('password', { type: 'string', describe: 'operator password, set now so nobody else can claim this node (or AINIZE_PASSWORD)' })
   .option('no-password', { type: 'boolean', default: false, describe: `leave the node unclaimed; \`${PROG} login\` claims it later (loopback only)` })
   .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)', default: false })
   .option('new-identity', { type: 'boolean', describe: 'with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)', default: false })
@@ -180,12 +179,12 @@ cli.command('keys', 'Node identity: the key that owns everything this node publi
   run((ctx, a: G & { reveal: boolean; yes: boolean }) => init.keysShow(ctx, a.reveal, a.yes), false, true))
   .command(['backup <file>', 'export <file>'], 'Save the node key to a file (encrypted with --passphrase) — the only way back after a wiped disk', (yy: Y) => yy
     .positional('file', { type: 'string', demandOption: true })
-    .option('passphrase', { type: 'string', describe: 'encrypt with this passphrase (or NGRAM_KEY_PASSPHRASE); without one the key is stored in the clear' })
+    .option('passphrase', { type: 'string', describe: 'encrypt with this passphrase (or AINIZE_KEY_PASSPHRASE); without one the key is stored in the clear' })
     .option('force', { type: 'boolean', default: false, describe: 'overwrite an existing file' })
     .example('$0 keys backup ~/node-key.json --passphrase "…"', ''),
   run((ctx, a: G & { file: string; passphrase?: string; force: boolean }) => init.keysBackup(ctx, a.file, a), false, true))
   .command('import <file>', 'Make a backed-up key this node\'s identity (asks you to type the current address)', (yy: Y) => yy
-    .positional('file', { type: 'string', demandOption: true }).option('passphrase', { type: 'string', describe: 'or NGRAM_KEY_PASSPHRASE' }),
+    .positional('file', { type: 'string', demandOption: true }).option('passphrase', { type: 'string', describe: 'or AINIZE_KEY_PASSPHRASE' }),
   run((ctx, a: G & { file: string; passphrase?: string }) => init.keysImport(ctx, a.file, a), false, true))
   .command('rotate', 'Mint a NEW node identity, keeping every other setting (asks you to type the current address)', (yy: Y) => yy,
     run((ctx) => init.keysRotate(ctx), false, true))
@@ -197,7 +196,7 @@ cli.command('start', 'Start the node (foreground unless --detach)', (y: Y) => fa
   .option('peer', { type: 'string', array: true, describe: 'extra peer URL(s)' })
   .option('roles', { type: 'string', describe: 'comma list of seller,verifier,serving,gateway for this run (default: the config value)' })
   .option('public-url', { type: 'string', describe: 'URL peers should reach this node at — an address on this machine is useless to them (default: the config value)' })
-  .option('detach', { alias: 'd', type: 'boolean', default: false, describe: 'run in the background (pid in NGRAM_HOME/node.pid)' })
+  .option('detach', { alias: 'd', type: 'boolean', default: false, describe: 'run in the background (pid in AINIZE_HOME/node.pid)' })
   .example('$0 start', '').example('$0 start -d --peer http://localhost:3402', 'second node joining the first'),
 run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
   const r = await node.start(ctx, { ...a, publicUrl: a['public-url'] });
@@ -249,15 +248,15 @@ cli.command('gc', 'Delete knowledge files this node neither published nor bought
 
 // ---------------------------------------------------------------- auth
 cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y)
-  .option('password', { type: 'string', describe: 'the operator password, at least 4 characters — or NGRAM_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in' })
-  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its NGRAM_HOME/setup-token (or NGRAM_SETUP_TOKEN)' })
+  .option('password', { type: 'string', describe: 'the operator password, at least 4 characters — or AINIZE_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in' })
+  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
   .example('$0 login', 'asks for the password (it is not echoed)')
-  .example('NGRAM_PASSWORD="…" $0 login', 'in a script, a cron line or over ssh — as does --password, and so does piping it in')
-  .example('$0 login --setup-token "$(ssh host cat ~/.ngram/setup-token)"', 'claim a node that has no password yet, from another machine'),
+  .example('AINIZE_PASSWORD="…" $0 login', 'in a script, a cron line or over ssh — as does --password, and so does piping it in')
+  .example('$0 login --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'claim a node that has no password yet, from another machine'),
   run((ctx, a: G & { password?: string; 'setup-token'?: string }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'] })));
 cli.command('password', 'Change the operator password (--reset rewrites it in config.json when you have forgotten it)', (y: Y) => fail(y)
-  .option('password', { type: 'string', describe: 'the new password, at least 4 characters (or NGRAM_NEW_PASSWORD)' })
-  .option('current', { type: 'string', describe: 'the current password (or NGRAM_PASSWORD)' })
+  .option('password', { type: 'string', describe: 'the new password, at least 4 characters (or AINIZE_NEW_PASSWORD)' })
+  .option('current', { type: 'string', describe: 'the current password (or AINIZE_PASSWORD)' })
   .option('reset', { type: 'boolean', default: false, describe: 'forgotten password: write a new hash into config.json (the node must be stopped)' })
   .example('$0 password', 'change it on the running node')
   .example('$0 stop && $0 password --reset', 'the way back when it is forgotten'),
@@ -445,7 +444,7 @@ cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge p
     .positional('id', { type: 'string', demandOption: true })
     .option('name', { type: 'string', describe: 'name for your copy' })
     .option('key-file', { type: 'string', describe: 'teaching key file (default: <home>/teaching-key.json)' })
-    .option('key', { type: 'string', describe: 'teaching key as hex / json (or NGRAM_TEACH_KEY)' })
+    .option('key', { type: 'string', describe: 'teaching key as hex / json (or AINIZE_TEACH_KEY)' })
     .example('$0 patch fork krx-all-2761 --name "KRX + biotech"', 'start from its questions')
     .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
   run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
@@ -458,7 +457,7 @@ cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge p
     .option('name', { type: 'string', describe: 'name for the combined knowledge' })
     .option('wait', { type: 'boolean', default: false, describe: 'wait for the build and exit with its status' })
     .option('key-file', { type: 'string', describe: 'teaching key file (default: <home>/teaching-key.json)' })
-    .option('key', { type: 'string', describe: 'teaching key as hex / json (or NGRAM_TEACH_KEY)' })
+    .option('key', { type: 'string', describe: 'teaching key as hex / json (or AINIZE_TEACH_KEY)' })
     .example('$0 patch merge krx-all-2761 pixelplus --preview', 'what combining them would mean')
     .example('$0 patch merge krx-all-2761 pixelplus --resolve answers.json --tier retrain', 'after choosing an answer for each disagreement (unresolved ones print as JSON, exit 3)'),
   run((ctx, a: G & { a: string; b: string; preview?: boolean; resolve?: string; tier?: string; name?: string; wait?: boolean; key?: string; 'key-file'?: string }) =>
@@ -500,16 +499,16 @@ publishRun);
 // ---------------------------------------------------------------- teach (visitor-taught lessons)
 /**
  * The teaching key every teach request is signed with. There is no account: the key IS the identity. Without one of
- * these the CLI keeps its own at `<NGRAM_HOME>/teaching-key.json` and creates it on first use.
+ * these the CLI keeps its own at `<AINIZE_HOME>/teaching-key.json` and creates it on first use.
  */
 const keyOpts = (y: Y): Y => y
-  .option('key', { type: 'string', describe: 'teaching key (64-hex) — or NGRAM_TEACH_KEY' })
+  .option('key', { type: 'string', describe: 'teaching key (64-hex) — or AINIZE_TEACH_KEY' })
   .option('key-file', { type: 'string', describe: 'the key backup JSON from the browser (ainize-teaching-key-….json); default: <home>/teaching-key.json, created on first use' });
 
 cli.command('teach', 'Teach mode: turn your own questions and answers into knowledge. Two doors, one pipeline — a dataset file here, or corrections collected in the browser (<node>/chat?teach=1)', (y: Y) => fail(y)
   .command('status [target]', 'Teaching policy of a node, the status of a lesson, or a data provider\'s lessons and earnings', (yy: Y) => yy
     .positional('target', { type: 'string', describe: 'node URL · lesson URL (…/chat?lesson=<id>) or job id · teacher page (…/teacher/<address>) or 0x address; default: this node' })
-    .option('key', { type: 'string', describe: 'teaching key (64-hex) — or NGRAM_TEACH_KEY; shows the full lesson body for your own lessons' })
+    .option('key', { type: 'string', describe: 'teaching key (64-hex) — or AINIZE_TEACH_KEY; shows the full lesson body for your own lessons' })
     .option('key-file', { type: 'string', describe: 'the key backup JSON downloaded from the browser (ainize-teaching-key-….json)' })
     .example('$0 teach status http://localhost:3402', 'is this node accepting lessons? publish mode, trainer, queue')
     .example('$0 teach status "http://localhost:3402/chat?lesson=8f0c…" --key-file ainize-teaching-key-1a2b3c4d.json', 'your lesson: progress, checks, before/after')

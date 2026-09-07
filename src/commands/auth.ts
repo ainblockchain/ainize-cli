@@ -1,11 +1,11 @@
 /**
- * `ainize login|logout` — operator session (bearer token stored in NGRAM_HOME/cli.json).
+ * `ainize login|logout` — operator session (bearer token stored in AINIZE_HOME/cli.json).
  */
 import { createInterface } from 'node:readline';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hashPassword, loadConfig, saveConfig } from '@ngram/core';
-import { Store } from '@ngram/node';
+import { hashPassword, loadConfig, saveConfig } from '@ainize/core';
+import { Store } from '@ainize/node';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, readState, writeState, type CliContext } from '../context.js';
 import { runningPid } from '../pid.js';
@@ -13,7 +13,7 @@ import { c, info, ok, shortAddr, warn } from '../output.js';
 
 /** What a password prompt says when there is nobody to answer it — the same sentence on both paths (item 109). */
 const noAnswer = (): CliError => new CliError(
-  `no password given and stdin is not a terminal, so nobody can be asked — pass --password, set NGRAM_PASSWORD, or pipe one in (\`echo "…" | ${PROG} login\`). It must be at least 4 characters.`);
+  `no password given and stdin is not a terminal, so nobody can be asked — pass --password, set AINIZE_PASSWORD, or pipe one in (\`echo "…" | ${PROG} login\`). It must be at least 4 characters.`);
 
 export async function promptPassword(question: string): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -73,7 +73,7 @@ function localSetupToken(home: string): string | null {
 
 export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token: string; nodeUrl: string; setup: boolean }> {
   const client = new NodeClient({ ...ctx, token: null });
-  const setupToken = a.setupToken ?? process.env.NGRAM_SETUP_TOKEN ?? localSetupToken(ctx.home) ?? undefined;
+  const setupToken = a.setupToken ?? process.env.AINIZE_SETUP_TOKEN ?? localSetupToken(ctx.home) ?? undefined;
   const me = await client.get<{ signedIn: boolean; needsSetup: boolean; name: string; address: string }>('/api/auth/me',
     { auth: false, headers: setupToken ? { 'x-setup-token': setupToken } : {} });
   // Setting the password claims the node for good. Only ever do that to this home's own node, or to a URL the
@@ -86,7 +86,7 @@ export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token
       2,
     );
   }
-  let password = a.password ?? process.env.NGRAM_PASSWORD;
+  let password = a.password ?? process.env.AINIZE_PASSWORD;
   if (!password) {
     password = await promptPassword(me.needsSetup ? `Set an operator password for ${me.name} (${me.address.slice(0, 10)}…): ` : `Operator password for ${me.name}: `);
     // Typing a new password twice catches a typo in the one thing that cannot be typed back; a password PIPED in
@@ -96,7 +96,7 @@ export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token
       if (again !== password) throw new CliError('passwords do not match');
     }
   }
-  if (!password) throw new CliError('password required (or set NGRAM_PASSWORD)');
+  if (!password) throw new CliError('password required (or set AINIZE_PASSWORD)');
   const r = await client.post<{ ok: boolean; token: string }>(me.needsSetup ? '/api/auth/setup' : '/api/auth/login', { password },
     { auth: false, headers: setupToken ? { 'x-setup-token': setupToken } : {} });
   const state = readState(ctx.home);
@@ -126,9 +126,9 @@ export async function password(ctx: CliContext, a: { password?: string; current?
   } else if (!live) {
     throw new CliError(`no node is answering at ${ctx.nodeUrl}. Start it (\`${PROG} start -d\`) to change the password, or — if you have forgotten it — stop the node and run \`${PROG} password --reset\`, which rewrites the hash in ${ctx.home}/config.json`, 2);
   }
-  let current = a.current ?? process.env.NGRAM_PASSWORD;
+  let current = a.current ?? process.env.AINIZE_PASSWORD;
   if (!a.reset && !current) current = await promptPassword(`Current operator password for ${cfg.name}: `);
-  let next = a.password ?? process.env.NGRAM_NEW_PASSWORD;
+  let next = a.password ?? process.env.AINIZE_NEW_PASSWORD;
   if (!next) {
     next = await promptPassword('New operator password: ');
     const again = await promptPassword('Confirm new password: ');

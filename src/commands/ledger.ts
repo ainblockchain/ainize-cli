@@ -2,7 +2,7 @@
  * `ainize ledger ls|verify|graph|export`
  */
 import { writeFileSync } from 'node:fs';
-import type { LedgerRecord, RecordKind } from '@ngram/core';
+import type { LedgerRecord, RecordKind } from '@ainize/core';
 import { NodeClient, query } from '../client.js';
 import type { CliContext } from '../context.js';
 import { c, emit, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } from '../output.js';

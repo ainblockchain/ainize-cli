@@ -12,13 +12,13 @@
  *   ainize teach dataset get <id> -o questions.jsonl    # exactly what a lesson was trained on
  *
  * Every request is signed with a teaching key (§6.1). There is no account: the key is the identity. `--key-file`
- * (the browser's backup JSON) or `--key` / `NGRAM_TEACH_KEY` chooses one; otherwise the CLI keeps one at
- * `<NGRAM_HOME>/teaching-key.json` and creates it on first use — losing that file loses the lessons and earnings.
+ * (the browser's backup JSON) or `--key` / `AINIZE_TEACH_KEY` chooses one; otherwise the CLI keeps one at
+ * `<AINIZE_HOME>/teaching-key.json` and creates it on first use — losing that file loses the lessons and earnings.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { createIdentity, signMessage, type TeachDataset, type TeachDatasetRow, type TeachDatasetSummary, type TeachEffort } from '@ngram/core';
+import { createIdentity, signMessage, type TeachDataset, type TeachDatasetRow, type TeachDatasetSummary, type TeachEffort } from '@ainize/core';
 import { NodeClient, query } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fmtBytes, fmtTime, info, kv, shortHash, table, warn } from '../output.js';
@@ -47,7 +47,7 @@ export interface DatasetOpts extends KeyOpts, ParseOpts { name?: string; retenti
 
 // ---------------------------------------------------------------- teaching key
 /**
- * The teaching key for this terminal: `--key-file` / `--key` / `NGRAM_TEACH_KEY`, else `<home>/teaching-key.json`,
+ * The teaching key for this terminal: `--key-file` / `--key` / `AINIZE_TEACH_KEY`, else `<home>/teaching-key.json`,
  * created (0600) on first use. `created` is true only when this call wrote the file — the caller says so out loud,
  * because that file is the ONLY way back to the lessons and the earnings.
  */
@@ -76,7 +76,7 @@ export class TeachSession {
   }
 
   private hdr(method: string, path: string, body?: string): Record<string, string> {
-    return { 'x-ngram-auth': signedTeachHeader(this.key, this.nodeAddress, method, path, body) };
+    return { 'x-ainize-auth': signedTeachHeader(this.key, this.nodeAddress, method, path, body) };
   }
   get<T>(path: string): Promise<T> { return this.client.get<T>(path, { headers: this.hdr('GET', path), auth: false }); }
   post<T>(path: string, body?: unknown): Promise<T> {
@@ -90,7 +90,7 @@ export class TeachSession {
   upload<T>(path: string, form: FormData, fileSha: string): Promise<T> {
     return this.client.request<T>(path, {
       method: 'POST', body: form, timeoutMs: 300_000,
-      headers: { ...this.hdr('POST', path, fileSha), 'x-ngram-dataset-sha256': fileSha }, auth: false,
+      headers: { ...this.hdr('POST', path, fileSha), 'x-ainize-dataset-sha256': fileSha }, auth: false,
     });
   }
 }
