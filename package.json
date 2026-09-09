@@ -21,10 +21,11 @@
     "@ainblockchain/ain-js": "^1.15.0"
   },
   "devDependencies": {
+    "@ainize/node": "github:ainblockchain/ainize-node",
     "@types/node": "^24.10.0",
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13",
-    "@ainize/node": "github:ainblockchain/ainize-node"
+    "typescript": "^5.9.3"
   },
   "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "peerDependencies": {
