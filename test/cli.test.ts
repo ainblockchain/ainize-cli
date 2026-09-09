@@ -21,8 +21,13 @@ import { ledgerVerify, ledgerGraph } from '../src/commands/ledger.js';
 import { branchLs, route, wallet, payoutsLs, payoutRetry, renderPayoutSummary, type WalletResponse } from '../src/commands/branch.js';
 import { logs, status } from '../src/commands/node.js';
 import { keysShow, configShow } from '../src/commands/init.js';
-import { runAgent, creditBalance, fetchInitialCredit, pickPatch, fetchCatalog, checkRequirement, exitCodeFor, readPurchases, spentToday, agentBalance, sellerError, newestOnTrack, watchAgent } from '../../agent/src/agent.js';
-import { loadIdentity } from '../../agent/src/identity.js';
+// The `agent:` cases below drive @ainize/agent against a real node. They live in this suite because the node
+// harness does, not because the CLI owns them — so the agent is a devDependency reached through its package
+// entry, the way it would be by anyone else, rather than a sibling directory's source.
+import {
+  runAgent, creditBalance, fetchInitialCredit, pickPatch, fetchCatalog, checkRequirement, exitCodeFor,
+  readPurchases, spentToday, agentBalance, sellerError, newestOnTrack, watchAgent, loadIdentity,
+} from '@ainize/agent';
 
 const freePort = () => new Promise<number>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); }); });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
