@@ -2,7 +2,11 @@
   "name": "@ainize/cli",
   "version": "0.1.0",
   "private": true,
+  "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "ainize": "./dist/bin.js"
   },
@@ -27,7 +31,6 @@
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   },
-  "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "peerDependencies": {
     "@ainize/node": "github:ainblockchain/ainize-node"
   },
