@@ -10,10 +10,11 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/bin.ts",
-    "test": "node --test --import tsx test/*.test.ts"
+    "test": "node --test --import tsx test/*.test.ts",
+    "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "0.1.0",
+    "@ainize/core": "github:ainblockchain/ainize-core",
     "chalk": "^5.6.2",
     "yargs": "^18.1.0",
     "aindrive": "^0.2.4",
@@ -23,11 +24,11 @@
     "@types/node": "^24.10.0",
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13",
-    "@ainize/node": "0.1.0"
+    "@ainize/node": "github:ainblockchain/ainize-node"
   },
   "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "peerDependencies": {
-    "@ainize/node": "0.1.0"
+    "@ainize/node": "github:ainblockchain/ainize-node"
   },
   "peerDependenciesMeta": {
     "@ainize/node": {
