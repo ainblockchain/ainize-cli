@@ -25,7 +25,6 @@
     "@ainblockchain/ain-js": "^1.15.0"
   },
   "devDependencies": {
-    "@ainize/agent": "github:ainblockchain/ainize-agent",
     "@ainize/node": "github:ainblockchain/ainize-node",
     "@types/node": "^24.10.0",
     "@types/yargs": "^17.0.35",

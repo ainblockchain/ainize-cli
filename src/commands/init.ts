@@ -41,6 +41,18 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   }
   const roles = a.roles ? (a.roles.split(',').map((s) => s.trim()).filter(Boolean) as NodeRole[]) : undefined;
   for (const r of roles ?? []) if (!['seller', 'verifier', 'serving', 'gateway'].includes(r)) throw new CliError(`unknown role: ${r}`);
+  /**
+   * `gateway` is a name the config accepts and nothing reads (item 384).
+   *
+   * It is in `NodeRole` and in `ROLES`, so `--roles gateway` validates, is written to config.json and is
+   * advertised to peers — and no line of code anywhere branches on it. An operator choosing it gets a node that
+   * behaves exactly as if they had not. The role is what `p2p-compute-market-design.md` reserves for a node with
+   * no runtime that hosts the UI and buys inference from peers; that design is accepted and not implemented, so
+   * the honest thing is to keep the name (existing configs and peer records carry it) and say what it does today.
+   */
+  if ((roles ?? []).includes('gateway' as NodeRole)) {
+    warn(ctx, 'the `gateway` role does nothing on this build: it is reserved for a node that owns no GPU and buys inference from peers, which is designed (docs/p2p-compute-market-design.md) and not built. The node will run exactly as it would without it.');
+  }
   if (a.newIdentity && !existing) throw new CliError('--new-identity only means something when a config already exists; plain `init` mints a key');
 
   // The key in config.json owns every anchor this node published, its balance and its payout address, and it is
