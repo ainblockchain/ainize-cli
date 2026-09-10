@@ -1,8 +1,19 @@
 {
   "name": "@ainize/cli",
   "version": "0.1.0",
-  "private": true,
-  "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
+  "description": "ainize — Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ainblockchain/ainize-cli.git"
+  },
+  "homepage": "https://github.com/ainblockchain/ainize",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "type": "module",
   "files": [
     "dist"
@@ -18,21 +29,21 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@ainize/core": "github:ainblockchain/ainize-core",
+    "@ainize/core": "^0.1.0",
     "chalk": "^5.6.2",
     "yargs": "^18.1.0",
     "aindrive": "^0.2.4",
     "@ainblockchain/ain-js": "^1.15.0"
   },
   "devDependencies": {
-    "@ainize/node": "github:ainblockchain/ainize-node",
+    "@ainize/node": "^0.1.0",
     "@types/node": "^24.10.0",
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "@ainize/node": "github:ainblockchain/ainize-node"
+    "@ainize/node": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@ainize/node": {
