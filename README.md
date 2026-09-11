@@ -134,7 +134,7 @@ AINIZE_HOME=~/.ainize-c ainize init --name carol --port 3404 --roles verifier,se
 AINIZE_HOME=~/.ainize-c ainize start -d
 
 ainize nodes                 # gossip found bob & carol
-ainize patch ls              # ANNOUNCED → VERIFYING → LISTED as attestations arrive
+ainize patch ls              # ANNOUNCED → VERIFYING → VERIFIED as attestations arrive
 ainize ledger graph          # lineage tree (original authors share in derived-patch revenue)
 AINIZE_HOME=~/.ainize-c ainize login && AINIZE_HOME=~/.ainize-c ainize patch buy law-kr-2026     # 402 → pay → download
 AINIZE_HOME=~/.ainize-c ainize branch subscribe law/KR && ainize route jurisdiction=KR           # gateway routing

@@ -315,7 +315,7 @@ const publishRun = run((ctx, a: G & patch.PublishArgs & { 'dataset-access'?: 'pu
 cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge patches — or give an ENS name to use one in a single line', (y: Y) => fail(y)
   // `ainize patch vaults.defi.engram.eth` — the default command of the group, so a NAME lands here while every
   // subcommand below still wins on an exact match. It replaces the sequence an operator used to type by hand:
-  //   ainize patch ls --node http://their-node:3402 --status LISTED -q "<topic>"
+  //   ainize patch ls --node http://their-node:3402 --status VERIFIED -q "<topic>"
   //   ainize login && ainize use <id>
   // The name carries both halves those lines supplied: `ainize.node` is the --node, `ainize.patch` is the id.
   .command('$0 [name]', false, (yy: Y) => yy
@@ -339,7 +339,7 @@ cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge p
     return patch.patchByName(ctx, a.name, { apply: a.apply, yes: a.yes, maxPrice: a['max-price'], resolveOnly: a['resolve-only'], noPeer: a.peer === false, rpc: a.rpc, registry: a.registry, namesFile: a.names });
   }))
   .command('ls', 'List patches in the catalog', (yy: Y) => yy
-    .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,LISTED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
+    .option('status', { type: 'string', describe: 'comma list: DRAFT,ANNOUNCED,VERIFYING,VERIFIED,REJECTED,CHALLENGED,SUPERSEDED,RETIRED (retired knowledge is hidden unless you ask for it)' })
     .option('model', { type: 'string', describe: 'only knowledge for this model id_M (e.g. Qwen3.8-Flash-Next)' })
     .option('schema', { type: 'string', describe: 'benchmark schema' })
     .option('branch', { type: 'string', describe: `only knowledge on this track (see \`${PROG} branch ls\`)` })
@@ -744,7 +744,7 @@ cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patc
   .command('add <name> <patchId>', 'Add knowledge to a track you own (verified knowledge only)', (yy: Y) => yy
     .positional('name', { type: 'string', demandOption: true, describe: `the track (see \`${PROG} branch ls\`)` })
     .positional('patchId', { type: 'string', demandOption: true, describe: 'the knowledge to add — every subscriber buys and loads it' })
-    .option('force', { type: 'boolean', default: false, describe: 'add it even though it is not LISTED — every subscriber will buy and load it' }),
+    .option('force', { type: 'boolean', default: false, describe: 'add it even though it is not VERIFIED — every subscriber will buy and load it' }),
     run((ctx, a: G & { name: string; patchId: string; force?: boolean }) => branch.branchAdd(ctx, a.name, a.patchId, { force: a.force })))
   .command('quote <name>', 'What subscribing to this track would spend, item by item, before anything is spent', (yy: Y) => yy.positional('name', { type: 'string', demandOption: true }),
     run((ctx, a: G & { name: string }) => branch.branchQuote(ctx, a.name)))

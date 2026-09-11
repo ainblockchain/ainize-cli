@@ -65,8 +65,8 @@ export interface ChatPatchesResponse {
 /** One row of the picker table: a public entry, or the operator's own unannounced draft. */
 interface PickerRowView { e: CatalogEntry; draft: boolean }
 
-/** LISTED first, then what is still being verified, then drafts, then retired versions (item 107). */
-const LIST_ORDER: Record<string, number> = { LISTED: 0, ANNOUNCED: 1, VERIFYING: 1, CHALLENGED: 2, DRAFT: 3, SUPERSEDED: 4, RETIRED: 5, REJECTED: 6 };
+/** VERIFIED first, then what is still being verified, then drafts, then retired versions (item 107). */
+const LIST_ORDER: Record<string, number> = { VERIFIED: 0, ANNOUNCED: 1, VERIFYING: 1, CHALLENGED: 2, DRAFT: 3, SUPERSEDED: 4, RETIRED: 5, REJECTED: 6 };
 
 /**
  * The operator's own DRAFT knowledge whose body is on this node (item 108).

@@ -3,7 +3,7 @@
  *
  * `ainize patch vaults.defi.engram.eth` replaces three commands and a copied id:
  *
- *   ainize patch ls --node http://their-node:3402 --status LISTED -q "<topic>"
+ *   ainize patch ls --node http://their-node:3402 --status VERIFIED -q "<topic>"
  *   ainize login && ainize use <id>
  *
  * The reason a name can do that is that it carries BOTH halves of what those commands supply by hand — which

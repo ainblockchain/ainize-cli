@@ -11,7 +11,7 @@ export const c = {
 
 export function statusColor(status: string): string {
   switch (status) {
-    case 'LISTED': return chalk.green(status);
+    case 'VERIFIED': return chalk.green(status);
     case 'VERIFYING': case 'ANNOUNCED': return chalk.yellow(status);
     case 'REJECTED': case 'CHALLENGED': return chalk.red(status);
     case 'SUPERSEDED': return chalk.gray(status);
