@@ -1,5 +1,5 @@
 {
-  "name": "@ainize/cli",
+  "name": "ainize",
   "version": "0.1.0",
   "description": "ainize — Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "license": "MIT",
@@ -16,7 +16,9 @@
   },
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "bin": {
     "ainize": "./dist/bin.js"

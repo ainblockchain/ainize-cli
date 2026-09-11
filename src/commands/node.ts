@@ -15,7 +15,7 @@ import type { RunningNode } from '@ainize/node';
  * Every other command here talks to a node over HTTP and works against somebody else's machine — listing
  * knowledge, buying, teaching, chatting. Only `start` and `seed` run a node in this process, and they are the
  * only reason a terminal would ever need express, sqlite, better-sqlite3 and the trainer on disk. Loading it
- * here, at the moment those two are called, keeps `npm i -g @ainize/cli` small and keeps this package
+ * here, at the moment those two are called, keeps `npm i -g ainize` small and keeps this package
  * installable where the server cannot even build.
  */
 async function server() {
