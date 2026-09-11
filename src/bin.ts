@@ -26,6 +26,7 @@ import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
 import * as dataset from './commands/dataset.js';
+import { datasetImportHuggingFace, type HuggingFaceOptions } from './commands/huggingface-dataset.js';
 import { EVENT_KINDS, EVENT_LEVELS } from '@ainize/core';
 import { RECORD_KINDS, type RecordKind } from '@ainize/core';
 
@@ -617,7 +618,25 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
   .demandCommand(1, 'Subcommand is required (status|dataset|train|publish|jobs).'), () => undefined);
 
 // ---------------------------------------------------------------- dataset (the questions behind a published knowledge)
-cli.command('dataset', 'Training sets: the questions a published knowledge was taught from (lineage design §13)', (y: Y) => fail(y)
+cli.command('dataset', 'Import a Hugging Face dataset, or inspect the training set of published knowledge', (y: Y) => fail(y)
+  .command(['import <url>', '$0 <url>'], 'Import an existing Hugging Face dataset into this node (no Hub publication)', (builder: Y) => keyOpts(builder)
+    .positional('url', { type: 'string', demandOption: true, describe: 'https://huggingface.co/datasets/<owner>/<name> or a /resolve/<revision>/<file> URL' })
+    .option('config', { type: 'string', describe: 'Hugging Face configuration/subset; required when there are several' })
+    .option('split', { type: 'string', describe: 'dataset split (train when available, otherwise the only split)' })
+    .option('revision', { type: 'string', describe: 'source revision, resolved to a commit SHA before import' })
+    .option('file', { type: 'string', describe: 'import a JSONL/JSON/CSV/TSV/TXT file at that revision, without the dataset viewer' })
+    .option('limit', { type: 'number', describe: 'explicit viewer row limit (1..10000); without it, imports the whole split up to 10000 rows' })
+    .option('offset', { type: 'number', describe: 'first viewer row (default 0)' })
+    .option('columns', { type: 'string', describe: 'column mapping, e.g. {"prompt":"question","answer":"answer"}' })
+    .option('name', { type: 'string', describe: 'name of the imported dataset on this node' })
+    .option('hf-token-file', { type: 'string', describe: 'private token file for a restricted HF dataset; never sent to the Ainize node' })
+    .option('train', { type: 'boolean', default: false, describe: 'also queue a lesson from the imported dataset' })
+    .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'training effort with --train' })
+    .option('wait', { type: 'boolean', default: false, describe: 'with --train: observe the same lesson until its terminal result' })
+    .option('timeout', { type: 'number', describe: 'with --wait: observation timeout in minutes; does not cancel the lesson' })
+    .example('$0 dataset https://huggingface.co/datasets/owner/qa --config default --split train', 'import existing data, without creating a Hugging Face repository')
+    .example('$0 dataset https://huggingface.co/datasets/owner/qa --file data/train.jsonl --train', 'import an immutable file and teach it'),
+  run((ctx, args: G & HuggingFaceOptions & { url: string; 'hf-token-file'?: string }) => datasetImportHuggingFace(ctx, args.url, { ...args, hfTokenFile: args['hf-token-file'] })))
   .command(['get <id>', 'download <id>'], 'The training set of a knowledge — what it is, and with -o the questions themselves', (yy: Y) => keyOpts(yy)
     .positional('id', { type: 'string', demandOption: true, describe: `knowledge id (\`${PROG} patch ls\`) or the sha256 of the training set` })
     .option('out', { alias: 'o', type: 'string', describe: `write the questions to this file (.jsonl — re-uploadable with \`${PROG} teach dataset <file>\`)` })
@@ -627,7 +646,7 @@ cli.command('dataset', 'Training sets: the questions a published knowledge was t
     .example('$0 dataset get krx-all-2761 -o questions.jsonl', 'the exact bytes, ready to build on'),
   run((ctx, a: G & { id: string; key?: string; 'key-file'?: string; out?: string; manifest: boolean; 'include-notes': boolean }) =>
     dataset.datasetGetPublished(ctx, a.id, { key: a.key, keyFile: a['key-file'], out: a.out, manifest: a.manifest, includeNotes: a['include-notes'] })))
-  .demandCommand(1, 'Subcommand is required (get).'), () => undefined);
+  .demandCommand(1, 'A Hugging Face URL or subcommand (import|get) is required.'), () => undefined);
 
 cli.command('use <ids..>', 'One line to use knowledge: check it is verified → quote the price → pay → download → load into your model. Several ids are used in the order given', (y: Y) => fail(y)
   .positional('ids', { type: 'string', array: true, demandOption: true, describe: `knowledge id(s) — \`a b\` or \`a,b\`, in load order (see \`${PROG} patch ls\`)` })

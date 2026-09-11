@@ -42,6 +42,55 @@ ainize chat pixelplus-087600 "종목코드 픽셀플러스"
 `AINIZE_HOME` selects the node directory (default `~/.ainize`); `--node <url>` targets another node's API;
 `--json` prints machine-readable output for every command.
 
+## Hugging Face dataset → teach → marketplace
+
+`ainize dataset <huggingface-url>` imports an **existing** Hugging Face dataset into the selected Ainize
+node. It does not create a Hub repository, publish data to Hugging Face, train automatically, or make a
+marketplace listing. The returned `dataset_id` feeds the normal teaching workflow:
+
+```sh
+ainize init --name my-node --peer https://ainize.ai
+ainize start -d && ainize login
+ainize dataset https://huggingface.co/datasets/owner/questions --config default --split train --json
+ainize teach train <dataset-id> --key-file /private/teaching-key --wait
+ainize teach publish <job-id> --name "My knowledge" --consent-permanent --consent-rights
+ainize use <published-knowledge-id>
+ainize chat <published-knowledge-id> "Question"
+```
+
+Replace placeholders with real values. Alternatively, use `ainize teach dataset upload questions.csv`
+for a local file. Configure a compatible real serving/training runtime before training. Publication needs
+your own rights/permanence consent, successful server-side checks and any operator review; it is not
+automatic consent to republish third-party data. A reachable peer is not a listing: peers must use the same
+ledger, reach the seller endpoint, and obtain independent verification quorum. Do not re-initialize a live
+AIN node as `local` merely to match a peer; use a separate home or coordinate the deployment.
+
+Supported source URLs are dataset repositories, `/viewer/<config>/<split>`, and
+`/resolve/<revision>/<file>`. `dataset import <url>` is an explicit alias. Use `--columns` when the source
+does not already have Ainize question/answer fields:
+
+```sh
+ainize dataset https://huggingface.co/datasets/lhoestq/demo1 --split train \
+  --columns '{"prompt":"review","answer":"star"}'
+ainize dataset https://huggingface.co/datasets/owner/questions --revision <commit-sha> \
+  --file data/train.jsonl
+```
+
+Repository imports use the Dataset Viewer, validate its revision on every page, reject truncated/partial
+responses, and import the whole selected split up to 10,000 rows. Larger splits require an explicit
+`--limit` (optionally `--offset`); provenance reports that selection rather than claiming the whole dataset.
+Multiple configurations require `--config`. If the viewer is not ready, use `--file` for an immutable
+JSONL/JSON/CSV/TSV/TXT file; the file mode cannot be combined with split/config/row selection. Imports are
+limited to 32 MiB. This adapter supports data convertible to Ainize teaching rows, not arbitrary image/audio
+training. Normal node validation, row limits, PII checks and canonicalization still apply; inspect `report`
+for rejected or modified rows.
+
+`--train --wait` optionally queues and observes the same lesson, without publishing it. Restricted datasets
+can use `--hf-token-file` pointing to a private (0600) file; gating terms must already be accepted. The token
+is not forwarded to the Ainize node or recorded in provenance. Raw input, mapped upload bytes and source
+metadata are saved privately under `AINIZE_HOME/hf-imports/`. Output distinguishes source revision and
+hashes from the node's canonical dataset hash. Existing `ainize dataset get <knowledge-id>` is unchanged.
+
 ## `ainize chat` — test knowledge live before you buy it
 
 ChatMode asks the serving model the same question **before** and **after** a patch is loaded, and marks the
