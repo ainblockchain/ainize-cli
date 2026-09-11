@@ -1415,6 +1415,28 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
    * that is over says so, with what the verifiers answered, and exits 6 (the same code `teach train --wait` uses for
    * REJECTED) so a cron line can tell "wait" from "this will never work".
    */
+  /*
+   * Buying something nobody has checked.
+   *
+   * A seller's node may allow this (`verifier.sellUnverified`), and the knowledge STAYS ANNOUNCED — it is
+   * never relabelled LISTED, because a status claiming "verified" when nobody checked is worth less than no
+   * status. So the risk is real and the buyer carries it, which means they have to be told what they are
+   * carrying BEFORE the money moves rather than discovering it after: how many attestations exist, that a
+   * benchmark score in the anchor is the SELLER'S OWN claim until a verifier reproduces it, and that nobody
+   * independent has checked whether loading it damages unrelated answers.
+   *
+   * --yes answers it, as everywhere else. The warning still prints: an unattended script should leave a
+   * record of what it accepted.
+   */
+  if (!detail.quorum_ok && detail.status !== 'REJECTED') {
+    const n = detail.passed ?? 0;
+    warn(ctx, `${c.id(id)} is ${detail.status}, NOT verified — ${n}/${detail.quorum} independent attestation${n === 1 ? '' : 's'}.`);
+    info(ctx, c.dim(`  · its benchmark score is the seller's own claim until a verifier reproduces it`));
+    info(ctx, c.dim(`  · nobody independent has checked whether loading it damages unrelated answers`));
+    info(ctx, c.dim(`  · watch it instead: ${PROG} patch get ${id} — quorum is ${detail.quorum}`));
+    await confirm(ctx, `Buy ${id} unverified, at your own risk? [y/N]`, { yes: opts.yes });
+  }
+
   if (detail.status === 'REJECTED') {
     const fails = detail.attestations.filter((x) => !x.passed).length;
     throw new CliError(`${id} FAILED verification — ${detail.passed}/${detail.quorum} passed, ${fails} verifier${fails === 1 ? '' : 's'} answered FAIL. It is not for sale and retrying will not change it: the network measured this build and rejected it.\n`
