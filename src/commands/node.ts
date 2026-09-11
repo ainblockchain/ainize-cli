@@ -217,7 +217,7 @@ export interface InfoResponse {
     /** item 215: the watchdog's last physical measurement of the table (`patch.py status`), not the store's flag. */
     checked?: { patch_id: string; sha256: string; at: number; present: boolean; source: string } | null;
   };
-  quorum: number; currency: string; peers: number; counts: { patches: number; listed: number };
+  quorum: number; currency: string; peers: number; counts: { patches: number; verified?: number; listed?: number };
   /** item 142: what this node has to pay for announces, attestations and settlements. Operator session only. */
   balance?: number | null;
   /** item 170: how many peers ANSWERED, how many of those verify, and which are on a ledger this node cannot read. */
@@ -358,7 +358,7 @@ export async function status(ctx: CliContext): Promise<InfoResponse> {
       // `runtime.patchDir` (which table to mutate) are independent, and nothing named the second anywhere.
       ...(x.runtime.patch_dir ? [['mailbox', x.runtime.patch_dir + (x.runtime.patch_dir_source === 'repo' ? c.dim('  (from runtime.repo — set runtime.patchDir to be sure it is this instance\'s)') : '')] as [string, string]] : []),
       ...(x.runtime.applied?.length ? [['in model', appliedLine(x.runtime)] as [string, string]] : []),
-      ['peers', peersLine(x.peer_status, x.peers)], ['patches', `${x.counts.patches} (${x.counts.listed} listed)`], ['quorum', x.quorum], ['currency', x.currency],
+      ['peers', peersLine(x.peer_status, x.peers)], ['patches', `${x.counts.patches} (${x.counts.verified ?? x.counts.listed ?? 0} verified)`], ['quorum', x.quorum], ['currency', x.currency],
       // item 142: this node signs and PAYS for every announce, attest and settle; nothing but `ainize wallet` said so.
       ...(typeof x.balance === 'number' ? [['balance', `${x.balance} ${x.currency}${x.balance <= 0 ? c.warn('  — this node cannot announce, attest or settle until it is funded') : ''}`] as [string, string]] : []),
       ['branches', x.node.branches.join(', ') || '-'], ['blobs held', `${x.node.blobs.length}${x.disk ? c.dim(` of ${x.disk.blob_files} files on disk`) : ''}`],
