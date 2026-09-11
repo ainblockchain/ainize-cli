@@ -53,7 +53,7 @@ before(async () => {
   saveConfig(cfg, home);
   node = await startNode(cfg, { home, quiet: true, serveWeb: false });
   await seedDemo(node.market, { real: false, synthetic: true });
-  await waitFor(() => node.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2026')?.status === 'LISTED', 30000);
+  await waitFor(() => node.market.catalog(true), (c) => c.find((e) => e.anchor.id === 'law-kr-2026')?.status === 'VERIFIED', 30000);
   ctx = buildContext({ home, node: `http://127.0.0.1:${port}`, quiet: true });
 });
 after(async () => { await node?.stop(); rmSync(tmp, { recursive: true, force: true }); });
@@ -94,7 +94,7 @@ test('login performs first-time setup and stores a bearer token', async () => {
 });
 
 test('patch ls / get / records', async () => {
-  const items = await patchLs(ctx, { status: 'LISTED' });
+  const items = await patchLs(ctx, { status: 'VERIFIED' });
   assert.ok(items.some((e) => e.anchor.id === 'law-kr-2026'));
   const mine = await patchLs(ctx, { mine: true });
   assert.ok(mine.length >= 4);

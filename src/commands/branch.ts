@@ -22,7 +22,7 @@ export function parseContext(pairs: string[] = []): Record<string, string> {
 /** What a track's members are, one by one — the catalogue read once and keyed by id (items 263, 264). */
 async function trackStatuses(ctx: CliContext): Promise<Map<string, CatalogEntry>> {
   // Every status by name: an omitted `status` hides RETIRED, and a track keeps its withdrawn members.
-  const all = 'LISTED,SUPERSEDED,ANNOUNCED,VERIFYING,CHALLENGED,REJECTED,RETIRED,DRAFT';
+  const all = 'VERIFIED,SUPERSEDED,ANNOUNCED,VERIFYING,CHALLENGED,REJECTED,RETIRED,DRAFT';
   const d = await new NodeClient(ctx).get<{ items: CatalogEntry[] }>(`/api/catalog?status=${all}&limit=200&include_drafts=1`).catch(() => null);
   return new Map((d?.items ?? []).map((e) => [e.anchor.id, e]));
 }
@@ -34,7 +34,7 @@ function memberChip(e: CatalogEntry | undefined, id: string): string {
   if (e.status === 'CHALLENGED') return `${id} ${c.err('(challenged)')}`;
   if (e.status === 'RETIRED') return `${id} ${c.dim('(withdrawn)')}`;
   if (e.status === 'SUPERSEDED') return `${id} ${c.dim('(older version)')}`;
-  if (e.status !== 'LISTED') return `${id} ${c.warn(`(${e.passed}/${e.quorum} verified)`)}`;
+  if (e.status !== 'VERIFIED') return `${id} ${c.warn(`(${e.passed}/${e.quorum} verified)`)}`;
   return c.ok(id);
 }
 

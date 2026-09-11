@@ -189,7 +189,7 @@ export interface PatchDetail extends CatalogEntry {
   requires?: { id: string; name: string; held: boolean; price: string | null; currency?: string; author?: string; author_name?: string | null; depth?: number; known?: boolean; purchased?: boolean; mine?: boolean }[];
   owned: boolean; purchased: boolean; has_body: boolean; applied: boolean; gateway_url: string | null;
   /**
-   * What is still to happen before this is LISTED (item 254) — who has not attested, how many of them can run this
+   * What is still to happen before this is VERIFIED (item 254) — who has not attested, how many of them can run this
    * model, and how long verification has actually taken on this node. Null once the quorum is met.
    */
   verifying?: {
@@ -588,7 +588,7 @@ export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
   // (`publish --kind update`, item 188), which is the one declaration that turns a family link into a supersede.
   const updates = new Set(d.anchor.derivation?.kind === 'update' ? (d.anchor.derivation.bases ?? []).map((b) => b.patch_id) : []);
   return d.conflicts.filter((x) => x.same_schema && !x.cross_branch && x.same_author !== false && (!x.lineage || updates.has(x.patch_id))
-    && ['LISTED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
+    && ['VERIFIED', 'VERIFYING', 'ANNOUNCED'].includes(x.status));
 }
 
 /**
@@ -596,7 +596,7 @@ export function retiredByAnnounce(d: PatchDetail): PatchDetail['conflicts'] {
  *  - what this announce retires, listed with each item's status and sales, and refused until every one of them is
  *    named with `--supersede` — the same friction the console demands before the same, permanent, irreversible write;
  *  - whether any reachable peer on this network actually verifies. Below the quorum nothing announced here can ever
- *    be LISTED, so the old unconditional "verifiers will now attest" was a promise the node could not keep.
+ *    be VERIFIED, so the old unconditional "verifiers will now attest" was a promise the node could not keep.
  */
 export async function patchAnnounce(ctx: CliContext, id: string, opts: { supersede?: string[]; keepOthers?: boolean; document?: boolean } = {}): Promise<AnnounceResult> {
   const client = new NodeClient(ctx);
@@ -643,7 +643,7 @@ export async function patchAnnounce(ctx: CliContext, id: string, opts: { superse
   const enough = !v || v.verifiers >= v.quorum;
   ok(ctx, `announced ${c.id(id)} → ledger record ${shortHash(r.record.hash, 16)}${enough && v ? c.dim(` (${v.verifiers} verifier node(s) can attest; quorum is ${v.quorum})`) : ''}`);
   if (v && !enough) {
-    warn(ctx, `this node knows ${v.verifiers} reachable verifier${v.verifiers === 1 ? '' : 's'} and the quorum is ${v.quorum}${v.known ? ` (${v.known} peer(s) known, ${v.reachable} answering)` : ''} — nothing announced here can be LISTED or sold until that changes.`);
+    warn(ctx, `this node knows ${v.verifiers} reachable verifier${v.verifiers === 1 ? '' : 's'} and the quorum is ${v.quorum}${v.known ? ` (${v.known} peer(s) known, ${v.reachable} answering)` : ''} — nothing announced here can be VERIFIED or sold until that changes.`);
     process.stderr.write([
       c.dim(`  join a network:   ${PROG} peers add <node url>`),
       c.dim(`  or verify alone:  ${PROG} config set verifier.quorum 1 && ${PROG} config set verifier.allowSelfAttest true`),
@@ -714,7 +714,7 @@ export async function patchVerify(ctx: CliContext, id: string, opts: { recheck?:
  * `ainize patch challenge <id> --reason …`. A challenge is free to file and expensive for everyone else: it stops
  * every sale of the knowledge and spends another operator's GPU minutes on the re-run (item 328). The command says
  * that before it sends, and afterwards it reports what actually happens next — which, for a knowledge that was never
- * LISTED, is not "off sale" but "the verifiers are asked to run it again" (item 242).
+ * VERIFIED, is not "off sale" but "the verifiers are asked to run it again" (item 242).
  */
 export async function patchChallenge(ctx: CliContext, id: string, reason: string): Promise<void> {
   const client = new NodeClient(ctx);
@@ -1410,7 +1410,7 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
     throw new CliError(`${id} is CHALLENGED — a verifier disputes it, so it is not for sale until it is re-verified${ch ? `\n  ${shortAddr(ch.challenger, 8)}: "${ch.reason}" (${fmtTime(ch.created_at)})` : ''}\n  see the dispute: ainize patch get ${id}`);
   }
   /*
-   * Item 263 — every non-LISTED status used to be reported as "not verified yet", so a finished, FAILED verification
+   * Item 263 — every non-VERIFIED status used to be reported as "not verified yet", so a finished, FAILED verification
    * read as one still in progress and a script keyed on that sentence retried a rejected bake forever. A verification
    * that is over says so, with what the verifiers answered, and exits 6 (the same code `teach train --wait` uses for
    * REJECTED) so a cron line can tell "wait" from "this will never work".
@@ -1419,7 +1419,7 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
    * Buying something nobody has checked.
    *
    * A seller's node may allow this (`verifier.sellUnverified`), and the knowledge STAYS ANNOUNCED — it is
-   * never relabelled LISTED, because a status claiming "verified" when nobody checked is worth less than no
+   * never relabelled VERIFIED, because a status claiming "verified" when nobody checked is worth less than no
    * status. So the risk is real and the buyer carries it, which means they have to be told what they are
    * carrying BEFORE the money moves rather than discovering it after: how many attestations exist, that a
    * benchmark score in the anchor is the SELLER'S OWN claim until a verifier reproduces it, and that nobody
@@ -1446,7 +1446,7 @@ export async function patchUse(ctx: CliContext, id: string, opts: BuyArgs = {}):
   if (detail.status === 'RETIRED') {
     throw new CliError(`${id} was withdrawn by its publisher${detail.retire_reason ? ` ("${detail.retire_reason}")` : ''} — off sale for good; everyone who already bought it keeps their copy.`, 6);
   }
-  if (!detail.quorum_ok || !['LISTED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet, so it cannot be bought here; the verifiers usually answer within a few minutes. Watch it with \`${PROG} patch get ${id}\``);
+  if (!detail.quorum_ok || !['VERIFIED', 'SUPERSEDED'].includes(detail.status)) throw new CliError(`${id} is ${detail.status} (verification ${detail.passed}/${detail.quorum}) — not verified yet, so it cannot be bought here; the verifiers usually answer within a few minutes. Watch it with \`${PROG} patch get ${id}\``);
   /*
    * Item 236 — this was printed through ok(): a green ✓ one line above "✓ bought", which is the shape of good news.
    * A script assembling a set from ids seen last week bought and stacked retired versions and nothing stopped it.
@@ -1598,7 +1598,7 @@ export interface ByNameArgs extends BuyArgs, ResolveOptions {
  *
  * This replaces a three-command sequence in which the operator carried an id between two machines by hand:
  *
- *   ainize patch ls --node http://their-node:3402 --status LISTED -q "<topic>"
+ *   ainize patch ls --node http://their-node:3402 --status VERIFIED -q "<topic>"
  *   ainize login && ainize use <id>
  *
  * WHAT THE NAME SUPPLIES is exactly what those commands supplied by hand: `ainize.node` is the `--node` of the
@@ -1657,7 +1657,7 @@ export async function patchByName(ctx: CliContext, name: string, a: ByNameArgs =
         `  • if it is a DRAFT it is private to its publisher and cannot be bought\n` +
         `  • if it is announced on a different ledger than yours, your node can never read its anchor\n` +
         `  • if ${r.node} is unreachable, the peer add above will have said so\n` +
-        `Check with: ${PROG} patch ls --node ${r.node} --status LISTED`, 1);
+        `Check with: ${PROG} patch ls --node ${r.node} --status VERIFIED`, 1);
     }
     throw e;
   }

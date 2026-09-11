@@ -323,7 +323,7 @@ export function renderTeachStatus(r: TeachStatusResult): string {
       ];
       pairs.push(['built on', bits.join(' · ')]);
       if (j.bases.length > 1) pairs.push(['  loaded under it', j.bases.slice(0, -1).map((b) => b.patch_id).join(' → ')]);
-      const stale = j.bases.filter((b) => b.status && !['LISTED', 'ANNOUNCED', 'VERIFYING'].includes(b.status));
+      const stale = j.bases.filter((b) => b.status && !['VERIFIED', 'ANNOUNCED', 'VERIFYING'].includes(b.status));
       if (stale.length) pairs.push(['  not published yet', `${stale.map((b) => `${b.patch_id} (${b.status})`).join(', ')} — publish it first, or this lesson cannot be published on top of it`]);
     }
     if (j.dataset) {
