@@ -1,7 +1,7 @@
 {
   "name": "ainize",
-  "version": "0.2.2",
-  "description": "ainize \u2014 Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
+  "version": "0.2.3",
+  "description": "ainize — Ainize (AI + -ize) knowledge-marketplace CLI: publish, verify, live-test (chat), trade and load knowledge patches; `ngram` alias kept (successor of the 2019 ainize-cli)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,8 +32,8 @@
   },
   "dependencies": {
     "@ainblockchain/ain-js": "^1.15.0",
-    "@ainize/core": "^0.2.0",
-    "@ainize/node": "^0.2.2",
+    "@ainize/core": "^0.2.2",
+    "@ainize/node": "^0.2.3",
     "aindrive": "^0.2.4",
     "chalk": "^5.6.2",
     "yargs": "^18.1.0"
