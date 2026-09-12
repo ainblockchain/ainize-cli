@@ -418,7 +418,7 @@ async function assertBasesUsable(s: TeachSession, ids: string[]): Promise<void> 
   }
 }
 
-async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts): Promise<CreateJobResult> {
+export async function trainDataset(s: TeachSession, datasetId: string, opts: TrainOpts): Promise<CreateJobResult> {
   const patchIds = (opts.patch ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   const baseIds = (opts.on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
   if (baseIds.length > 1) throw new CliError(`--on takes one knowledge — combining two is \`${PROG} patch merge ${baseIds[0]} ${baseIds[1]}\``);

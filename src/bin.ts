@@ -25,6 +25,7 @@ import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
 import * as teachData from './commands/teach-dataset.js';
+import { teachParallel } from './commands/teach-parallel.js';
 import * as dataset from './commands/dataset.js';
 import { datasetImportHuggingFace, type HuggingFaceOptions } from './commands/huggingface-dataset.js';
 import { EVENT_KINDS, EVENT_LEVELS } from '@ainize/core';
@@ -576,6 +577,17 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .example('$0 teach train 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
   run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; on?: string; inherit?: boolean; 'yes-change': boolean; wait: boolean; timeout?: number }) =>
     teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, on: a.on, inherit: a.inherit, yesChange: a['yes-change'], wait: a.wait, timeout: a.timeout })))
+
+  .command('parallel <manifest>', 'Submit parallel teach jobs and record their lifecycle paths through ain-js', (yy: Y) => keyOpts(yy)
+    .positional('manifest', { type: 'string', demandOption: true, describe: 'JSON array of datasetId, sha256 and rows' })
+    .option('chain-config', { type: 'string', demandOption: true, describe: 'AIN routes and a local signer-file reference' })
+    .option('output', { type: 'string', demandOption: true, describe: 'new evidence directory; use --resume to continue' })
+    .option('run-id', { type: 'string', demandOption: true })
+    .option('concurrency', { type: 'number', describe: 'parallel submissions; defaults to the manifest count' })
+    .option('observe-seconds', { type: 'number', default: 120, describe: 'observe job states after admission; does not cancel training when this ends' })
+    .option('resume', { type: 'boolean', default: false }),
+  run((ctx, a: G & { manifest: string; 'chain-config': string; output: string; 'run-id': string; key?: string; 'key-file'?: string; concurrency?: number; 'observe-seconds': number; resume: boolean }) =>
+    teachParallel(ctx, a.manifest, { chainConfig: a['chain-config'], output: a.output, runId: a['run-id'], key: a.key, keyFile: a['key-file'], concurrency: a.concurrency, observeSeconds: a['observe-seconds'], resume: a.resume })))
 
   .command('jobs', 'My lessons on this node and the dataset each came from', (yy: Y) => keyOpts(yy)
     .option('dataset', { type: 'string', describe: 'only lessons trained from this dataset' }),
