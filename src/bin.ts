@@ -149,15 +149,13 @@ cli.command('init', 'Create a node identity and config in AINIZE_HOME', (y: Y) =
   .option('public-url', { type: 'string', describe: 'URL peers can reach this node at' })
   .option('host', { type: 'string', describe: 'interface to bind (default 127.0.0.1 — this machine only)' })
   .option('public', { type: 'boolean', default: false, describe: 'bind 0.0.0.0 (every interface) — only behind a firewall or proxy' })
-  .option('password', { type: 'string', describe: 'operator password, set now so nobody else can claim this node (or AINIZE_PASSWORD)' })
-  .option('no-password', { type: 'boolean', default: false, describe: `leave the node unclaimed; \`${PROG} login\` claims it later (loopback only)` })
-  .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity and operator password are kept; the old file is copied aside)', default: false })
+  .option('force', { type: 'boolean', describe: 'rewrite an existing config.json (the node identity is kept; the old file is copied aside)', default: false })
   .option('new-identity', { type: 'boolean', describe: 'with --force: mint a NEW node key, orphaning everything the old one published (asks you to type the current address)', default: false })
   .example('$0 init --name alice --port 3402', 'local ledger node')
-  .example('$0 init --name alice --password "…" --host 0.0.0.0', 'a node others can reach, claimed before it listens')
+  .example('$0 init --name alice --host 0.0.0.0', 'a node others can reach — its own key is the operator, so there is nothing to claim')
   .example('$0 init --ledger ain --ain-provider http://localhost:8081', `AIN blockchain ledger (see \`${PROG} chain up\`)`),
-run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean; 'no-password'?: boolean }) =>
-  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'], noPassword: a['no-password'] }), false, true));
+run((ctx, a: G & init.InitArgs & { 'ain-provider'?: string; 'ain-chain-id'?: number; 'runtime-repo'?: string; 'runtime-api'?: string; 'private-key'?: string; 'public-url'?: string; 'new-identity'?: boolean }) =>
+  init.init(ctx, { ...a, ainProvider: a['ain-provider'], ainChainId: a['ain-chain-id'], runtimeRepo: a['runtime-repo'], runtimeApi: a['runtime-api'], privateKey: a['private-key'], publicUrl: a['public-url'], newIdentity: a['new-identity'] }), false, true));
 
 cli.command('config', 'Show or edit the node config', (y: Y) => fail(y)
   .command('show', 'Print config.json (secrets hidden)', (yy: Y) => yy, run((ctx) => init.configShow(ctx), false, true))
@@ -248,22 +246,19 @@ cli.command('gc', 'Delete knowledge files this node neither published nor bought
     node.gc(ctx, { dryRun: a['dry-run'], keepPurchased: a['keep-purchased'], olderThan: a['older-than'], allowSoleCopy: a['allow-sole-copy'], yes: a.yes })));
 
 // ---------------------------------------------------------------- auth
-cli.command('login', 'Log in as the node operator (sets the password on first use)', (y: Y) => fail(y)
-  .option('password', { type: 'string', describe: 'the operator password, at least 4 characters — or AINIZE_PASSWORD. Without either you are asked; a script with no terminal can also pipe it in' })
-  .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
-  .example('$0 login', 'asks for the password (it is not echoed)')
-  .example('AINIZE_PASSWORD="…" $0 login', 'in a script, a cron line or over ssh — as does --password, and so does piping it in')
-  .option('key', { type: 'boolean', describe: "sign in with this node's own private key instead of a password — it is in AINIZE_HOME/config.json and already owns everything this node published, so only on the machine that holds it" })
-  .example('$0 login --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'claim a node that has no password yet, from another machine')
-  .example('$0 login --key', "no password: signs a challenge with the node's own identity"),
-  run((ctx, a: G & { password?: string; 'setup-token'?: string; key?: boolean }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'], key: a.key })));
-cli.command('password', 'Change the operator password (--reset rewrites it in config.json when you have forgotten it)', (y: Y) => fail(y)
-  .option('password', { type: 'string', describe: 'the new password, at least 4 characters (or AINIZE_NEW_PASSWORD)' })
-  .option('current', { type: 'string', describe: 'the current password (or AINIZE_PASSWORD)' })
-  .option('reset', { type: 'boolean', default: false, describe: 'forgotten password: write a new hash into config.json (the node must be stopped)' })
-  .example('$0 password', 'change it on the running node')
-  .example('$0 stop && $0 password --reset', 'the way back when it is forgotten'),
-  run((ctx, a: G & { password?: string; current?: string; reset: boolean }) => auth.password(ctx, a), false, true));
+cli.command('login', 'Sign in as the node operator — a signature, not a password', (y: Y) => fail(y)
+  .option('as', { type: 'string', describe: 'sign with this private key instead of the node\'s own — for an address already in operatorAddresses' })
+  .option('enroll', { type: 'boolean', describe: 'also add the signing address to this node\'s operators (needs its own machine, or the one-time token)' })
+  .option('setup-token', { type: 'string', describe: 'with --enroll from another machine: the one-time token in the node\'s AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
+  .example('$0 login', "signs a challenge with this node's own key")
+  .example('$0 login --as <key> --enroll --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'enrol another key as an operator, from another machine'),
+  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string }) => auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'] })));
+cli.command('operators', 'Who may sign in to this node (its own key, always, plus operatorAddresses)', (y: Y) => fail(y)
+  .option('add', { type: 'string', describe: 'an address that may sign in from now on' })
+  .option('remove', { type: 'string', describe: 'take an address off the list' })
+  .example('$0 operators', 'list them')
+  .example('$0 operators --add 0x…', 'let an AIN Wallet address sign in'),
+  run((ctx, a: G & { add?: string; remove?: string }) => auth.operators(ctx, { add: a.add, remove: a.remove })));
 cli.command('logout', 'Forget the operator session', (y: Y) => fail(y), run((ctx) => auth.logout(ctx), false, true));
 
 // ---------------------------------------------------------------- peers

@@ -4,7 +4,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, hashPassword, loadConfig,
+  PROTECTED_CONFIG_KEYS, coerceConfigValue, configField, configFieldType, configKeys, configPath, defaultConfig, loadConfig,
   createIdentity, identityFromPrivateKey, nearestConfigKey, saveConfig, validateConfig, type NodeConfig, type NodeRole,
 } from '@ainize/core';
 import { NodeClient } from '../client.js';
@@ -21,7 +21,6 @@ export interface InitArgs {
   /** Interface to bind. Defaults to 127.0.0.1; `--public` is the same as `--host 0.0.0.0` (item 121). */
   host?: string; public?: boolean;
   /** Claim the node here, before it ever listens: the hash goes into config.json (item 121). */
-  password?: string; noPassword?: boolean;
 }
 
 /** Copy config.json aside before overwriting it — it is the only copy of the node's private key. */
@@ -87,40 +86,23 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
     cfg.identity = existing!.identity;
     if (existing!.operatorPasswordHash) cfg.operatorPasswordHash = existing!.operatorPasswordHash;   // not part of defaultConfig
   }
-  // Claim the node NOW rather than at its first HTTP call. Until a password exists, `POST /api/auth/setup` gives a
-  // full operator session to whoever asks; the node only accepts that from its own machine, but a node that is
-  // already claimed cannot be taken at all. Interactive terminals are asked; scripts pass --password / AINIZE_PASSWORD
-  // (or --no-password to start unclaimed on purpose, which is what `ainize login` then fixes). Item 121.
-  const wantPassword = a.password ?? process.env.AINIZE_PASSWORD;
-  let claimed: 'given' | 'typed' | null = null;
-  if (!cfg.operatorPasswordHash && !a.noPassword) {
-    if (wantPassword) {
-      if (wantPassword.length < 4) throw new CliError('the operator password must be at least 4 characters');
-      cfg.operatorPasswordHash = hashPassword(wantPassword);
-      claimed = 'given';
-    } else if (process.stdin.isTTY && !ctx.json && !ctx.quiet) {
-      const pw = await promptPassword('Operator password for this node (empty = claim it later with `ainize login`): ');
-      if (pw) {
-        if (pw.length < 4) throw new CliError('the operator password must be at least 4 characters');
-        const again = await promptPassword('Confirm password: ');
-        if (again !== pw) throw new CliError('passwords do not match — nothing was written');
-        cfg.operatorPasswordHash = hashPassword(pw);
-        claimed = 'typed';
-      }
-    }
-  }
+  /**
+   * Nothing to claim. The node's own key is an operator by construction — it is in the file this command just
+   * wrote — so there is no window in which the node is unowned and waiting for whoever asks first, and no password
+   * to set. `ainize login` signs a challenge with that key; another person's address is enrolled afterwards with
+   * `ainize operators add`.
+   */
   saveConfig(cfg, ctx.home);
   const publicBind = cfg.host === '0.0.0.0' || cfg.host === '::';
-  emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, host: cfg.host, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null, claimed: !!cfg.operatorPasswordHash }, (d) => [
+  emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, host: cfg.host, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null }, (d) => [
     c.ok('✓ ') + `node initialised at ${d.config}`,
     kv([['name', d.name], ['address', d.address], ['listens on', `${d.host}:${d.port}${publicBind ? c.warn('  (every interface)') : c.dim('  (this machine only)')}`], ['ledger', d.ledger], ['roles', d.roles.join(', ')],
-      ['operator', d.claimed ? c.ok(claimed ? 'password set — this node is claimed' : 'password kept from the previous config') : c.warn(`not set — claim it with \`${PROG} login\` before anyone else can`)]]),
+      ['operator', c.ok("this node's own key") + c.dim(`  (\`${PROG} login\` signs in with it — no password)`)]]),
     ...(d.kept_identity ? [c.dim(`keeping this node's identity ${d.address} (pass --new-identity to replace it)`)] : []),
     ...(d.backup ? [c.dim(`previous config saved as ${d.backup}`)] : []),
     ...(existing ? [] : [
       c.dim(`the private key lives in ${d.config} and this is the only copy — back it up now: \`${PROG} keys backup <file>\``),
     ]),
-    ...(publicBind && !d.claimed ? [c.warn(`! this node will accept connections from every interface with no operator password: run \`${PROG} login\` before \`${PROG} start\`, or re-run init with --password`)] : []),
     ...(publicBind ? [c.dim(`bound to ${cfg.host}: anyone who can reach port ${cfg.port} reaches this node's API — put it behind a proxy or a firewall (\`${PROG} config set host 127.0.0.1\` keeps it local)`)] : []),
     // Item 143: seeding writes the data directory, so it goes BEFORE the node that opens it — `seed` refuses once a
     // node is running, and the old hint told operators to do it the other way round.
@@ -130,10 +112,10 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
       c.dim('next, on the AIN ledger:'),
       c.dim(`  ${PROG} chain up        the local 1-node chain in docker (skip it if ${cfg.ledger.ain?.providerUrl ?? 'the provider'} is a chain you already run)`),
       c.dim(`  ${PROG} chain setup     registers /apps/knowledge + the market rules, and funds this identity on a local chain`),
-      c.dim(`  ${PROG} start${d.claimed ? '' : ` && ${PROG} login`}`),
+      c.dim(`  ${PROG} start && ${PROG} login`),
       c.dim(`  ${PROG} wallet          this node pays for every announce, attest and settle from its own AIN balance — check it`),
     ] : [
-      c.dim(`next: \`${PROG} start\`${d.claimed ? '' : `   (then \`${PROG} login\`)`}`),
+      c.dim(`next: \`${PROG} start\`   (then \`${PROG} login\`)`),
       c.dim(`      (demo knowledge: \`${PROG} seed\` first — it writes the data directory the node then opens)`),
     ]),
   ].join('\n'));

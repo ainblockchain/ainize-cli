@@ -7,6 +7,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createIdentity } from '@ainize/core';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -80,17 +81,22 @@ test('status reaches the node', async () => {
   assert.equal(s.ledger.kind, 'local');
 });
 
-test('login performs first-time setup and stores a bearer token', async () => {
-  const r = await login(ctx, { password: 'test-pass-1234' });
-  assert.ok(r.setup);
+test('login signs a challenge with the node\'s own key and stores a bearer token', async () => {
+  // There is no first-time setup any more: the node's own key is an operator by construction, so the first login
+  // and the tenth are the same operation. `--as` with a key nobody enrolled is refused by the node, not by us.
+  const r = await login(ctx, {});
   assert.ok(r.token.length > 20);
   assert.equal(readState(home).token, r.token);
-  // second login uses the password
+  assert.ok(ctx.cfg && r.address.toLowerCase() === ctx.cfg.identity.address.toLowerCase());
+
   const ctx2 = buildContext({ home, node: `http://127.0.0.1:${port}`, quiet: true });
   ctx2.token = null;
-  const r2 = await login(ctx2, { password: 'test-pass-1234' });
-  assert.ok(!r2.setup);
-  await assert.rejects(login({ ...ctx2, token: null }, { password: 'wrong' }));
+  const r2 = await login(ctx2, {});
+  assert.ok(r2.token.length > 20);
+
+  const stranger = createIdentity();
+  await assert.rejects(login({ ...ctx2, token: null }, { as: stranger.privateKey }),
+    (e: Error) => /not an operator/i.test(e.message));
 });
 
 test('patch ls / get / records', async () => {
