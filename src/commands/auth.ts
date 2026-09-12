@@ -4,7 +4,7 @@
 import { createInterface } from 'node:readline';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hashPassword, loadConfig, saveConfig } from '@ainize/core';
+import { hashPassword, loadConfig, saveConfig, signMessage } from '@ainize/core';
 import { NodeClient } from '../client.js';
 import { CliError, PROG, readState, writeState, type CliContext } from '../context.js';
 import { runningPid } from '../pid.js';
@@ -59,7 +59,7 @@ export async function promptLine(question: string): Promise<string> {
   });
 }
 
-export interface LoginArgs { password?: string; setupToken?: string; }
+export interface LoginArgs { password?: string; setupToken?: string; key?: boolean; }
 
 /**
  * The one-time claim token `startNode` writes while a node has no operator password (item 121). A node is claimed
@@ -84,6 +84,31 @@ export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token
       `${ctx.cfg ? ` (${shortAddr(ctx.cfg.identity.address, 8)})` : ''}. Refusing to claim someone else's node; re-run with --node ${ctx.nodeUrl} if that is really what you want.`,
       2,
     );
+  }
+  /**
+   * `--key` — sign in with the node's own private key instead of a password.
+   *
+   * The key is in `config.json`, in this very home directory, and it already owns everything this node published.
+   * A password on top of it protects nothing, and it is the one shared secret in a product whose entire identity
+   * model is "a key signs for itself" — so on the machine that holds the key, this is the honest path.
+   *
+   * It is not the default. `login` with no flags still asks for the password, because `--node` can point at a node
+   * this home does not own, and silently signing with the local key would then either fail confusingly or, worse,
+   * succeed against a node that happens to share the address.
+   */
+  const cfg = ctx.cfg ?? loadConfig(ctx.home);
+  if (a.key) {
+    if (me.needsSetup) throw new CliError(`${ctx.nodeUrl} has no operator yet — claim it with a password first (\`${PROG} login\`), then \`${PROG} config set operatorAddresses\` decides who else may sign with a key`);
+    if (!cfg?.identity?.privateKey) throw new CliError(`no private key in ${ctx.home}/config.json — \`--key\` signs with this node's own identity, so it only works on the machine that holds it`);
+    const ch = await client.post<{ nonce: string; node: string; message: string }>('/api/auth/challenge', {}, { auth: false });
+    const signature = signMessage(ch.message, cfg.identity.privateKey);
+    const r = await client.post<{ ok: boolean; token: string; address: string }>('/api/auth/wallet',
+      { address: cfg.identity.address, nonce: ch.nonce, signature }, { auth: false });
+    const st = readState(ctx.home);
+    writeState(ctx.home, { ...st, token: r.token, nodeUrl: ctx.nodeUrl });
+    ctx.token = r.token;
+    ok(ctx, `signed in to ${ctx.nodeUrl} as ${c.id(shortAddr(r.address, 8))} ${c.dim('(signed with this node\'s key — no password)')}`);
+    return { token: r.token, nodeUrl: ctx.nodeUrl, setup: false };
   }
   let password = a.password ?? process.env.AINIZE_PASSWORD;
   if (!password) {

@@ -253,8 +253,10 @@ cli.command('login', 'Log in as the node operator (sets the password on first us
   .option('setup-token', { type: 'string', describe: 'claim a node over the network with the one-time token in its AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
   .example('$0 login', 'asks for the password (it is not echoed)')
   .example('AINIZE_PASSWORD="…" $0 login', 'in a script, a cron line or over ssh — as does --password, and so does piping it in')
-  .example('$0 login --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'claim a node that has no password yet, from another machine'),
-  run((ctx, a: G & { password?: string; 'setup-token'?: string }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'] })));
+  .option('key', { type: 'boolean', describe: "sign in with this node's own private key instead of a password — it is in AINIZE_HOME/config.json and already owns everything this node published, so only on the machine that holds it" })
+  .example('$0 login --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'claim a node that has no password yet, from another machine')
+  .example('$0 login --key', "no password: signs a challenge with the node's own identity"),
+  run((ctx, a: G & { password?: string; 'setup-token'?: string; key?: boolean }) => auth.login(ctx, { password: a.password, setupToken: a['setup-token'], key: a.key })));
 cli.command('password', 'Change the operator password (--reset rewrites it in config.json when you have forgotten it)', (y: Y) => fail(y)
   .option('password', { type: 'string', describe: 'the new password, at least 4 characters (or AINIZE_NEW_PASSWORD)' })
   .option('current', { type: 'string', describe: 'the current password (or AINIZE_PASSWORD)' })
