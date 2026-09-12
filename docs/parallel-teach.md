@@ -54,6 +54,15 @@ Use the chain's actual gas price and signing account. Transaction costs and writ
 permissions remain the operator's responsibility. Multiple configured routes are
 used round-robin; different paths on one chain are not independent shards.
 
+For native POA shards, each route can also declare
+`parent: { provider, reader, shardPath }`, with two distinct parent validators and
+the actual shard path (for example `/apps/year3_shard1`). The recorder then waits
+for both parent validators' finalized proof-hash records to match the independently
+read child transaction block. Parent proof paths and hashes are included in each
+receipt. Parent endpoints must differ from the child endpoints. Set
+`signerAccount: "owner"` to use the account file's `owner.private_key` for an
+existing owner-only application; the default selects `others[signerIndex]`.
+
 ## Run
 
 On an idle test node, configure admission and queue/daily/row quotas appropriate

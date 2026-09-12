@@ -47,3 +47,17 @@ test('RPC acceptance and finalized revert never count as an on-chain training re
   assert.throws(() => assertPipelineReceipt({ is_finalized: true, exec_result: { code: 12103 }, number: 1 }), /execution failed/);
   assert.equal(assertPipelineReceipt({ is_finalized: true, state: 'FINALIZED', exec_result: { code: 0 }, number: 123 }), 123);
 });
+
+test('native shard routes use separate parent validators and an explicit owner account', () => {
+  const config = { chainId: 0, gasPrice: 1, signerFile: '/private/accounts.json', signerIndex: 0,
+    signerAccount: 'owner' as const, chains: [{ name: 'shard1', provider: 'http://127.0.0.1:18301',
+      reader: 'http://127.0.0.1:18303', pathPrefix: '/apps/native_training/pipelines',
+      parent: { provider: 'http://127.0.0.1:18201', reader: 'http://127.0.0.1:18204', shardPath: '/apps/year3_shard1' } }] };
+  assert.equal(validatePipelineChainConfig(config), config);
+  const changed = structuredClone(config);
+  changed.chains[0].parent.reader = changed.chains[0].reader;
+  assert.throws(() => validatePipelineChainConfig(changed), /distinct/);
+  changed.chains[0].parent.reader = config.chains[0].parent.reader;
+  changed.chains[0].parent.shardPath = '/manage_app/shard1';
+  assert.throws(() => validatePipelineChainConfig(changed));
+});
