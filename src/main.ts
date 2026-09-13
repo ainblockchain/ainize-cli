@@ -194,9 +194,13 @@ cli.command('start', 'Start the node (foreground unless --detach)', (y: Y) => fa
   .option('roles', { type: 'string', describe: 'comma list of seller,verifier,serving,gateway for this run (default: the config value)' })
   .option('public-url', { type: 'string', describe: 'URL peers should reach this node at — an address on this machine is useless to them (default: the config value)' })
   .option('detach', { alias: 'd', type: 'boolean', default: false, describe: 'run in the background (pid in AINIZE_HOME/node.pid)' })
+  // Without this the node serves `<cli>/../../web/dist`: whatever happens to be in a working tree beside the
+  // installed CLI. A public site deployed that way cannot be identified, reproduced or rolled back — which is
+  // not hypothetical, it is how ainize.ai once came to serve a build nobody could name.
+  .option('web-dist', { type: 'string', describe: 'directory of built web assets to serve (default: the tree beside this CLI; also AINIZE_WEB_DIST)' })
   .example('$0 start', '').example('$0 start -d --peer http://localhost:3402', 'second node joining the first'),
-run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string }) => {
-  const r = await node.start(ctx, { ...a, publicUrl: a['public-url'] });
+run(async (ctx, a: G & node.StartArgs & { 'public-url'?: string; 'web-dist'?: string }) => {
+  const r = await node.start(ctx, { ...a, publicUrl: a['public-url'], webDist: a['web-dist'] });
   if ('detached' in r) return r;
   // Only to a terminal: `start -d` spawns this same foreground path with stdout redirected into node.log, so this
   // line used to end every detached run's log with an instruction nobody can carry out there (item 131).

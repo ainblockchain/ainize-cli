@@ -35,7 +35,7 @@ import { promptLine } from './auth.js';
 
 export { runningPid };
 
-export interface StartArgs { port?: number; peer?: string[]; detach?: boolean; roles?: string; publicUrl?: string; }
+export interface StartArgs { port?: number; peer?: string[]; detach?: boolean; roles?: string; publicUrl?: string; webDist?: string; }
 
 
 function binPath(): string {
@@ -121,7 +121,12 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     for (const p of a.peer ?? []) args.push('--peer', p);
     if (a.roles) args.push('--roles', a.roles);
     if (a.publicUrl) args.push('--public-url', a.publicUrl);
-    const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, AINIZE_HOME: ctx.home } });
+    // Every flag that changes what the node SERVES has to survive the re-spawn. This list is rebuilt by hand,
+    // so a new flag is silently dropped unless it is added here — `--web-dist` was, and the public site went
+    // on serving the CLI's sibling working tree while the command line said otherwise. The env var below is
+    // the belt to this braces: it reaches the child through `env` whatever this list forgets.
+    if (a.webDist) args.push('--web-dist', a.webDist);
+    const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, AINIZE_HOME: ctx.home, ...(a.webDist ? { AINIZE_WEB_DIST: a.webDist } : {}) } });
     type Exit = { code: number | null; signal: NodeJS.Signals | null };
     const exited: Exit[] = [];
     child.once('exit', (code, signal) => { exited.push({ code, signal }); });
@@ -152,7 +157,15 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     return { detached: true, pid: child.pid!, log: logFile(ctx.home) };
   }
   const { startNode } = await server();
-  const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet });
+  // Where the web assets come from. Without this the node resolves `<cli>/../../web/dist` — whatever happens
+  // to be in a working tree beside the installed CLI — which is how ainize.ai came to serve a build nobody
+  // could identify. A deployment says which directory it means; `AINIZE_WEB_DIST` is the same thing for a
+  // supervisor that cannot pass flags.
+  const webDist = a.webDist ?? process.env.AINIZE_WEB_DIST ?? undefined;
+  if (webDist && !existsSync(join(webDist, 'index.html'))) {
+    throw new CliError(`--web-dist ${webDist} has no index.html — a built web directory is expected there. Refusing to start and silently fall back to the CLI's own sibling tree.`);
+  }
+  const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet, webDist });
   writeFileSync(pidFile(ctx.home), String(process.pid));
   const cleanup = async () => { try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ } await node.stop(); process.exit(0); };
   process.once('SIGINT', cleanup);
