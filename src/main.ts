@@ -248,20 +248,37 @@ cli.command('gc', 'Delete knowledge files this node neither published nor bought
     node.gc(ctx, { dryRun: a['dry-run'], keepPurchased: a['keep-purchased'], olderThan: a['older-than'], allowSoleCopy: a['allow-sole-copy'], yes: a.yes })));
 
 // ---------------------------------------------------------------- auth
-cli.command('login', 'Sign in as the node operator — a signature, not a password', (y: Y) => fail(y)
-  .option('as', { type: 'string', describe: 'sign with this private key instead of the node\'s own — for an address already in operatorAddresses' })
-  .option('enroll', { type: 'boolean', describe: 'also add the signing address to this node\'s operators (needs its own machine, or the one-time token)' })
+cli.command('login', 'Sign in — on the node\'s own machine with its key, anywhere else by approving this machine in a browser', (y: Y) => fail(y)
+  .option('device', { type: 'boolean', describe: "print a URL and wait for someone to approve this machine's key in a browser — the default anywhere the node's config.json is not" })
+  .option('node-key', { type: 'boolean', describe: "sign with the node's own key from config.json (the default on its own machine)" })
+  .option('label', { type: 'string', describe: 'what to call this machine in the approval prompt and in the list of what acts as you' })
+  .option('as', { type: 'string', describe: 'sign with this private key instead — for an address that already owns this node' })
+  .option('enroll', { type: 'boolean', describe: "also make the signing address an owner of this node (needs its own machine, or the one-time token)" })
   .option('setup-token', { type: 'string', describe: 'with --enroll from another machine: the one-time token in the node\'s AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
-  .example('$0 login', "signs a challenge with this node's own key")
-  .example('$0 login --as <key> --enroll --setup-token "$(ssh host cat ~/.ainize/setup-token)"', 'enrol another key as an operator, from another machine'),
-  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string }) => auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'] })));
-cli.command('operators', 'Who may sign in to this node (its own key, always, plus operatorAddresses)', (y: Y) => fail(y)
-  .option('add', { type: 'string', describe: 'an address that may sign in from now on' })
+  .example('$0 login', "on the node's machine: signs with its own key; anywhere else: prints a link to approve")
+  .example('$0 login --node https://ainize.ai', 'sign in to somebody else\'s node as yourself')
+  .example('$0 login --device --label "ci runner"', 'approve this machine explicitly, under a name you will recognise later'),
+  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string }) =>
+    auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label })));
+cli.command('whoami', 'Which address this session acts as, and which key is doing the acting', (y: Y) => fail(y)
+  .example('$0 whoami', 'and whether that address owns this node'),
+  run((ctx) => auth.whoami(ctx)));
+cli.command('bindings', 'Machines you have authorised to act as you on this node', (y: Y) => fail(y)
+  .option('end', { type: 'string', describe: 'stop a key acting as you, and close the sessions it collected' })
+  .example('$0 bindings', 'list them')
+  .example('$0 bindings --end 0x…', 'shut out a laptop you no longer have'),
+  run((ctx, a: G & { end?: string }) => auth.bindings(ctx, { end: a.end })));
+cli.command('operators', 'Who owns this node (its own key, always, plus operatorAddresses)', (y: Y) => fail(y)
+  .option('add', { type: 'string', describe: 'an address that owns this node from now on' })
   .option('remove', { type: 'string', describe: 'take an address off the list' })
   .example('$0 operators', 'list them')
-  .example('$0 operators --add 0x…', 'let an AIN Wallet address sign in'),
+  .example('$0 operators --add 0x…', 'let a wallet address run this node'),
   run((ctx, a: G & { add?: string; remove?: string }) => auth.operators(ctx, { add: a.add, remove: a.remove })));
-cli.command('logout', 'Forget the operator session', (y: Y) => fail(y), run((ctx) => auth.logout(ctx), false, true));
+cli.command('logout', 'End this session', (y: Y) => fail(y)
+  .option('forget', { type: 'boolean', describe: "also destroy this machine's own key, so signing in here again needs approving in a browser" })
+  .example('$0 logout', 'end the session, keep the key')
+  .example('$0 logout --forget', 'and leave nothing behind on this machine'),
+  run((ctx, a: G & { forget?: boolean }) => auth.logout(ctx, { forget: a.forget }), false, true));
 
 // ---------------------------------------------------------------- peers
 cli.command('peers', 'Manage peers', (y: Y) => fail(y)

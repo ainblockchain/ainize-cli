@@ -7,7 +7,6 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createIdentity } from '@ainize/core';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -17,7 +16,8 @@ import { createIdentity, defaultConfig, saveConfig, teachConfig, writeNpz, type 
 import { startNode, seedDemo, type RunningNode } from '@ainize/node';
 import { buildContext, CliError, progName, readState } from '../src/context.js';
 import { chatOnce, chatPatches, renderChat, assistantTurn, parsePatchIds, type ChatResponse } from '../src/commands/chat.js';
-import { login } from '../src/commands/auth.js';
+import { bindings, login, logout, whoami } from '../src/commands/auth.js';
+import { readCliKey } from '../src/cli-key.js';
 import { patchLs, patchGet, patchRecords, patchPublish, patchImport, patchForget, draftFromRecipe, parseContributors, type LessonRecipe } from '../src/commands/patch.js';
 import { teachStatus, renderTeachStatus, parseTeachTarget, parseTeacherKey, signedTeachHeader, teachAuthHeader, loadTeacherKey, TEACH_KEY_FILE } from '../src/commands/teach.js';
 import { datasetGet, datasetLs, datasetRm, datasetUpload, ensureTeacherKey, renderDatasetGet, renderDatasetList, renderJobCreated, renderJobs, renderUpload, teachJobs, teachTrain } from '../src/commands/teach-dataset.js';
@@ -94,9 +94,38 @@ test('login signs a challenge with the node\'s own key and stores a bearer token
   const r2 = await login(ctx2, {});
   assert.ok(r2.token.length > 20);
 
+  // A key nobody authorised is no longer refused: signing in gives you a NAME, and owning the node is a separate
+  // question. What it does not get is the node — the session is that address, and it owns nothing here.
   const stranger = createIdentity();
-  await assert.rejects(login({ ...ctx2, token: null }, { as: stranger.privateKey }),
-    (e: Error) => /not an operator/i.test(e.message));
+  const theirs = await login({ ...ctx2, token: null }, { as: stranger.privateKey });
+  assert.equal(theirs.address.toLowerCase(), stranger.address.toLowerCase());
+  const who = await whoami({ ...ctx2, token: theirs.token });
+  assert.equal(who.isOwner, false, 'a name is not a key to the node');
+  assert.equal(who.via_key, null, 'and nothing stood in for them: that key signed for itself');
+});
+
+test('`login` on a machine with no node config asks a person to approve this machine', async () => {
+  // The case the device flow exists for: a laptop. There is no config.json to sign with, and the old answer was
+  // an error telling you to go and edit a file on a machine you may not be able to reach.
+  const laptop = mkdtempSync(join(tmpdir(), 'ainize-cli-laptop-'));
+  try {
+    const lap = buildContext({ home: laptop, node: `http://127.0.0.1:${port}`, quiet: true });
+    assert.equal(lap.cfg, null, 'no node here');
+
+    // It generates a key of its own, keeps it, and asks the node for a code. Given nobody is watching a browser,
+    // the wait is cut short — what is pinned is that it got as far as a real pending request for THIS key.
+    const started = login(lap, { timeoutMs: 1 }).then(() => null, (e: Error) => e);
+    const err = await started;
+    assert.ok(err instanceof Error, 'nobody approved it');
+    assert.match(err.message, /login/, 'and the refusal names the way out');
+
+    const key = readCliKey(laptop);
+    assert.ok(key && /^0x[0-9a-fA-F]{40}$/.test(key.address), 'the machine kept its key');
+    // Stable: regenerating it on the next run would orphan every binding a person had approved.
+    assert.equal(readCliKey(laptop)?.privateKey, key!.privateKey);
+    // And the key itself never left: the node was told an address, nothing more.
+    assert.ok(!JSON.stringify(await (await fetch(`http://127.0.0.1:${port}/api/auth/me`)).json()).includes(key!.privateKey));
+  } finally { rmSync(laptop, { recursive: true, force: true }); }
 });
 
 test('patch ls / get / records', async () => {

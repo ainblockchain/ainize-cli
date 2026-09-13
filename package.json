@@ -32,13 +32,14 @@
   },
   "dependencies": {
     "@ainblockchain/ain-js": "^1.15.0",
-    "@ainize/core": "^0.2.3",
-    "@ainize/node": "^0.2.5",
+    "@ainize/core": "^0.3.1",
+    "@ainize/node": "^0.3.0",
     "aindrive": "^0.2.4",
     "chalk": "^5.6.2",
     "yargs": "^18.1.0"
   },
   "devDependencies": {
+    "@noble/secp256k1": "^2.3.0",
     "@types/node": "^24.10.0",
     "@types/yargs": "^17.0.35",
     "tsx": "^4.23.13",

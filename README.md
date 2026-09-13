@@ -32,7 +32,7 @@ apply / verify / chat.
 ainize init --name alice --port 3402         # creates ~/.ainize/config.json + an AIN keypair (node identity)
 ainize seed                                  # real Qwen3.8 patches (pixelplus-087600, krx-all-2761…) if the runtime repo is present
 ainize start -d                              # background node; web console at http://localhost:3402
-ainize login                                 # sets the operator password on first use, stores a token in ~/.ainize/cli.json
+ainize login                                 # signs with this node's own key (no password), stores a token in ~/.ainize/cli.json
 ainize status
 ainize patch ls
 ainize chat --list                           # what can be tested live on this node
@@ -114,8 +114,47 @@ ainize chat krx-all-2761 --mode patched --thinking --max-tokens 400
 
 In a session `/mode base|patched|compare` switches mode, `/reset` clears the transcript, `/quit` exits
 (Ctrl+D works too). The conversation continues from the *patched* answer. Public visitors get a free hourly
-trial quota per node (shown after each answer); the node operator (after `ainize login`) is unlimited. A patch
+trial quota per node (shown after each answer); whoever owns the node (after `ainize login`) is unlimited. A patch
 is testable on a node that holds its body — the seller node, or yours after `ainize patch buy <id>`.
+
+## Signing in from a machine that is not the node's
+
+On the node's own machine `ainize login` signs with the key in `config.json` — it already owns everything that
+node published, and nothing needs to be asked. Anywhere else there is no such key, and copying your wallet key
+onto a laptop is the thing wallets exist to prevent. So the CLI keeps a key of its own and asks a person to
+vouch for it, once:
+
+```
+$ ainize login --node https://ainize.ai
+
+  Open this to authorise this machine:
+
+    https://ainize.ai/authorize?code=7Qd…
+
+  key  0x9f2c…            ← compare this against the page before approving
+  name "kmh@laptop"
+
+  Waiting…  (Ctrl-C to stop)
+```
+
+Open the link in a browser, connect your wallet, read what is being asked, and approve it with one signature.
+The CLI then holds a session that is **you** — your knowledge, your payouts, your ownership — made by a key that
+never left this machine. The node writes the binding down, so the next `ainize login` here needs no browser at
+all.
+
+| | |
+|---|---|
+| `ainize whoami` | which address you act as, and which key is doing the acting |
+| `ainize bindings` | every machine that acts as you, and which one is reading this |
+| `ainize bindings --end 0x…` | shut out a laptop you no longer have — its sessions end with it |
+| `ainize logout` | end this session, keep the key |
+| `ainize logout --forget` | and destroy this machine's key too |
+
+The key lives in `~/.ainize/cli-key.json`, mode 0600. It is worth what an ssh key is worth: whoever can read it
+can act as you on any node that has a binding for it, until you end it. Only its *address* is ever sent.
+
+Signing in is open to anyone — it gives you a **name**, not a permission. Running the node is separate:
+`ainize operators` lists who owns it, and an owner can add another from Account settings in the browser.
 
 ## Multi-node demo (three terminals or `-d`)
 
@@ -146,7 +185,7 @@ AINIZE_HOME=~/.ainize-c ainize branch subscribe law/KR && ainize route jurisdict
 |---|---|
 | setup | `init`, `config show\|set <key> <value>`, `keys show [--reveal]` |
 | lifecycle | `start [-d] [--peer …] [--port]`, `stop`, `status`, `logs [-f] [--patch id] [--kind k]`, `seed [--no-real] [--no-synthetic]`, `nodes` |
-| auth | `login [--password]` (or `AINIZE_PASSWORD`), `logout` |
+| auth | `login [--device] [--label …] [--as <key>]`, `whoami`, `bindings [--end 0x…]`, `operators [--add\|--remove 0x…]`, `logout [--forget]` |
 | peers | `peers ls\|add <url>\|rm <url>` |
 | patches | `patch ls\|get\|publish\|announce\|verify\|challenge\|buy [--apply]\|apply\|remove\|conflicts\|records\|rm` |
 | chat | `chat --list`, `chat <id> [prompt]` (`--mode`, `--thinking`, `--max-tokens`, `--system`) — live test before/after |
