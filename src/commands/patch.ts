@@ -1619,7 +1619,7 @@ export async function patchByName(ctx: CliContext, name: string, a: ByNameArgs =
 
   let r: ResolvedName;
   try {
-    r = await resolveName(name, { rpc: a.rpc, registry: a.registry, namesFile: a.namesFile, config: (ctx.cfg as { ens?: ResolveOptions['config'] } | null)?.ens ?? null, home: ctx.home });
+    r = await resolveName(name, { rpc: a.rpc, registry: a.registry, chain: a.chain, namesFile: a.namesFile, config: (ctx.cfg as { ens?: ResolveOptions['config'] } | null)?.ens ?? null, home: ctx.home });
   } catch (e) {
     throw new CliError((e as Error).message);
   }

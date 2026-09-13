@@ -42,6 +42,112 @@ ainize chat pixelplus-087600 "종목코드 픽셀플러스"
 `AINIZE_HOME` selects the node directory (default `~/.ainize`); `--node <url>` targets another node's API;
 `--json` prints machine-readable output for every command.
 
+## ENSv2 / Continuity: resolve a name to knowledge
+
+`ainize patch <name> --resolve-only` reads the ENS text records `ainize.node` (seller HTTP(S)
+endpoint) and `ainize.patch` (published knowledge id). It prints their source and stops before
+peering, login, purchase or loading. No initialized Ainize node or wallet is needed for resolution.
+Both records must exist; missing records and RPC failures are errors, never demo values.
+
+The default on-chain path uses **viem 2.56.5 or newer**, `normalize` and `getEnsText` through
+the chain's canonical Universal Resolver, including viem's CCIP-Read gateway/callback handling.
+It does not call an ENSv2 registry's `resolver(namehash)`. The
+[official app tutorial](https://docs.ens.domains/ensv2/tutorial-app-developers/) describes this API;
+the [readiness guide](https://docs.ens.domains/web/ensv2-readiness/) requires viem ≥2.35.0.
+The proxy address comes from viem's chain definition, not an application deployment constant.
+
+Build and test this checkout (Node 24 is required; these commands also work from a Node 22 host):
+
+```sh
+cd /mnt/newdata/gov/hackathon/ainize-cli
+npx --yes --package=node@24 -c 'npm ci'
+npx --yes --package=node@24 -c 'npm run build'
+npx --yes --package=node@24 -c 'node --test --import tsx test/ens.test.ts test/ens-rpc.test.ts'
+python3 -m pip install --target node_modules/.test-python 'numpy==2.2.6'
+PYTHONPATH="$PWD/node_modules/.test-python" npx --yes --package=node@24 -c 'npm test'
+```
+
+The full suite's existing node fixtures require Python 3 with NumPy; the ENS-only tests do not.
+The command above installs NumPy inside this ignored `node_modules` directory.
+
+Resolve **your own registered Sepolia name**, after its publisher has set both records to real values:
+
+```sh
+read -r -p 'Registered Sepolia ENS name: ' CONTINUITY_ENS_NAME
+export CONTINUITY_ENS_NAME
+export ENS_RPC_URL='https://ethereum-sepolia-rpc.publicnode.com'
+unset ENS_REGISTRY
+npx --yes --package=node@24 -c 'node dist/bin.js patch "$CONTINUITY_ENS_NAME" --ens-chain sepolia --resolve-only --json'
+```
+
+Also remove `ens.registry` from the selected home's config if previously configured: any supplied
+registry selects legacy mode. Check that output says `source: "on-chain"` and `Universal Resolver ...
+on sepolia (11155111)`. A local names entry takes priority and is explicitly reported as `names-file`
+or `config`; remove that entry to test the live chain. The RPC's `eth_chainId` must match the selected
+network before any record lookup. RPC URLs and provider error bodies are omitted from resolution output.
+
+Options and configuration precedence:
+
+| Setting | Flag | Environment | Node config | Default |
+| --- | --- | --- | --- | --- |
+| RPC | `--rpc` | `ENS_RPC_URL` | `ens.rpc` | Required for network lookup |
+| Network | `--ens-chain` | `ENS_CHAIN` | `ens.chain` | `sepolia`; also supports `mainnet` |
+| Legacy registry | `--registry` | `ENS_REGISTRY` | `ens.registry` | Unset: Universal Resolver |
+
+Flags override environment, which overrides config. ENS names are normalized with ENSIP-15;
+Unicode names and DNS names imported into ENS are accepted as well as `.eth` names.
+
+For **explicit legacy ENSv1 mode**, supply the actual ENSv1 registry address and matching RPC/network:
+
+```sh
+read -r -p 'Legacy ENSv1 registry address: ' ENS_REGISTRY
+read -r -p 'Matching RPC URL: ' ENS_RPC_URL
+read -r -p 'Network (sepolia or mainnet): ' ENS_CHAIN
+export ENS_REGISTRY ENS_RPC_URL ENS_CHAIN
+npx --yes --package=node@24 -c 'node dist/bin.js patch "$CONTINUITY_ENS_NAME" --resolve-only --json'
+```
+
+Legacy mode calls `registry.resolver(namehash)` followed by the discovered resolver's `text` methods;
+it is not the ENSv2 path. Names-file mode remains available with a JSON object mapping normalized names
+to `{ "node": "<real seller URL>", "patch": "<real published id>" }` (or an enclosing `names` object):
+
+```sh
+read -r -p 'Path to your names JSON file: ' CONTINUITY_NAMES_FILE
+export CONTINUITY_NAMES_FILE
+npx --yes --package=node@24 -c 'node dist/bin.js patch "$CONTINUITY_ENS_NAME" --names "$CONTINUITY_NAMES_FILE" --resolve-only --json'
+```
+
+Search order is `--names`, `<selected home>/names.json`, `~/.ainize/names.json`, then `config.json`
+`ens.names`, then on-chain. The local examples describe a file format, not registered names.
+
+After verifying a real name, use it against your configured buyer node with a budget:
+
+```sh
+unset ENS_REGISTRY
+export ENS_CHAIN=sepolia
+export ENS_RPC_URL='https://ethereum-sepolia-rpc.publicnode.com'
+npx --yes --package=node@24 -c 'node dist/bin.js patch "$CONTINUITY_ENS_NAME" --max-price 30'
+```
+
+The normal flow then peers with the resolved seller and buys/loads on **your** node. This requires an
+initialized, running buyer node, reachable seller, published knowledge and the existing payment/runtime
+prerequisites. Registration and record writes are publisher operations; this CLI integration is read-only.
+Use the official tutorial's resolver discovery and record-writing instructions to set both text records.
+
+Verification evidence (2026-09-13): the publicnode Sepolia RPC reported chain id `11155111`, block
+`11696406`, and 2,491 bytes of code at viem's canonical Universal Resolver proxy
+`0xeeeeeeee14d718c2b47d9923deab1335e144eeee`. A live `getEnsText` call for
+`ur.integration-tests.eth` / `ainize.node` returned `null`; that name has not been demonstrated to carry
+Continuity's records. The compiled CLI also returned the expected missing-record error (exit 1).
+Additional Sepolia probes returned `0x1111111111111111111111111111111111111111` for the address of
+`ur.integration-tests.eth`, and a revert for `test.offchaindemo.eth`; they did not reproduce the readiness
+guide's expected address vectors and do not establish live CCIP-Read success on Sepolia.
+The Node 24 build and all 75 tests passed with NumPy available. Automated RPC fixtures exercise both text records, normalized DNS wire encoding,
+CCIP-Read gateway and on-chain callback, legacy mode, missing records, chain mismatch, and CLI argument
+forwarding. These fixtures are tests, not deployment evidence. **A publisher-owned ENSv2 Sepolia name
+with both real records, and the full live resolve → purchase → load flow, remain unverified.** No name
+registration, record-writing transaction or Continuity contract deployment is claimed here.
+
 ## Hugging Face dataset → teach → marketplace
 
 `ainize dataset <huggingface-url>` imports an **existing** Hugging Face dataset into the selected Ainize

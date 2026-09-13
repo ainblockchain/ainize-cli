@@ -71,15 +71,15 @@ test('the config names block resolves when no file does', async () => {
   assert.equal(r.node, 'http://n:2');
 });
 
-test('failure names every path it tried, and never guesses a registry address', async () => {
+test('failure without RPC names every local path and explains Universal Resolver setup', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ens-'));
   await assert.rejects(
-    () => resolveName('missing.engram.eth', { namesFile: join(dir, 'absent.json'), rpc: 'http://rpc.invalid' }),
+    () => resolveName('missing.engram.eth', { namesFile: join(dir, 'absent.json') }),
     (e: Error) => {
       // Both halves of the message matter. "cannot resolve" alone sends someone to the wrong place.
       assert.match(e.message, /Tried:/);
-      assert.match(e.message, /on-chain \(no registry address given\)/);
-      assert.match(e.message, /never assumed/);
+      assert.match(e.message, /on-chain \(no RPC given\)/);
+      assert.match(e.message, /Universal Resolver/);
       return true;
     },
   );
