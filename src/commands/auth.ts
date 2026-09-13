@@ -11,14 +11,20 @@ import { CliError, PROG, readState, writeState, type CliContext } from '../conte
 import { runningPid } from '../pid.js';
 import { c, emit, info, ok, shortAddr, warn } from '../output.js';
 
-/** What a password prompt says when there is nobody to answer it — the same sentence on both paths (item 109). */
+/**
+ * What a passphrase prompt says when there is nobody to answer it — the same sentence on both paths (item 109).
+ *
+ * There is no operator password any more and this no longer mentions one: the only secret anything still types
+ * is the passphrase that encrypts a key backup, so the way out is the flag and the variable that carry it.
+ */
 const noAnswer = (): CliError => new CliError(
-  `no password given and stdin is not a terminal, so nobody can be asked — pass --password, set AINIZE_PASSWORD, or pipe one in (\`echo "…" | ${PROG} login\`). It must be at least 4 characters.`);
+  `no passphrase given and stdin is not a terminal, so nobody can be asked — pass --passphrase, set AINIZE_KEY_PASSPHRASE, or pipe one in (\`echo "…" | ${PROG} keys backup <file>\`).`);
 
+/** Read a secret without echoing it. The only secret left is a key-backup passphrase. */
 export async function promptPassword(question: string): Promise<string> {
   if (!process.stdin.isTTY) {
-    // A pipe or a file: `echo "…" | ainize login` is read here. What was never handled is EOF — `ainize login
-    // < /dev/null`, an ssh command, a cron line — where the readline callback never fires, the promise never
+    // A pipe or a file: `echo "…" | ainize keys backup out.json` is read here. What was never handled is EOF —
+    // `… < /dev/null`, an ssh command, a cron line — where the readline callback never fires, the promise never
     // settles, and Node printed its own "Detected unsettled top-level await" and exited 13 (item 109).
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     return new Promise<string>((resolve, reject) => {
@@ -135,9 +141,9 @@ function finishLogin(ctx: CliContext, token: string, _address: string): void {
 }
 
 /**
- * The one-time claim token `startNode` writes while a node has no operator password (item 121). A node is claimed
- * from its own machine over loopback; from anywhere else this file — readable only by the user the node runs as —
- * is the proof of ownership. Read it from this home automatically so the local operator never has to.
+ * The one-time token `startNode` writes (item 121). Making an address an owner of a node is as privileged as
+ * being one, so it is done from the node's own machine over loopback; from anywhere else this file — readable
+ * only by the user the node runs as — is the proof. Read from this home automatically so nobody has to pass it.
  */
 function localSetupToken(home: string): string | null {
   try { const p = join(home, 'setup-token'); if (!existsSync(p)) return null; const t = readFileSync(p, 'utf8').trim(); return t || null; } catch { return null; }

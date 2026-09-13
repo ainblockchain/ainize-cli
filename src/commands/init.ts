@@ -97,7 +97,7 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, host: cfg.host, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null }, (d) => [
     c.ok('✓ ') + `node initialised at ${d.config}`,
     kv([['name', d.name], ['address', d.address], ['listens on', `${d.host}:${d.port}${publicBind ? c.warn('  (every interface)') : c.dim('  (this machine only)')}`], ['ledger', d.ledger], ['roles', d.roles.join(', ')],
-      ['operator', c.ok("this node's own key") + c.dim(`  (\`${PROG} login\` signs in with it — no password)`)]]),
+      ['owner', c.ok("this node's own key") + c.dim(`  (\`${PROG} login\` signs in with it — no password. \`${PROG} operators add 0x…\` lets a wallet run it too)`)]]),
     ...(d.kept_identity ? [c.dim(`keeping this node's identity ${d.address} (pass --new-identity to replace it)`)] : []),
     ...(d.backup ? [c.dim(`previous config saved as ${d.backup}`)] : []),
     ...(existing ? [] : [
