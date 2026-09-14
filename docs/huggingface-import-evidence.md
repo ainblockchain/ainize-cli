@@ -24,12 +24,20 @@ hash/byte count rather than assuming an arbitrary server dataset is the import.
 Repeated imports can return the same dataset (`created=false`); receipt files
 are not a count of distinct datasets or supported models.
 
-With `--train`, a separate `training-receipt.json` is written after the command
+With `--train`, `training-submission.json` is saved with mode 0600 immediately
+after job admission, before `--wait` starts polling. It binds the accepted Job ID
+to the imported dataset ID/hash, using the same source revision and hash evidence.
+A status request failure or wait timeout therefore does not discard an acknowledged
+job's identity. This immutable file is an admission snapshot, not a completion
+receipt. If its validation or persistence fails, polling stops but the already
+accepted job is not cancelled or resubmitted.
+
+A separate `training-receipt.json` is written after the command
 returns a job snapshot. With `--wait`, that is the returned post-wait snapshot.
 The training link requires the job's dataset ID and hash to match the accepted
 import. Neither the job status nor receipt existence proves real training or
 inference. The JSON output exposes `import_receipt` and, when available,
-`training_receipt` paths. The initial import receipt remains immutable and has
+`training_submission_receipt` and `training_receipt` paths. The initial import receipt remains immutable and has
 `job: null`; later training does not rewrite history.
 
 If training is refused or interrupted, the accepted import receipt remains on
@@ -38,6 +46,9 @@ disk even when the command produces no successful JSON output. Inspect it and
 does not establish that the node rejected a job. If import receipt persistence
 fails, this invocation stops before it requests training. An upload connection
 failure can still leave an unknown acceptance outcome; no receipt is fabricated.
+If waiting was interrupted after admission, locate `training-submission.json`
+under `<home>/hf-imports/import-*/` and use its Job ID with `ainize teach status`.
+Do not create another job merely because the final `training-receipt.json` is absent.
 
 ## Trace to AINSCAN
 
@@ -73,3 +84,14 @@ The explorer still reads ordinary blockchain records. No experiment ID, source
 upload endpoint or implicit public metadata publication is added. This local
 chain of evidence is not an independent guarantee that the source license allows
 redistribution or that a learned answer is correct.
+
+## Admission recovery validation (2026-09-14)
+
+The HF import tests use mocked HF responses and a real local Ainize node with a
+stub trainer. A forced job-status HTTP 503 after admission leaves the matching
+`training-submission.json` intact, while no final `training-receipt.json` is
+created. Exactly one training POST is observed; no automatic retry creates a
+second job. Rejected admission creates no submission receipt. The accepted-job
+receipt has mode 0600 and matching dataset ID/hash. Fourteen focused HF/direct
+teach tests and TypeScript checking passed. This validates recovery metadata,
+not real GPU training, source retrieval from live HF, or 100 completed pipelines.

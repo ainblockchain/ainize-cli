@@ -178,7 +178,7 @@ export function waitMs(opts: TrainOpts): number {
  * could not use, and keeps the questions as a dataset you can train (`--train`, or `teach train <id>`).
  * Re-uploading the same file returns the SAME dataset (200, `created: false`) instead of a second copy.
  */
-export async function datasetUpload(ctx: CliContext, file: string, opts: DatasetOpts & TrainOpts & { train?: boolean; silent?: boolean; nextSteps?: boolean; onUploaded?: (result: DatasetUploadResult) => void } = {}): Promise<DatasetUploadResult> {
+export async function datasetUpload(ctx: CliContext, file: string, opts: DatasetOpts & TrainOpts & { train?: boolean; silent?: boolean; nextSteps?: boolean; onUploaded?: (result: DatasetUploadResult) => void; onTrainingSubmitted?: (result: DatasetUploadResult) => void } = {}): Promise<DatasetUploadResult> {
   const path = resolve(file);
   if (!existsSync(path) || !statSync(path).isFile()) throw new CliError(`dataset file not found: ${file}`);
   const bytes = readFileSync(path);
@@ -206,6 +206,7 @@ export async function datasetUpload(ctx: CliContext, file: string, opts: Dataset
   opts.onUploaded?.(out);
   if (opts.train) {
     out.job = await trainDataset(s, r.dataset.id, opts);
+    opts.onTrainingSubmitted?.(out);
     // Item 252: the documented one-liner (`teach dataset ./questions.csv --train`) is the form a cron line reaches
     // for, and it was the one form that could not block on the result — `--wait` existed only on the sibling
     // command, so the first scripted attempt failed with `Unknown argument: wait`. Same wait, same exit codes.

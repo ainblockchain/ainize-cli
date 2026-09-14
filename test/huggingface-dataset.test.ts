@@ -163,8 +163,12 @@ test('HF import binds real dataset uploads and queued jobs without public listin
   const data = fixture();
   const realFetch = globalThis.fetch;
   let rejectTraining = false;
+  let rejectStatus = false;
   let trainingRequests = 0;
   const mockedFetch = mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], options?: RequestInit) => {
+    if (rejectStatus && /\/api\/teach\/jobs\/[^/?]+$/.test(String(input)) && options?.method === 'GET') {
+      return Promise.resolve(new Response(JSON.stringify({ error: 'fixture status unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+    }
     if (String(input).endsWith('/api/teach/jobs') && options?.method === 'POST') trainingRequests++;
     if (rejectTraining && String(input).endsWith('/api/teach/jobs') && options?.method === 'POST') {
       return Promise.resolve(new Response(JSON.stringify({ error: 'fixture training refusal' }), { status: 503, headers: { 'content-type': 'application/json' } }));
@@ -212,6 +216,21 @@ test('HF import binds real dataset uploads and queued jobs without public listin
     assert.equal(acceptedReceipt.job, null);
     assert.equal(trainingReceipt.job.id, trained.job!.job.id);
     assert.equal(trainingReceipt.job.dataset_sha256, acceptedReceipt.dataset_sha256);
+    assert.equal(JSON.parse(readFileSync(trained.training_submission_receipt!, 'utf8')).job.id, trained.job!.job.id);
+    assert.equal(statSync(trained.training_submission_receipt!).mode & 0o777, 0o600);
+    const beforeWait = new Set(readdirSync(join(client.home, 'hf-imports')));
+    const beforeWaitRequests = trainingRequests;
+    rejectStatus = true;
+    await assert.rejects(datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl', train: true, wait: true }));
+    rejectStatus = false;
+    assert.equal(trainingRequests, beforeWaitRequests + 1);
+    const interruptedFolder = readdirSync(join(client.home, 'hf-imports')).find(folder => !beforeWait.has(folder))!;
+    const interruptedPath = join(client.home, 'hf-imports', interruptedFolder);
+    const submitted = JSON.parse(readFileSync(join(interruptedPath, 'training-submission.json'), 'utf8'));
+    assert.ok(submitted.job.id);
+    assert.equal(submitted.job.dataset_id, trained.dataset.id);
+    assert.equal(submitted.job.dataset_sha256, trained.dataset.sha256);
+    assert.equal(existsSync(join(interruptedPath, 'training-receipt.json')), false);
     const foldersBefore = new Set(readdirSync(join(client.home, 'hf-imports')));
     rejectTraining = true;
     await assert.rejects(datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl', train: true }));
@@ -220,6 +239,7 @@ test('HF import binds real dataset uploads and queued jobs without public listin
     const failedPath = join(client.home, 'hf-imports', failedFolder);
     assert.equal(JSON.parse(readFileSync(join(failedPath, 'import-receipt.json'), 'utf8')).dataset_id, imported.dataset.id);
     assert.equal(existsSync(join(failedPath, 'training-receipt.json')), false);
+    assert.equal(existsSync(join(failedPath, 'training-submission.json')), false);
     const requestsBefore = trainingRequests;
     await assert.rejects(datasetUpload(client, imported.file, { train: true, onUploaded: () => { throw new Error('fixture persistence failure'); } }), /fixture persistence failure/);
     assert.equal(trainingRequests, requestsBefore);

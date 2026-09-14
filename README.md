@@ -186,8 +186,9 @@ AIN node as `local` merely to match a peer; use a separate home or coordinate th
 
 Each HF import also saves a private `import-receipt.json` linking its immutable
 source revision and upload hash to the node's canonical dataset ID/hash, before
-requesting training. `--train` additionally saves a matching job snapshot when
-available. See [HF import evidence](docs/huggingface-import-evidence.md) for tracing
+requesting training. `--train` saves `training-submission.json` as soon as a job
+is accepted, before waiting, and a separate job snapshot when the command returns.
+See [HF import evidence](docs/huggingface-import-evidence.md) for tracing
 that dataset to the native lesson record in AINSCAN without publishing source
 metadata or confusing input bytes with canonical training rows.
 
