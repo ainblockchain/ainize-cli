@@ -199,6 +199,16 @@ is not forwarded to the Ainize node or recorded in provenance. Raw input, mapped
 metadata are saved privately under `AINIZE_HOME/hf-imports/`. Output distinguishes source revision and
 hashes from the node's canonical dataset hash. Existing `ainize dataset get <knowledge-id>` is unchanged.
 
+## Hugging Face model chat
+
+```sh
+ainize --node http://localhost:3400 chat https://huggingface.co/owner/model "Question"
+```
+
+This uses the exact `owner/model` already served by the selected Ainize node, in base mode without a knowledge patch. Omit the question for an interactive session. The CLI sends a model constraint to the node and verifies the returned model identity. An unavailable or differently named model is rejected; it never silently substitutes the node's default model.
+
+This command does not download weights, allocate GPU resources, change the serving model or resolve arbitrary runtime aliases. Configure the compatible ML runtime first, with its served model ID equal to the Hugging Face repository ID. Record the loaded revision separately in runtime evidence: the URL command accepts repository URLs, not revision/file URLs, and does not prove weight provenance by itself. Dataset and Space URLs are rejected. Requires updated node and CLI code; older nodes may not enforce model constraints.
+
 ## `ainize chat` — test knowledge live before you buy it
 
 ChatMode asks the serving model the same question **before** and **after** a patch is loaded, and marks the

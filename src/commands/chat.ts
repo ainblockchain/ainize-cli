@@ -17,7 +17,7 @@ import { c, emit, fitLine, info, statusColor, table } from '../output.js';
 
 export type ChatMode = 'base' | 'patched' | 'compare';
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
-export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string; onDelta?: (text: string, mode: string) => void }
+export interface ChatArgs { mode?: ChatMode; model?: string; thinking?: boolean; maxTokens?: number; system?: string; onDelta?: (text: string, mode: string) => void }
 
 export interface ChatAnswer {
   content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string;
@@ -121,6 +121,26 @@ export function parsePatchIds(input: string | string[] | undefined): string[] {
 
 const CHAT_TIMEOUT_MS = 15 * 60_000;   // apply + two generations on a busy runtime
 
+export function huggingFaceModelId(input: string): string {
+  let url: URL;
+  try { url = new URL(input); } catch { throw new CliError('Expected a Hugging Face model repository URL'); }
+  const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/?$/.exec(url.pathname);
+  if (url.origin !== 'https://huggingface.co' || url.username || url.password || url.search || url.hash
+    || !match || ['datasets', 'spaces'].includes(match[1])) throw new CliError('Use https://huggingface.co/<owner>/<model>, not a dataset, Space or file URL');
+  return `${match[1]}/${match[2]}`;
+}
+
+function chatIds(input: string | string[], opts: ChatArgs): string[] {
+  if (!opts.model) return parsePatchIds(input);
+  if (!Array.isArray(input) || input.length || opts.mode !== 'base') throw new CliError('A model URL chat requires base mode without knowledge patches');
+  return [];
+}
+
+function checkedModel(result: ChatResponse, model?: string): ChatResponse {
+  if (model && (result.model !== model || result.base?.model !== model || result.mode !== 'base')) throw new CliError('Node answered with a different model or mode; model support was not verified');
+  return result;
+}
+
 /** `ainize chat --list` → GET /api/chat/patches, plus the operator's own drafts (item 108). */
 export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse> {
   const d = await new NodeClient(ctx).get<ChatPatchesResponse>('/api/chat/patches');
@@ -202,17 +222,17 @@ export async function chatPatches(ctx: CliContext): Promise<ChatPatchesResponse>
 /** One request → POST /api/chat. One id sends `patch_id` (works on every node); several send `patch_ids` (teach-mode nodes). */
 export async function chatOnce(ctx: CliContext, patchIds: string | string[], messages: ChatMessage[], a: ChatArgs = {}, split?: { base: ChatMessage[]; patched: ChatMessage[] }): Promise<ChatResponse> {
   if (!messages.some((m) => m.role === 'user' && m.content.trim())) throw new CliError('prompt is empty');
-  const ids = parsePatchIds(patchIds);
+  const ids = chatIds(patchIds, a);
   const target = ids.length === 1 ? { patch_id: ids[0] } : { patch_ids: ids };
   // Compare mode past the first turn: each column replays its OWN earlier answers (see ReplState below).
   const histories = split ? { messages_base: split.base, messages_patched: split.patched } : {};
-  const body = { ...target, mode: a.mode ?? 'compare', messages, ...histories, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
+  const body = { ...target, ...(a.model ? { model: a.model } : {}), mode: a.mode ?? 'compare', messages, ...histories, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
   if (a.onDelta) {
     const response = await new NodeClient(ctx).request<Response>('/api/chat', { method: 'POST', body: { ...body, stream: true },
       headers: { accept: 'text/event-stream' }, raw: true, timeoutMs: CHAT_TIMEOUT_MS });
-    return readChatStream<ChatResponse>(response, a.onDelta);
+    return checkedModel(await readChatStream<ChatResponse>(response, a.onDelta), a.model);
   }
-  return new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
+  return checkedModel(await new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS }), a.model);
 }
 
 // ---------------------------------------------------------------- the benchmark behind the verdict (item 106)
@@ -330,7 +350,7 @@ export function initialMessages(a: ChatArgs): ChatMessage[] {
 
 /** One-shot: `ainize chat <patchId>[,<id2>] <prompt>` */
 export async function chat(ctx: CliContext, patchIds: string | string[], prompt: string, a: ChatArgs = {}): Promise<ChatResponse> {
-  const ids = parsePatchIds(patchIds);
+  const ids = chatIds(patchIds, a);
   // Item 106: the expected value is on the anchor, not in the chat response — read it while the model answers and
   // print it with the verdict. `--json` gets it too, as `benchmark_samples`, so a script can report what a ✗ meant.
   const benchP = benchmarksFor(ctx, ids);
@@ -370,7 +390,7 @@ export interface ReplState { transcript: ChatMessage[]; baseTranscript: ChatMess
  * answer), `/quit` to exit. Slash commands: /mode base|patched|compare, /reset, /help.
  */
 export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: ChatArgs = {}, io: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {}): Promise<ReplState> {
-  const ids = parsePatchIds(patchIds);
+  const ids = chatIds(patchIds, a);
   const state: ReplState = { transcript: initialMessages(a), baseTranscript: initialMessages(a), turns: 0, mode: a.mode ?? 'compare' };
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;

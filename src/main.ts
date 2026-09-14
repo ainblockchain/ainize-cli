@@ -684,7 +684,7 @@ run((ctx, a: G & { ids: string[]; apply: boolean; yes: boolean; again: boolean; 
 
 // ---------------------------------------------------------------- chat (live test)
 cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model\'s answer before vs after the patch is loaded (correct-answer check)', (y: Y) => fail(y)
-  .positional('patchId', { type: 'string', describe: 'patch to test (see --list); `a,b` loads several together' })
+  .positional('patchId', { type: 'string', describe: 'patch to test, or https://huggingface.co/<owner>/<model> for the exact model already served by this node' })
   .positional('prompt', { type: 'string', array: true, describe: 'question; omit for an interactive session (/quit to exit)' })
   .option('list', { alias: 'l', type: 'boolean', default: false, describe: 'list patches testable on this node and the runtime state' })
   .option('patch', { alias: 'p', type: 'string', describe: 'knowledge to load together, comma-separated (up to 3, in load order; the last wins where they overlap)' })
@@ -699,10 +699,19 @@ cli.command('chat [patchId] [prompt..]', 'Live-test a knowledge patch: the model
   })
   .option('system', { type: 'string', describe: 'system prompt prepended to the conversation' })
   .example('$0 chat --list', 'what can be tested here')
+  .example('$0 chat https://huggingface.co/owner/model "Question"', 'ask this exact already-serving model without a knowledge patch')
   .example('$0 chat pixelplus-087600 "Pixelplus ticker code? Digits only."', 'before/after in one shot')
   .example('$0 chat krx-all-2761 --mode patched', 'interactive session with the patch loaded')
   .example('$0 chat --patch krx-all-2761,pixelplus-087600 "픽셀플러스 종목코드 알려줘. 숫자만."', 'two knowledges loaded together (up to 3)'),
 run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; patch?: string; mode: chat.ChatMode; thinking: boolean; 'max-tokens': number; system?: string }) => {
+  if (a.patchId && /^https?:\/\//.test(a.patchId)) {
+    if (a.patch || a.list || a.mode === 'patched') throw new CliError('Model URL chat uses the base model; do not combine it with --patch, --list or --mode patched');
+    const opts: chat.ChatArgs = { model: chat.huggingFaceModelId(a.patchId), mode: 'base', thinking: a.thinking, maxTokens: a['max-tokens'], system: a.system };
+    const prompt = (a.prompt ?? []).join(' ');
+    if (prompt.trim()) return chat.chat(ctx, [], prompt, opts);
+    await chat.chatRepl(ctx, [], opts);
+    process.exit(0);
+  }
   // `--patch a,b` (or a comma-separated positional) selects the knowledge; with --patch the positional is part of the question.
   const ids = a.patch ? chat.parsePatchIds(a.patch) : a.patchId ? chat.parsePatchIds(a.patchId) : [];
   const promptParts = a.patch && a.patchId ? [a.patchId, ...(a.prompt ?? [])] : (a.prompt ?? []);
