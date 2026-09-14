@@ -127,7 +127,7 @@ const cli: Y = yargs(hideBin(process.argv))
     '  4    the node did not answer in time — it may be running the work anyway',
     '  5    in the way: the shared model lock, or an incomplete subscription',
     '  130  cancelled at a confirmation prompt',
-    '  `' + PROG + ' teach train --wait` sets 4-8 from the lesson\'s own outcome.',
+    '  `' + PROG + ' teach <file> --wait` sets 4-8 from the lesson\'s own outcome.',
     '',
     'Docs: <node url>/docs   ·   one command: `' + PROG + ' <command> --help`',
   ].join('\n'));
@@ -464,7 +464,7 @@ cli.command('patch [name]', 'Publish, inspect, verify, buy and apply knowledge p
     .option('key-file', { type: 'string', describe: 'teaching key file (default: <home>/teaching-key.json)' })
     .option('key', { type: 'string', describe: 'teaching key as hex / json (or AINIZE_TEACH_KEY)' })
     .example('$0 patch fork krx-all-2761 --name "KRX + biotech"', 'start from its questions')
-    .example('$0 teach train <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
+    .example('$0 teach <dataset> --on krx-all-2761', 'then teach your additions on top of it'),
   run((ctx, a: G & { id: string; name?: string; key?: string; 'key-file'?: string }) => teachData.patchFork(ctx, a.id, { name: a.name, key: a.key, keyFile: a['key-file'] })))
   .command('merge <a> <b>', 'Combine two knowledges into one: what overlaps, what they answer differently, and how to build it', (yy: Y) => yy
     .positional('a', { type: 'string', demandOption: true, describe: 'the first knowledge' })
@@ -549,7 +549,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
       .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: 'with --train: how hard to train' })
       .option('check', { type: 'boolean', describe: 'with --train: --no-check skips the side-effect check (publishing then stays blocked)' })
       .option('rows', { type: 'number', describe: 'with --train: train only the first N questions' })
-      .option('wait', { type: 'boolean', default: false, describe: 'with --train: follow the lesson until it is ready and exit with its outcome (0 ready · 4 did not stick · 5 failed · 6 declined · 7 timed out · 8 never measured) — the same wait as `teach train --wait`' })
+      .option('wait', { type: 'boolean', default: false, describe: 'with --train: follow the lesson until it is ready and exit with its outcome (0 ready · 4 did not stick · 5 failed · 6 declined · 7 timed out · 8 never measured) — the same wait as `teach <file> --wait`' })
       .option('timeout', { type: 'number', describe: 'with --wait: give up after this many minutes and exit 7 (default 60)' })
       .example('$0 teach dataset ./questions.csv', 'validate + upload, print every line that will not train')
       .example('$0 teach dataset ./qa.jsonl --train --effort thorough', 'upload and teach it in one line')
@@ -602,14 +602,14 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
   // measure it again was a button in the browser.
   .command('recheck <job-id>', 'Measure a lesson that was saved unchecked (the model server was unavailable)', (yy: Y) => keyOpts(yy)
     .positional('job-id', { type: 'string', demandOption: true, describe: `lesson id (\`${PROG} teach jobs\`)` })
-    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is measured (same exit codes as `teach train --wait`)' })
+    .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is measured (same exit codes as `teach <file> --wait`)' })
     .example('$0 teach recheck 3a417bb4-… --wait', 'the morning after a night when the model server was off'),
   run((ctx, a: G & { 'job-id': string; key?: string; 'key-file'?: string; wait: boolean }) =>
     teachData.teachRecheck(ctx, a['job-id'], { key: a.key, keyFile: a['key-file'], wait: a.wait })))
 
   // ---- item 238: the last step of the loop, which only the browser could do. The consents are the publisher's own
   // and are never defaulted: without both flags the command refuses and quotes what is being consented to.
-  .command('publish <job-id>', 'Publish a READY lesson as knowledge (the last step of `teach train` — needs both consent flags)', (yy: Y) => keyOpts(yy)
+  .command('publish <job-id>', 'Publish a READY lesson as knowledge (the last step of `teach <file>` — needs both consent flags)', (yy: Y) => keyOpts(yy)
     .positional('job-id', { type: 'string', demandOption: true, describe: `lesson id (\`${PROG} teach jobs\`)` })
     .option('name', { type: 'string', demandOption: true, describe: 'what buyers see, 2-80 characters' })
     .option('price', { type: 'string', describe: 'price per download in this node\'s currency (default 0 = free)' })
@@ -623,7 +623,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('consent-permanent', { type: 'boolean', default: false, describe: 'I understand this becomes a permanent public record that cannot be edited or deleted' })
     .option('consent-rights', { type: 'boolean', default: false, describe: 'I have the right to share this information, and it is not private or personal data' })
     .example('$0 teach publish 8f0c… --name "KRX codes" --price 2 --consent-permanent --consent-rights', 'the last line of a nightly bake')
-    .example('$0 teach train today.jsonl --wait && $0 teach publish <id> --name … --consent-permanent --consent-rights', 'train, then publish only if the lesson stuck (--wait exits non-zero otherwise)'),
+    .example('$0 teach ./today.jsonl --wait && $0 teach publish <id> --name … --consent-permanent --consent-rights', 'train, then publish only if the lesson stuck (--wait exits non-zero otherwise)'),
   run((ctx, a: G & { 'job-id': string; key?: string; 'key-file'?: string; name: string; price?: string; license?: string; description?: string; payout?: string;
     access?: 'public' | 'derivative' | 'private'; 'dataset-license'?: string; 'include-notes': boolean; declare?: 'own' | 'public' | 'licensed'; 'consent-permanent': boolean; 'consent-rights': boolean }) =>
     teachData.teachPublish(ctx, a['job-id'], {
