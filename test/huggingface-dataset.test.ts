@@ -2,7 +2,7 @@ import '../src/quiet.js';
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import { defaultConfig, teachConfig } from '@ainize/core';
 import { startNode } from '@ainize/node';
 import { buildContext } from '../src/context.js';
 import { datasetImportHuggingFace, mapHuggingFaceColumns, parseHuggingFaceUrl, readHuggingFaceDataset } from '../src/commands/huggingface-dataset.js';
+import { datasetUpload } from '../src/commands/teach-dataset.js';
 
 const revision = '1234567890abcdef1234567890abcdef12345678';
 const repository = 'owner/questions';
@@ -146,7 +147,7 @@ test('redirects to unrelated hosts and oversized responses are rejected', async 
   }
 });
 
-test('HF import uses the real Ainize dataset upload and deduplicates without training or public listing', async context => {
+test('HF import binds real dataset uploads and queued jobs without public listing, retaining receipts on training refusal', async context => {
   const home = mkdtempSync(join(tmpdir(), 'ainize-hf-node-'));
   const listener = createServer();
   await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
@@ -161,7 +162,15 @@ test('HF import uses the real Ainize dataset upload and deduplicates without tra
   const client = buildContext({ home, node: `http://127.0.0.1:${port}`, json: true, quiet: true });
   const data = fixture();
   const realFetch = globalThis.fetch;
-  const mockedFetch = mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], options?: RequestInit) => String(input).startsWith('https://') ? data.fetcher(input, options) : realFetch(input, options));
+  let rejectTraining = false;
+  let trainingRequests = 0;
+  const mockedFetch = mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], options?: RequestInit) => {
+    if (String(input).endsWith('/api/teach/jobs') && options?.method === 'POST') trainingRequests++;
+    if (rejectTraining && String(input).endsWith('/api/teach/jobs') && options?.method === 'POST') {
+      return Promise.resolve(new Response(JSON.stringify({ error: 'fixture training refusal' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+    }
+    return String(input).startsWith('https://') ? data.fetcher(input, options) : realFetch(input, options);
+  });
   const chunks: string[] = [];
   const nodeConsole = mock.method(console, 'log', () => undefined);
   const originalWrite = process.stdout.write;
@@ -178,6 +187,12 @@ test('HF import uses the real Ainize dataset upload and deduplicates without tra
     assert.equal(JSON.parse(chunks.join('')).dataset_id, imported.dataset.id);
     assert.equal(statSync(imported.provenance).mode & 0o777, 0o600);
     assert.equal(JSON.parse(readFileSync(imported.provenance, 'utf8')).revision, revision);
+    const receipt = JSON.parse(readFileSync(imported.import_receipt, 'utf8'));
+    assert.equal(statSync(imported.import_receipt).mode & 0o777, 0o600);
+    assert.equal(receipt.dataset_id, imported.dataset.id);
+    assert.equal(receipt.dataset_sha256, imported.dataset.sha256);
+    assert.equal(receipt.source_file_sha256, createHash('sha256').update(readFileSync(imported.provenance)).digest('hex'));
+    assert.equal(receipt.job, null);
     chunks.length = 0;
     const duplicate = await datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl' });
     assert.equal(duplicate.created, false);
@@ -186,5 +201,27 @@ test('HF import uses the real Ainize dataset upload and deduplicates without tra
     const mapped = await datasetImportHuggingFace(client, hubUrl, { limit: 2, columns: '{"prompt":"prompt","answer":"note"}' });
     assert.equal(mapped.dataset.rows, 2);
     assert.notEqual(mapped.source.inputSha256, mapped.source.sha256);
+    const mappedReceipt = JSON.parse(readFileSync(mapped.import_receipt, 'utf8'));
+    assert.equal(mappedReceipt.input_sha256, mapped.source.inputSha256);
+    assert.equal(mappedReceipt.upload_sha256, mapped.source.sha256);
+    assert.equal(mappedReceipt.dataset_sha256, mapped.dataset.sha256);
+    const trained = await datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl', train: true });
+    assert.ok(trained.training_receipt);
+    const acceptedReceipt = JSON.parse(readFileSync(trained.import_receipt, 'utf8'));
+    const trainingReceipt = JSON.parse(readFileSync(trained.training_receipt!, 'utf8'));
+    assert.equal(acceptedReceipt.job, null);
+    assert.equal(trainingReceipt.job.id, trained.job!.job.id);
+    assert.equal(trainingReceipt.job.dataset_sha256, acceptedReceipt.dataset_sha256);
+    const foldersBefore = new Set(readdirSync(join(client.home, 'hf-imports')));
+    rejectTraining = true;
+    await assert.rejects(datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl', train: true }));
+    const failedFolder = readdirSync(join(client.home, 'hf-imports')).find(folder => !foldersBefore.has(folder))!;
+    assert.ok(failedFolder);
+    const failedPath = join(client.home, 'hf-imports', failedFolder);
+    assert.equal(JSON.parse(readFileSync(join(failedPath, 'import-receipt.json'), 'utf8')).dataset_id, imported.dataset.id);
+    assert.equal(existsSync(join(failedPath, 'training-receipt.json')), false);
+    const requestsBefore = trainingRequests;
+    await assert.rejects(datasetUpload(client, imported.file, { train: true, onUploaded: () => { throw new Error('fixture persistence failure'); } }), /fixture persistence failure/);
+    assert.equal(trainingRequests, requestsBefore);
   } finally { stdout.mock.restore(); nodeConsole.mock.restore(); mockedFetch.mock.restore(); }
 });

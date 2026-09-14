@@ -155,7 +155,7 @@ export function renderDataset(d: TeachDataset, node: string): string {
 }
 
 const nextSteps = (id: string) => c.dim([
-  `train it:      ${PROG} teach train ${id} --effort balanced`,
+  `train it:      ${PROG} teach ${id} --effort balanced`,
   `see it:        ${PROG} teach dataset get ${id}`,
   `download it:   ${PROG} teach dataset get ${id} -o questions.jsonl`,
 ].join('\n'));
@@ -178,7 +178,7 @@ export function waitMs(opts: TrainOpts): number {
  * could not use, and keeps the questions as a dataset you can train (`--train`, or `teach train <id>`).
  * Re-uploading the same file returns the SAME dataset (200, `created: false`) instead of a second copy.
  */
-export async function datasetUpload(ctx: CliContext, file: string, opts: DatasetOpts & TrainOpts & { train?: boolean; silent?: boolean; nextSteps?: boolean } = {}): Promise<DatasetUploadResult> {
+export async function datasetUpload(ctx: CliContext, file: string, opts: DatasetOpts & TrainOpts & { train?: boolean; silent?: boolean; nextSteps?: boolean; onUploaded?: (result: DatasetUploadResult) => void } = {}): Promise<DatasetUploadResult> {
   const path = resolve(file);
   if (!existsSync(path) || !statSync(path).isFile()) throw new CliError(`dataset file not found: ${file}`);
   const bytes = readFileSync(path);
@@ -203,6 +203,7 @@ export async function datasetUpload(ctx: CliContext, file: string, opts: Dataset
 
   const r = await s.upload<DatasetResult>('/api/teach/datasets', form, fileSha).catch((e: unknown) => { throw withReport(e, ctx); });
   const out: DatasetUploadResult = { ...r, node: s.client.baseUrl, file: path, bytes: bytes.length, sha256: fileSha };
+  opts.onUploaded?.(out);
   if (opts.train) {
     out.job = await trainDataset(s, r.dataset.id, opts);
     // Item 252: the documented one-liner (`teach dataset ./questions.csv --train`) is the form a cron line reaches

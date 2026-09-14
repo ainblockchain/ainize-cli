@@ -184,6 +184,13 @@ automatic consent to republish third-party data. A reachable peer is not a listi
 ledger, reach the seller endpoint, and obtain independent verification quorum. Do not re-initialize a live
 AIN node as `local` merely to match a peer; use a separate home or coordinate the deployment.
 
+Each HF import also saves a private `import-receipt.json` linking its immutable
+source revision and upload hash to the node's canonical dataset ID/hash, before
+requesting training. `--train` additionally saves a matching job snapshot when
+available. See [HF import evidence](docs/huggingface-import-evidence.md) for tracing
+that dataset to the native lesson record in AINSCAN without publishing source
+metadata or confusing input bytes with canonical training rows.
+
 Supported source URLs are dataset repositories, `/viewer/<config>/<split>`, and
 `/resolve/<revision>/<file>`. `dataset import <url>` is an explicit alias. Use `--columns` when the source
 does not already have Ainize question/answer fields:

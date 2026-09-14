@@ -4,6 +4,7 @@ import { extname, join } from 'node:path';
 import { CliError, type CliContext } from '../context.js';
 import { emit } from '../output.js';
 import { datasetUpload, renderUpload, type DatasetOpts, type TrainOpts } from './teach-dataset.js';
+import { huggingFaceImportReceipt } from './huggingface-import-receipt.js';
 
 const HUB = 'https://huggingface.co';
 const VIEWER = 'https://datasets-server.huggingface.co';
@@ -215,9 +216,18 @@ export async function datasetImportHuggingFace(ctx: CliContext, input: string, o
   const provenance = join(folder, 'source.json');
   writeFileSync(filename, imported.bytes, { flag: 'wx', mode: 0o600 });
   writeFileSync(join(folder, `input.${imported.source.format}`), imported.inputBytes, { flag: 'wx', mode: 0o600 });
-  writeFileSync(provenance, JSON.stringify(imported.source, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-  const result = await datasetUpload(ctx, filename, { ...opts, columns: ['json', 'jsonl'].includes(imported.source.format) ? undefined : opts.columns, format: imported.source.format, silent: true });
-  const output = { ...result, dataset_id: result.dataset.id, source: imported.source, provenance };
-  emit(ctx, output, value => `${renderUpload(value)}\nHugging Face: ${value.source.repository}@${value.source.revision}\nSource evidence: ${value.provenance}\nImported into this node; not published to Hugging Face or the public catalog.`);
+  const sourceFile = JSON.stringify(imported.source, null, 2) + '\n';
+  writeFileSync(provenance, sourceFile, { flag: 'wx', mode: 0o600 });
+  const importReceipt = join(folder, 'import-receipt.json');
+  const result = await datasetUpload(ctx, filename, { ...opts, columns: ['json', 'jsonl'].includes(imported.source.format) ? undefined : opts.columns, format: imported.source.format, silent: true,
+    onUploaded: accepted => {
+      try { writeFileSync(importReceipt, JSON.stringify(huggingFaceImportReceipt(imported.source, sourceFile, accepted), null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
+      catch { throw new CliError(`Dataset accepted, but its import receipt could not be validated or saved in ${folder}; training was not started. Inspect the existing dataset before retrying.`); }
+    },
+  });
+  const trainingReceipt = result.job ? join(folder, 'training-receipt.json') : undefined;
+  if (trainingReceipt) writeFileSync(trainingReceipt, JSON.stringify(huggingFaceImportReceipt(imported.source, sourceFile, result), null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  const output = { ...result, dataset_id: result.dataset.id, source: imported.source, provenance, import_receipt: importReceipt, training_receipt: trainingReceipt };
+  emit(ctx, output, value => `${renderUpload(value)}\nHugging Face: ${value.source.repository}@${value.source.revision}\nSource evidence: ${value.provenance}\nImport receipt: ${value.import_receipt}${value.training_receipt ? `\nTraining receipt: ${value.training_receipt}` : ''}\nImported into this node; not published to Hugging Face or the public catalog.`);
   return output;
 }
