@@ -730,12 +730,18 @@ run(async (ctx, a: G & { patchId?: string; prompt?: string[]; list: boolean; pat
 
 // ---------------------------------------------------------------- ledger
 cli.command('ledger', 'Inspect the ledger', (y: Y) => fail(y)
+  .command('inference [id]', 'Inspect native inference batch submissions (operator only)', (yy: Y) => yy
+    .positional('id', { type: 'string', describe: 'local batch ID; omit to list newest batches' })
+    .option('receipts', { type: 'boolean', default: false, describe: 'include receipts for one batch (use --json to export)' })
+    .option('offset', { type: 'number', default: 0, describe: 'pagination offset' })
+    .option('limit', { type: 'number', default: 50, describe: 'page size, at most 100' }),
+  run((ctx, a: G & { id?: string; receipts: boolean; offset: number; limit: number }) => ledger.ledgerInference(ctx, a)))
   .command('ls', 'List records', (yy: Y) => yy.option('kind', { choices: RECORD_KINDS, describe: 'only this kind of record' }).option('limit', { type: 'number', default: 50, describe: 'how many records, newest last' }),
     run((ctx, a: G & { kind?: RecordKind; limit: number }) => ledger.ledgerLs(ctx, a)))
   .command('verify', 'Verify hashes, signatures and chain linkage', (yy: Y) => yy, run((ctx) => ledger.ledgerVerify(ctx)))
   .command('graph', 'ASCII lineage tree', (yy: Y) => yy, run((ctx) => ledger.ledgerGraph(ctx)))
   .command('export <file>', 'Export records as JSON lines', (yy: Y) => yy.positional('file', { type: 'string', demandOption: true }), run((ctx, a: G & { file: string }) => ledger.ledgerExport(ctx, a.file)))
-  .demandCommand(1, 'Subcommand is required (ls|verify|graph|export).'), () => undefined);
+  .demandCommand(1, 'Subcommand is required (ls|verify|graph|export|inference).'), () => undefined);
 
 // ---------------------------------------------------------------- branches / routing / wallet
 cli.command('branch', 'Knowledge branches (parallel, possibly contradictory patch sets)', (y: Y) => fail(y)

@@ -148,6 +148,17 @@ forwarding. These fixtures are tests, not deployment evidence. **A publisher-own
 with both real records, and the full live resolve → purchase → load flow, remain unverified.** No name
 registration, record-writing transaction or Continuity contract deployment is claimed here.
 
+## Native inference records
+
+Native inference submission evidence is available to node operators through
+`ainize ledger inference --json`. Use `ainize ledger inference <local-batch-id>
+--receipts --json` to export that batch's retained completion receipts and
+commitment check. These commands read the node's `/api/ledger/inference` endpoint,
+not ainize-web. They never flush, submit or retry a transaction. Use the returned
+transaction hash and chain path in AINSCAN; a local batch ID is not an explorer
+run ID. A submitted record or matching receipt hash does not prove client delivery,
+block inclusion or measured inference quality.
+
 ## Hugging Face dataset → teach → marketplace
 
 `ainize dataset <huggingface-url>` imports an **existing** Hugging Face dataset into the selected Ainize

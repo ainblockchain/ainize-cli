@@ -9,6 +9,28 @@ import { c, emit, fmtTime, kv, ok, shortAddr, shortHash, statusColor, table } fr
 
 export interface LedgerInfo { kind: string; network: string; records: number; height?: number; head?: string; provider?: string; app?: string; }
 
+interface InferenceView {
+  enabled: boolean; total: number; offset: number; limit: number; unbatched_receipts: number; scope: string;
+  entries: { id: string; state: string; path?: string; tx_hash?: string;
+    batch: { model_id: string; request_count: number }; receipt_commitment_valid?: boolean; receipts?: unknown[] | null }[];
+}
+
+export async function ledgerInference(ctx: CliContext, opts: { id?: string; receipts?: boolean; offset: number; limit: number }) {
+  if (opts.receipts && !opts.id) throw new Error('--receipts requires a batch ID');
+  const result = await new NodeClient(ctx).get<InferenceView>(`/api/ledger/inference${query({ id: opts.id, receipts: opts.receipts, offset: opts.offset, limit: opts.limit })}`);
+  emit(ctx, result, view => [
+    kv([['recording enabled', view.enabled], ['matching batches', view.total], ['unbatched receipts', view.unbatched_receipts]]),
+    view.scope,
+    ...view.entries.map(entry => kv([
+      ['batch', entry.id], ['state', entry.state], ['model', entry.batch.model_id], ['requests', entry.batch.request_count],
+      ['transaction', entry.tx_hash ?? '-'], ['chain path', entry.path ?? '-'],
+      ['receipt commitment matches', entry.receipt_commitment_valid ?? 'not checked'],
+    ])),
+    ...(opts.receipts ? ['Use --json to export the receipt array.'] : []),
+  ].join('\n\n'));
+  return result;
+}
+
 /**
  * Item 197 — a settle row said `<id> · 10 CREDIT · buyer 0x81…` and stopped exactly one field short of the money:
  * `royalty` on the same record body says who was actually paid what. A creator checking whether her 30 % arrived
