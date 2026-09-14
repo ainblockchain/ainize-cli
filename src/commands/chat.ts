@@ -11,12 +11,13 @@ import { createInterface } from 'node:readline';
 import { verificationCount } from '@ainize/core';
 import type { CatalogEntry, RuntimeStatus } from '@ainize/core';
 import { NodeClient } from '../client.js';
+import { readChatStream } from '../chat-stream.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, fitLine, info, statusColor, table } from '../output.js';
 
 export type ChatMode = 'base' | 'patched' | 'compare';
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
-export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string }
+export interface ChatArgs { mode?: ChatMode; thinking?: boolean; maxTokens?: number; system?: string; onDelta?: (text: string, mode: string) => void }
 
 export interface ChatAnswer {
   content: string; reasoning?: string | null; usage?: Record<string, unknown>; latency_ms: number; model: string;
@@ -206,6 +207,11 @@ export async function chatOnce(ctx: CliContext, patchIds: string | string[], mes
   // Compare mode past the first turn: each column replays its OWN earlier answers (see ReplState below).
   const histories = split ? { messages_base: split.base, messages_patched: split.patched } : {};
   const body = { ...target, mode: a.mode ?? 'compare', messages, ...histories, max_tokens: a.maxTokens ?? 200, thinking: !!a.thinking };
+  if (a.onDelta) {
+    const response = await new NodeClient(ctx).request<Response>('/api/chat', { method: 'POST', body: { ...body, stream: true },
+      headers: { accept: 'text/event-stream' }, raw: true, timeoutMs: CHAT_TIMEOUT_MS });
+    return readChatStream<ChatResponse>(response, a.onDelta);
+  }
   return new NodeClient(ctx).post<ChatResponse>('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
 }
 
@@ -328,7 +334,7 @@ export async function chat(ctx: CliContext, patchIds: string | string[], prompt:
   // Item 106: the expected value is on the anchor, not in the chat response — read it while the model answers and
   // print it with the verdict. `--json` gets it too, as `benchmark_samples`, so a script can report what a ✗ meant.
   const benchP = benchmarksFor(ctx, ids);
-  const r = await chatOnce(ctx, ids, [...initialMessages(a), { role: 'user', content: prompt }], a);
+  const r = await chatOnce(ctx, ids, [...initialMessages(a), { role: 'user', content: prompt }], { ...a, onDelta: a.onDelta ?? livePreview(ctx) });
   const bench = benchMatches(await benchP, prompt, ids);
   emit(ctx, { ...r, benchmark_samples: bench }, (x) => renderChat(x, a, bench));
   return r;
@@ -340,6 +346,15 @@ export async function chat(ctx: CliContext, patchIds: string | string[], prompt:
  */
 export function assistantTurn(r: ChatResponse): string | null {
   return r.patched?.content ?? r.base?.content ?? null;
+}
+
+function livePreview(ctx: CliContext): ChatArgs['onDelta'] {
+  if (ctx.json || ctx.quiet) return undefined;
+  let previousMode = '';
+  return (text, mode) => {
+    if (mode !== previousMode) { process.stderr.write(`\n${mode}:\n`); previousMode = mode; }
+    process.stderr.write(text);
+  };
 }
 
 /**
@@ -389,7 +404,7 @@ export async function chatRepl(ctx: CliContext, patchIds: string | string[], a: 
     const messages = [...state.transcript, ask];
     const baseMessages = [...state.baseTranscript, ask];
     try {
-      const r = await chatOnce(ctx, ids, state.mode === 'base' ? baseMessages : messages, { ...a, mode: state.mode },
+      const r = await chatOnce(ctx, ids, state.mode === 'base' ? baseMessages : messages, { ...a, mode: state.mode, onDelta: a.onDelta ?? livePreview(ctx) },
         state.mode === 'compare' ? { base: baseMessages, patched: messages } : undefined);
       state.turns++;
       // Each column keeps only the turns IT answered: a question asked in `patched` mode never happened for the

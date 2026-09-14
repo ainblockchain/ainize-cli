@@ -163,7 +163,7 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
   // supervisor that cannot pass flags.
   const webDist = a.webDist ?? process.env.AINIZE_WEB_DIST ?? undefined;
   if (webDist && !existsSync(join(webDist, 'index.html'))) {
-    throw new CliError(`--web-dist ${webDist} has no index.html — a built web directory is expected there. Refusing to start and silently fall back to the CLI's own sibling tree.`);
+    throw new CliError(`--web-dist ${webDist} has no index.html — a built web directory is expected there. Refusing to start with missing web assets.`);
   }
   const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet, webDist });
   writeFileSync(pidFile(ctx.home), String(process.pid));
