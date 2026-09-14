@@ -137,6 +137,7 @@ export interface TeachPolicy {
 }
 export interface TeachJobView {
   id: string; status: string; position?: number; eta_s?: number | null; blocked?: string | null; name?: string;
+  chain_submissions?: { status: string; submittedAt: number; acknowledgedAt: number; path: string | null; txHash: string | null; outcome: 'submitted' | 'unconfirmed' }[];
   /** While `blocked` is 'lock': who holds the shared model, how long this lesson has waited, what is left of the grace (item 244). */
   blocked_by?: { holder: string; label: string; since: number; waited_s: number; grace_left_s: number } | null;
   /**
@@ -396,6 +397,15 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     if (j.finished_at) pairs.push(['finished', fmtTime(j.finished_at)]);
     if (j.expires_at && !j.patch_id) pairs.push(['kept until', fmtTime(j.expires_at)]);
     lines.push(kv(pairs));
+    if (j.chain_submissions?.length) {
+      lines.push('', c.head('blockchain submissions (not inclusion confirmations)'), table(j.chain_submissions, [
+        { key: 'status', title: 'STATE', get: record => record.status },
+        { key: 'outcome', title: 'SUBMISSION', get: record => record.outcome },
+        { key: 'submitted', title: 'SUBMITTED AT', get: record => String(record.submittedAt) },
+        { key: 'hash', title: 'TRANSACTION', get: record => record.txHash ?? '-' },
+        { key: 'path', title: 'RECORD PATH', get: record => record.path ?? '-' },
+      ]));
+    }
     if (j.facts?.length) {
       lines.push('', c.head('corrections'), table(j.facts, [
         { key: 'q', title: 'QUESTION', get: (f) => f.prompt.slice(0, 48) }, { key: 'a', title: 'RIGHT ANSWER', get: (f) => f.answer.slice(0, 24) },
