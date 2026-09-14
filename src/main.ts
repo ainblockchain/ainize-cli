@@ -574,7 +574,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
       run((ctx, a: G & { id: string; key?: string; 'key-file'?: string }) => teachData.datasetRm(ctx, a.id, { key: a.key, keyFile: a['key-file'] })))
     .demandCommand(1, 'Give a dataset file, or a subcommand (ls|get|rm).'), () => undefined)
 
-  .command('train <target>', 'Teach a lesson from a dataset id or a dataset file', (yy: Y) => keyOpts(yy)
+  .command(['$0 <target>', 'train <target>'], 'Teach directly from a dataset file or dataset id (train is a compatibility alias)', (yy: Y) => keyOpts(yy)
     .positional('target', { type: 'string', demandOption: true, describe: `dataset id (\`${PROG} teach dataset ls\`) or a dataset file, which is uploaded first` })
     .option('effort', { choices: ['quick', 'balanced', 'thorough'] as const, describe: `how hard to train (see \`${PROG} teach status <node>\`)` })
     .option('check', { type: 'boolean', describe: '--no-check skips the side-effect check on the live model (publishing then stays blocked until a recheck)' })
@@ -587,10 +587,10 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
     .option('yes-change', { type: 'boolean', default: false, describe: 'my answers are meant to replace the base\'s where they differ' })
     .option('wait', { type: 'boolean', default: false, describe: 'follow it until it is ready (prints each stage). Exit code says what happened: 0 ready · 4 did not stick (NEEDS_MORE) · 5 failed/cancelled/expired · 6 declined by the operator · 7 still running when the wait ran out · 8 ready but never measured on the live model' })
     .option('timeout', { type: 'number', describe: 'with --wait: give up after this many minutes and exit 7 (default 60)' })
-    .example('$0 teach train 6f2c1b2a-…', 'train an uploaded dataset')
-    .example('$0 teach train ./questions.csv --effort quick --wait', 'file → lesson in one line')
-    .example('$0 teach train 6f2c1b2a-… --on krx-all-2761', 'teach it on top of someone else\'s knowledge')
-    .example('$0 teach train 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
+    .example('$0 teach 6f2c1b2a-…', 'train an uploaded dataset')
+    .example('$0 teach ./questions.csv --effort quick --wait', 'file → lesson in one line')
+    .example('$0 teach 6f2c1b2a-… --on krx-all-2761', 'teach it on top of someone else\'s knowledge')
+    .example('$0 teach 6f2c1b2a-… --effort thorough', 'the same questions again, harder'),
   run((ctx, a: G & { target: string; key?: string; 'key-file'?: string; effort?: teachData.TrainOpts['effort']; check?: boolean; alt?: boolean; rows?: number; name?: string; patch?: string; on?: string; inherit?: boolean; 'yes-change': boolean; wait: boolean; timeout?: number }) =>
     teachData.teachTrain(ctx, a.target, { key: a.key, keyFile: a['key-file'], effort: a.effort, check: a.check, alt: a.alt, rows: a.rows, name: a.name, patch: a.patch, on: a.on, inherit: a.inherit, yesChange: a['yes-change'], wait: a.wait, timeout: a.timeout })))
 
@@ -632,7 +632,7 @@ cli.command('teach', 'Teach mode: turn your own questions and answers into knowl
       consentPermanent: a['consent-permanent'], consentRights: a['consent-rights'],
     })))
 
-  .demandCommand(1, 'Subcommand is required (status|dataset|train|publish|jobs).'), () => undefined);
+  .demandCommand(1, 'Give a dataset file or id, or a subcommand (status|dataset|publish|jobs|recheck).'), () => undefined);
 
 // ---------------------------------------------------------------- dataset (the questions behind a published knowledge)
 cli.command('dataset', 'Import a Hugging Face dataset, or inspect the training set of published knowledge', (y: Y) => fail(y)

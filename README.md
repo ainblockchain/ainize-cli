@@ -158,14 +158,16 @@ marketplace listing. The returned `dataset_id` feeds the normal teaching workflo
 ainize init --name my-node --peer https://ainize.ai
 ainize start -d && ainize login
 ainize dataset https://huggingface.co/datasets/owner/questions --config default --split train --json
-ainize teach train <dataset-id> --key-file /private/teaching-key --wait
+ainize teach <dataset-id> --key-file /private/teaching-key --wait
 ainize teach publish <job-id> --name "My knowledge" --consent-permanent --consent-rights
 ainize use <published-knowledge-id>
 ainize chat <published-knowledge-id> "Question"
 ```
 
-Replace placeholders with real values. Alternatively, use `ainize teach dataset upload questions.csv`
-for a local file. Configure a compatible real serving/training runtime before training. Publication needs
+Replace placeholders with real values. Use `ainize teach ./questions.csv --wait` to upload and train a
+local file directly, or `ainize teach dataset upload questions.csv` to upload without training.
+`ainize teach train <target>` remains a compatibility alias. Files named like subcommands must use an
+explicit path, for example `./status`. Configure a compatible real serving/training runtime before training. Publication needs
 your own rights/permanence consent, successful server-side checks and any operator review; it is not
 automatic consent to republish third-party data. A reachable peer is not a listing: peers must use the same
 ledger, reach the seller endpoint, and obtain independent verification quorum. Do not re-initialize a live
