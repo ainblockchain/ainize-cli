@@ -351,7 +351,7 @@ export async function patchFork(ctx: CliContext, id: string, opts: KeyOpts & { n
       ['inherited', `${d.inherited_rows} — every one of them points at the question of ${d.parent.patch_id} it came from`],
     ]),
     c.dim(`add your own questions:  ${PROG} teach dataset get ${d.dataset_id} -o questions.jsonl   (edit, then re-upload)`),
-    c.dim(`teach on top of it:      ${PROG} teach train ${d.dataset_id} --on ${d.parent.patch_id}`),
+    c.dim(`teach on top of it:      ${PROG} teach ${d.dataset_id} --on ${d.parent.patch_id}`),
   ].join('\n'));
   return out;
 }

@@ -289,7 +289,7 @@ export function renderTeachStatus(r: TeachStatusResult): string {
       if (note) lines.push(note);
     }
     lines.push('', c.dim([
-      `teach from a file:  ${PROG} teach dataset ./questions.csv --train      (or ${r.node}/teach/upload)`,
+      `teach from a file:  ${PROG} teach ./questions.csv      (or ${r.node}/teach/upload)`,
       `teach in chat:      ${r.node}/chat?teach=1`,
     ].join('\n')));
     return lines.join('\n');
@@ -440,7 +440,7 @@ export function renderTeachStatus(r: TeachStatusResult): string {
     else if (j.status === 'READY') lines.push('', c.dim([
       `publish it from here: ${PROG} teach publish ${j.id} --name "<name>" --price <n> --consent-permanent --consent-rights`,
       `or in the browser:    ${r.node}/teach/lesson/${j.id}  (try it, keep it private, publish it)`,
-      ...(j.dataset?.id && !j.dataset.deleted ? [`train the same questions harder: ${PROG} teach train ${j.dataset.id} --effort thorough`] : []),
+      ...(j.dataset?.id && !j.dataset.deleted ? [`train the same questions harder: ${PROG} teach ${j.dataset.id} --effort thorough`] : []),
     ].join('\n')));
     return lines.join('\n');
   }

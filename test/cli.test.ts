@@ -509,7 +509,7 @@ test('teach dataset <file>: the node reads it, every unused line is named with i
   assert.match(up.report.rows.find((r) => r.line === 8)!.detail!, /240 characters, 40 over the 200 limit/);
   // what the terminal actually prints: the summary, the fingerprint, and a row per problem line
   const out = renderUpload(up);
-  for (const needle of [up.dataset.sha256.slice(0, 16), '2 of 7 lines will train', 'duplicate', 'conflict', 'too_long', 'the same question and answer as line 2', `teach train ${up.dataset.id}`]) {
+  for (const needle of [up.dataset.sha256.slice(0, 16), '2 of 7 lines will train', 'duplicate', 'conflict', 'too_long', 'the same question and answer as line 2', `teach ${up.dataset.id}`]) {
     assert.ok(out.includes(needle), `missing ${needle}`);
   }
   assert.ok(!out.includes('Fredville'.repeat(2)));

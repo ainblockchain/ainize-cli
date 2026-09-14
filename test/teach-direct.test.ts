@@ -32,6 +32,9 @@ test('teach <file> creates one dataset-backed job and preserves explicit subcomm
     assert.equal(jobs.items[0].id, result.job.id);
     const dataset = await invoke('teach', 'dataset', 'get', result.dataset_id);
     assert.equal(dataset.dataset.rows, 1);
+    const retrained = await invoke('teach', result.dataset_id, '--effort', 'quick');
+    assert.equal(retrained.dataset_id, result.dataset_id);
+    assert.notEqual(retrained.job.id, result.job.id);
     const legacy = await invoke('teach', 'train', file, '--effort', 'quick');
     assert.equal(legacy.dataset_id, result.dataset_id);
     const status = await invoke('teach', 'status', result.job.id);
