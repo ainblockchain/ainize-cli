@@ -299,11 +299,13 @@ export async function datasetGet(ctx: CliContext, id: string, opts: KeyOpts & { 
     const res = await s.raw(`/api/teach/datasets/${encodeURIComponent(id)}/download${query({ format })}`);
     if (!res.ok) throw new CliError(`download failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
     const body = Buffer.from(await res.arrayBuffer());
-    writeFileSync(resolve(opts.out), body);
-    // the .jsonl bytes ARE the fingerprint subject; a .csv rendering of them is not
-    const verified = format === 'jsonl' ? sha256(body) === dataset.sha256 : sha256(body) === (res.headers.get('x-content-sha256') ?? '');
-    if (format === 'jsonl' && !verified) warn(ctx, 'the downloaded bytes do not match the dataset fingerprint — do not re-upload this file');
-    out.saved = { path: resolve(opts.out), bytes: body.length, sha256: sha256(body), verified };
+    const expected = format === 'jsonl' ? dataset.sha256 : res.headers.get('x-content-sha256');
+    const actual = sha256(body);
+    if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected) || actual !== expected.toLowerCase()) {
+      throw new CliError('Dataset download fingerprint missing or mismatched; output file was not written. Inspect the dataset revision and retry the download before using it as training evidence.');
+    }
+    writeFileSync(resolve(opts.out), body, { mode: 0o600 });
+    out.saved = { path: resolve(opts.out), bytes: body.length, sha256: actual, verified: true };
   }
   emit(ctx, out, (d) => renderDatasetGet(d, !!opts.all));
   return out;
@@ -317,7 +319,7 @@ export function renderDatasetGet(r: DatasetGetResult, all: boolean): string {
   }
   lines.push('', renderSummary(r.page.summary), '', c.head(all ? 'every line' : 'lines that will not train'), renderRows(r.page.items, { all, positions: r.dataset.revision > 1 }));
   if (r.page.total > r.page.offset + r.page.items.length) lines.push(c.dim(`${r.page.offset + r.page.items.length} of ${r.page.total} lines shown — more with --rows / --offset`));
-  if (r.saved) lines.push('', c.ok('✓ ') + `saved ${r.saved.path} (${fmtBytes(r.saved.bytes)})` + (r.saved.verified ? c.dim(` · fingerprint verified — re-uploading it lands on this same dataset`) : ''));
+  if (r.saved) lines.push('', c.ok('✓ ') + `saved ${r.saved.path} (${fmtBytes(r.saved.bytes)})` + (r.saved.verified ? c.dim(' · download fingerprint verified') : ''));
   return lines.join('\n');
 }
 

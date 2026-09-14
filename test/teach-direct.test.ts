@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -32,6 +33,10 @@ test('teach <file> creates one dataset-backed job and preserves explicit subcomm
     assert.equal(jobs.items[0].id, result.job.id);
     const dataset = await invoke('teach', 'dataset', 'get', result.dataset_id);
     assert.equal(dataset.dataset.rows, 1);
+    const canonicalPath = join(home, 'canonical.jsonl');
+    const downloaded = await invoke('teach', 'dataset', 'get', result.dataset_id, '--out', canonicalPath);
+    assert.equal(downloaded.saved.verified, true);
+    assert.equal(createHash('sha256').update(readFileSync(canonicalPath)).digest('hex'), dataset.dataset.sha256);
     const retrained = await invoke('teach', result.dataset_id, '--effort', 'quick');
     assert.equal(retrained.dataset_id, result.dataset_id);
     assert.notEqual(retrained.job.id, result.job.id);

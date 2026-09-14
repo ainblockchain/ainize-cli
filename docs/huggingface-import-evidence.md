@@ -50,6 +50,23 @@ If waiting was interrupted after admission, locate `training-submission.json`
 under `<home>/hf-imports/import-*/` and use its Job ID with `ainize teach status`.
 Do not create another job merely because the final `training-receipt.json` is absent.
 
+## Download integrity verification
+
+On 2026-09-14, the download integrity test and 14 HF import/direct-teach
+regression tests passed, together with TypeScript checking. The integrity test
+runs the CLI against a controlled local HTTP fixture and checks nonzero exit,
+no new output, preservation of existing evidence, malformed/missing digests,
+valid JSONL and CSV hash domains, and mode 0600 on a new output file. The
+direct-teach regression downloads canonical JSONL from an actual temporary
+Ainize node and compares its bytes with the node's dataset fingerprint.
+HF responses and training in these regressions use fixtures/stubs. They are
+not evidence of 100 dataset pipelines, GPU training or onchain inclusion.
+
+```sh
+node --test --import tsx test/dataset-download-integrity.test.ts test/teach-direct.test.ts test/huggingface-import-receipt.test.ts test/huggingface-dataset.test.ts
+npm run typecheck
+```
+
 ## Trace to AINSCAN
 
 1. Import using the required mapping and preserve the output:
@@ -72,6 +89,13 @@ Do not create another job merely because the final `training-receipt.json` is ab
    Select the same node with `--node <url>` when it is not the configured default.
    The canonical hash must equal the receipt's `dataset_sha256` and the job's
    `dataset.sha256`. Do not substitute the downloaded HF input hash.
+   Downloads now fail with a nonzero exit status before writing the output if
+   the expected fingerprint is missing, malformed or mismatched. An existing
+   output file is left untouched on verification failure; new output files use
+   mode 0600. A successful JSONL download verifies the canonical dataset hash.
+   CSV downloads instead verify the node's `x-content-sha256` export header;
+   they do not verify the canonical JSONL hash or independently authenticate
+   the dataset's HF origin. Use JSONL for the chain binding described here.
 4. Read the job's `chain_submissions` and locate the actual training transaction
    by its hash in AINSCAN configured for that chain. Its native lesson path must
    identify this job and node, and its dataset ID/hash must match the receipt.
