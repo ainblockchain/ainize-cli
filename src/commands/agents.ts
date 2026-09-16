@@ -96,7 +96,9 @@ export async function agentLs(ctx: CliContext): Promise<AgentRow[]> {
       { key: 'calls', title: 'CALLS', get: (a: AgentRow) => String(a.calls) },
       { key: 'seen', title: 'CHECKED', get: (a: AgentRow) => (a.last_checked ? fmtTime(a.last_checked) : '-') },
       { key: 'state', title: 'STATE', get: state },
-      { key: 'url', title: 'A2A URL', get: (a: AgentRow) => a.a2a_url },
+      // The CARD address, not the JSON-RPC endpoint: this is what a workspace is given and what opens in a
+      // browser. The endpoint is POST-only and answers a GET with 404, which reads as a dead link.
+      { key: 'url', title: 'AGENT CARD', get: (a: AgentRow) => a.card_url },
     ], `no agents — \`${PROG} agent add <id> --upstream http://127.0.0.1:9200\``),
     ...(disabled.length
       ? ['', c.dim(`disabled here and therefore unpublished: ${disabled.map((a) => a.id).join(', ')} — \`${PROG} agent on <id>\``)]
