@@ -306,7 +306,7 @@ cli.command('agent', 'A2A agents this node serves: register one, see whether it 
     .option('disabled', { type: 'boolean', default: false, describe: 'register without publishing it yet' })
     .example('$0 agent add donga-desk --upstream http://127.0.0.1:9200', 'give a running agent a public address'),
     run((ctx, a: G & { id: string; upstream?: string; name?: string; description?: string; disabled?: boolean }) =>
-      agents.agentAdd(ctx, a.id, a))) 
+      agents.agentAdd(ctx, a.id, a)))
   .command('rm <id>', 'Unregister an agent (its public address stops resolving)', (yy: Y) => yy
     .positional('id', { type: 'string', demandOption: true })
     .option('yes', { type: 'boolean', default: false, describe: 'skip the confirmation' }),
