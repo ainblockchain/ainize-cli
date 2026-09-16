@@ -117,9 +117,14 @@ export async function agentAdd(
     throw new CliError(`agent id must be lowercase letters, digits and dashes (max 40) — got ${JSON.stringify(id)}`);
   }
   if (!opts.upstream) throw new CliError(`--upstream is required: where the agent process listens, e.g. http://127.0.0.1:9200`);
-  let upstream: URL;
-  try { upstream = new URL(opts.upstream); } catch { throw new CliError(`--upstream must be a full URL — did you mean http://${opts.upstream}?`); }
-  if (upstream.protocol !== 'http:' && upstream.protocol !== 'https:') throw new CliError('--upstream must be http(s)');
+  // `new URL('localhost:9200')` PARSES — with protocol "localhost:" — so a missing scheme has to be caught by
+  // checking the protocol, not by catching. Both spellings get the same suggestion (context.ts, item 116).
+  let upstream: URL | null = null;
+  try { upstream = new URL(opts.upstream); } catch { /* not a URL at all */ }
+  if (!upstream || (upstream.protocol !== 'http:' && upstream.protocol !== 'https:')) {
+    const guess = opts.upstream.replace(/^\w+:\/\//, '').replace(/^\/+/, '');
+    throw new CliError(`--upstream must be a full http(s) URL — did you mean http://${guess}?`);
+  }
 
   const agents = configured(ctx);
   if (agents.some((a) => a.id === id)) {
