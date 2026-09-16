@@ -121,13 +121,27 @@ export function parsePatchIds(input: string | string[] | undefined): string[] {
 
 const CHAT_TIMEOUT_MS = 15 * 60_000;   // apply + two generations on a busy runtime
 
+/**
+ * The repository ID inside a Hugging Face model URL.
+ *
+ * Most repositories are `<owner>/<model>`, but the oldest and most-used models are canonical: they
+ * live at the root of the Hub with no owner segment, and their ID is the bare name a runtime serves
+ * them under — `gpt2`, `bert-base-uncased`, `distilgpt2`. Requiring two segments refused those, and
+ * the rewritten `openai-community/gpt2` form is a different string, so a node serving `gpt2` would
+ * have rejected it as a different model. Both shapes are accepted; a dataset, Space or file URL is
+ * still refused, and so is anything with credentials, a query or a fragment.
+ */
 export function huggingFaceModelId(input: string): string {
   let url: URL;
   try { url = new URL(input); } catch { throw new CliError('Expected a Hugging Face model repository URL'); }
-  const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/?$/.exec(url.pathname);
+  const segment = '[A-Za-z0-9_.-]+';
+  const match = new RegExp(`^/(?:(${segment})/)?(${segment})/?$`).exec(url.pathname);
+  const reserved = ['datasets', 'spaces', 'models', 'organizations', 'settings', 'docs', 'blog', 'api'];
   if (url.origin !== 'https://huggingface.co' || url.username || url.password || url.search || url.hash
-    || !match || ['datasets', 'spaces'].includes(match[1])) throw new CliError('Use https://huggingface.co/<owner>/<model>, not a dataset, Space or file URL');
-  return `${match[1]}/${match[2]}`;
+    || !match || reserved.includes(match[1] ?? match[2])) {
+    throw new CliError('Use https://huggingface.co/<owner>/<model> (or a canonical https://huggingface.co/<model>), not a dataset, Space or file URL');
+  }
+  return match[1] ? `${match[1]}/${match[2]}` : match[2];
 }
 
 function chatIds(input: string | string[], opts: ChatArgs): string[] {

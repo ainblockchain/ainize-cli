@@ -10,6 +10,16 @@ import { huggingFaceModelId } from '../src/commands/chat.js';
 
 test('model URL parsing rejects datasets, Spaces, credentials and ambiguous revisions', () => {
   assert.equal(huggingFaceModelId('https://huggingface.co/owner/model/'), 'owner/model');
+  // Canonical repositories have no owner segment and their ID is the bare name a runtime serves
+  // them under. The rewritten `openai-community/gpt2` is a different string, so a node serving
+  // `gpt2` must be reachable by `gpt2`.
+  assert.equal(huggingFaceModelId('https://huggingface.co/gpt2'), 'gpt2');
+  assert.equal(huggingFaceModelId('https://huggingface.co/bert-base-uncased/'), 'bert-base-uncased');
+  assert.equal(huggingFaceModelId('https://huggingface.co/openai-community/gpt2'), 'openai-community/gpt2');
+  for (const url of ['https://huggingface.co/datasets', 'https://huggingface.co/spaces', 'https://huggingface.co/docs',
+    'https://huggingface.co/models', 'https://huggingface.co/settings']) {
+    assert.throws(() => huggingFaceModelId(url), undefined, url);
+  }
   for (const url of ['http://huggingface.co/owner/model', 'https://huggingface.co/datasets/model', 'https://huggingface.co/spaces/model',
     'https://example.com/owner/model', 'https://secret@huggingface.co/owner/model', 'https://huggingface.co/owner/model/tree/main',
     'https://huggingface.co/owner/model?revision=main', 'https://huggingface.co/owner/model#revision']) {
