@@ -15,6 +15,7 @@ import * as init from './commands/init.js';
 import * as node from './commands/node.js';
 import * as auth from './commands/auth.js';
 import * as peers from './commands/peers.js';
+import * as agents from './commands/agents.js';
 import * as patch from './commands/patch.js';
 import * as ledger from './commands/ledger.js';
 import * as branch from './commands/branch.js';
@@ -286,6 +287,42 @@ cli.command('peers', 'Manage peers', (y: Y) => fail(y)
   .command('add <url>', 'Add a peer', (yy: Y) => yy.positional('url', { type: 'string', demandOption: true }), run((ctx, a: G & { url: string }) => peers.peersAdd(ctx, a.url)))
   .command('rm <url>', 'Remove a peer', (yy: Y) => yy.positional('url', { type: 'string', demandOption: true }), run((ctx, a: G & { url: string }) => peers.peersRm(ctx, a.url)))
   .demandCommand(1, 'Subcommand is required (ls|add|rm).'), () => undefined);
+
+// ---------------------------------------------------------------- agents
+/**
+ * `ainize agent …` — the A2A agents this node gives a public address to.
+ *
+ * `ls`, `card` and `call` talk to a node and work against someone else's with `--node`; `add`, `rm`, `on` and
+ * `off` write this home's `config.json`, which the node reads at startup. That split is why `add` prints the
+ * restart hint rather than pretending the change is live.
+ */
+cli.command('agent', 'A2A agents this node serves: register one, see whether it answers, and call it', (y: Y) => fail(y)
+  .command('ls', 'List agents, their skills and whether they are answering', (yy: Y) => yy, run((ctx) => agents.agentLs(ctx)))
+  .command('add <id>', 'Register an agent process at a public address on this node', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true, describe: 'URL segment: /agents/<id>' })
+    .option('upstream', { type: 'string', describe: 'where the agent process listens, e.g. http://127.0.0.1:9200' })
+    .option('name', { type: 'string', describe: 'label for the operator list (the card\'s own name is what a workspace shows)' })
+    .option('description', { type: 'string', describe: 'shown until the agent\'s card answers for itself' })
+    .option('disabled', { type: 'boolean', default: false, describe: 'register without publishing it yet' })
+    .example('$0 agent add donga-desk --upstream http://127.0.0.1:9200', 'give a running agent a public address'),
+    run((ctx, a: G & { id: string; upstream?: string; name?: string; description?: string; disabled?: boolean }) =>
+      agents.agentAdd(ctx, a.id, a))) 
+  .command('rm <id>', 'Unregister an agent (its public address stops resolving)', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('yes', { type: 'boolean', default: false, describe: 'skip the confirmation' }),
+    run((ctx, a: G & { id: string; yes?: boolean }) => agents.agentRm(ctx, a.id, a)))
+  .command('on <id>', 'Publish a registered agent', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { id: string }) => agents.agentEnable(ctx, a.id, true)))
+  .command('off <id>', 'Keep the registration but take the public address down', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { id: string }) => agents.agentEnable(ctx, a.id, false)))
+  .command('card <id>', 'The agent card as this node serves it to a workspace', (yy: Y) => yy.positional('id', { type: 'string', demandOption: true }),
+    run((ctx, a: G & { id: string }) => agents.agentCard(ctx, a.id)))
+  .command('call <id> <prompt..>', 'Send a message the way a workspace would, through the public path', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .positional('prompt', { type: 'string', array: true, demandOption: true })
+    .example('$0 agent call donga-desk "오늘 파이프라인 상태 알려줘"', 'one JSON-RPC message/send, as a stranger would'),
+    run((ctx, a: G & { id: string; prompt: string[] }) => agents.agentCall(ctx, a.id, (a.prompt ?? []).join(' ')), true))
+  .demandCommand(1, 'Subcommand is required (ls|add|rm|on|off|card|call).'), () => undefined);
 
 /**
  * `ainize publish <file>` and `ainize patch publish <file>` are ONE operation with two names (item 112). They used
