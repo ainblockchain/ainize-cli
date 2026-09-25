@@ -11,7 +11,10 @@ npm install -g ainize
 For the latest node-linking flow before its npm release:
 
 ```bash
-npm install -g github:ainblockchain/ainize-cli
+git clone https://github.com/ainblockchain/ainize-cli.git
+cd ainize-cli
+npm ci
+npm install -g .
 ```
 
 ## Connect a node
