@@ -8,6 +8,7 @@
 import yargs, { type Argv, type ArgumentsCamelCase } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import chalk from 'chalk';
+import { readFileSync } from 'node:fs';
 import { CliError, PROG, buildContext, requireNodeTarget, type CliContext } from './context.js';
 import { explainUsageError } from './help.js';
 import { flushJson, jsonError, setWide } from './output.js';
@@ -111,7 +112,7 @@ const cli: Y = yargs(hideBin(process.argv))
   .option('json', { type: 'boolean', describe: 'machine-readable JSON output — one document per command, errors included, on failure to stderr', global: true, default: false })
   .option('quiet', { type: 'boolean', describe: 'print nothing but the id of whatever was created or changed', global: true, default: false })
   .option('wide', { type: 'boolean', describe: 'do not fit tables to the terminal width (piped output is never fitted)', global: true, default: false })
-  .alias('h', 'help').help('help').version()
+  .alias('h', 'help').help('help').version(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version)
   .showHelpOnFail(false, `Specify --help for available options.`)
   .strict()
   // a one-character typo answers with the command it meant instead of "Unknown argument" (item 103)

@@ -293,7 +293,7 @@ async function runningHere(ctx: CliContext, cfg: NodeConfig): Promise<{ pid: num
   if (pid) return { pid, url };
   const d = await new NodeClient({ ...ctx, nodeUrl: url, token: null })
     .get<{ node: { address: string } }>('/api/info', { auth: false, timeoutMs: 1500 }).catch(() => null);
-  return d && d.node.address.toLowerCase() === cfg.identity.address.toLowerCase() ? { pid: null, url } : null;
+  return typeof d?.node?.address === 'string' && d.node.address.toLowerCase() === cfg.identity.address.toLowerCase() ? { pid: null, url } : null;
 }
 
 export async function configSet(ctx: CliContext, key: string, value: string): Promise<NodeConfig> {
