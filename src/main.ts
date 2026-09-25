@@ -250,18 +250,20 @@ cli.command('gc', 'Delete knowledge files this node neither published nor bought
     node.gc(ctx, { dryRun: a['dry-run'], keepPurchased: a['keep-purchased'], olderThan: a['older-than'], allowSoleCopy: a['allow-sole-copy'], yes: a.yes })));
 
 // ---------------------------------------------------------------- auth
-cli.command('login', 'Sign in — on the node\'s own machine with its key, anywhere else by approving this machine in a browser', (y: Y) => fail(y)
+cli.command('login', 'Connect this node to any wallet through the website', (y: Y) => fail(y)
+  .option('open', { type: 'boolean', default: true, describe: 'open the browser; --no-open prints the approval link only' })
+  .option('hub', { type: 'string', describe: 'website used to connect this node (default https://ainize.ai)' })
   .option('device', { type: 'boolean', describe: "print a URL and wait for someone to approve this machine's key in a browser — the default anywhere the node's config.json is not" })
-  .option('node-key', { type: 'boolean', describe: "sign with the node's own key from config.json (the default on its own machine)" })
+  .option('node-key', { type: 'boolean', describe: "sign with the node's own key from config.json (explicit local operator login)" })
   .option('label', { type: 'string', describe: 'what to call this machine in the approval prompt and in the list of what acts as you' })
   .option('as', { type: 'string', describe: 'sign with this private key instead — for an address that already owns this node' })
   .option('enroll', { type: 'boolean', describe: "also make the signing address an owner of this node (needs its own machine, or the one-time token)" })
   .option('setup-token', { type: 'string', describe: 'with --enroll from another machine: the one-time token in the node\'s AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
-  .example('$0 login', "on the node's machine: signs with its own key; anywhere else: prints a link to approve")
+  .example('$0 login', "open the website and connect this node to your wallet")
   .example('$0 login --node https://ainize.ai', 'sign in to somebody else\'s node as yourself')
   .example('$0 login --device --label "ci runner"', 'approve this machine explicitly, under a name you will recognise later'),
-  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string }) =>
-    auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label })));
+  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string; open?: boolean; hub?: string }) =>
+    auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label, open: a.open, hub: a.hub }), false, true));
 cli.command('whoami', 'Which address this session acts as, and which key is doing the acting', (y: Y) => fail(y)
   .example('$0 whoami', 'and whether that address owns this node'),
   run((ctx) => auth.whoami(ctx)));

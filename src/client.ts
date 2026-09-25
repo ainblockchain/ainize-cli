@@ -105,7 +105,7 @@ export class NodeClient {
           return field && !i.message.toLowerCase().startsWith(field.toLowerCase()) ? `${field} ${i.message}` : i.message;
         }).join('; ');
       }
-      if (res.status === 401) msg += ` — run \`${PROG} login\` first`;
+      if (res.status === 401) msg += ` — use \`${PROG} login --node-key\` for your local node, or \`${PROG} login --device --node ${this.ctx.nodeUrl}\` for wallet delegation`;
       throw new CliError(msg, res.status === 401 ? 3 : 1, data);
     }
     return data as T;

@@ -84,14 +84,14 @@ test('status reaches the node', async () => {
 test('login signs a challenge with the node\'s own key and stores a bearer token', async () => {
   // There is no first-time setup any more: the node's own key is an operator by construction, so the first login
   // and the tenth are the same operation. `--as` with a key nobody enrolled is refused by the node, not by us.
-  const r = await login(ctx, {});
+  const r = await login(ctx, { nodeKey: true });
   assert.ok(r.token.length > 20);
   assert.equal(readState(home).token, r.token);
   assert.ok(ctx.cfg && r.address.toLowerCase() === ctx.cfg.identity.address.toLowerCase());
 
   const ctx2 = buildContext({ home, node: `http://127.0.0.1:${port}`, quiet: true });
   ctx2.token = null;
-  const r2 = await login(ctx2, {});
+  const r2 = await login(ctx2, { nodeKey: true });
   assert.ok(r2.token.length > 20);
 
   // A key nobody authorised is no longer refused: signing in gives you a NAME, and owning the node is a separate

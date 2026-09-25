@@ -89,7 +89,7 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   /**
    * Nothing to claim. The node's own key is an operator by construction — it is in the file this command just
    * wrote — so there is no window in which the node is unowned and waiting for whoever asks first, and no password
-   * to set. `ainize login` signs a challenge with that key; another person's address is enrolled afterwards with
+   * to set. `ainize login --node-key` signs a challenge with that key; another person's address is enrolled afterwards with
    * `ainize operators add`.
    */
   saveConfig(cfg, ctx.home);
@@ -97,7 +97,7 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
   emit(ctx, { config: p, name: cfg.name, address: cfg.identity.address, port: cfg.port, host: cfg.host, ledger: cfg.ledger.kind, roles: cfg.roles, kept_identity: kept, backup: backup ?? null }, (d) => [
     c.ok('✓ ') + `node initialised at ${d.config}`,
     kv([['name', d.name], ['address', d.address], ['listens on', `${d.host}:${d.port}${publicBind ? c.warn('  (every interface)') : c.dim('  (this machine only)')}`], ['ledger', d.ledger], ['roles', d.roles.join(', ')],
-      ['owner', c.ok("this node's own key") + c.dim(`  (\`${PROG} login\` signs in with it — no password. \`${PROG} operators add 0x…\` lets a wallet run it too)`)]]),
+      ['owner', c.ok("this node's own key") + c.dim(`  (\`${PROG} login --node-key\` signs in with it — no password. \`${PROG} operators add 0x…\` lets a wallet run it too)`)]]),
     ...(d.kept_identity ? [c.dim(`keeping this node's identity ${d.address} (pass --new-identity to replace it)`)] : []),
     ...(d.backup ? [c.dim(`previous config saved as ${d.backup}`)] : []),
     ...(existing ? [] : [
@@ -112,10 +112,10 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
       c.dim('next, on the AIN ledger:'),
       c.dim(`  ${PROG} chain up        the local 1-node chain in docker (skip it if ${cfg.ledger.ain?.providerUrl ?? 'the provider'} is a chain you already run)`),
       c.dim(`  ${PROG} chain setup     registers /apps/knowledge + the market rules, and funds this identity on a local chain`),
-      c.dim(`  ${PROG} start && ${PROG} login`),
+      c.dim(`  ${PROG} start && ${PROG} login --node-key`),
       c.dim(`  ${PROG} wallet          this node pays for every announce, attest and settle from its own AIN balance — check it`),
     ] : [
-      c.dim(`next: \`${PROG} start\`   (then \`${PROG} login\`)`),
+      c.dim(`next: \`${PROG} login\` to connect your wallet, then \`${PROG} start\``),
       c.dim(`      (demo knowledge: \`${PROG} seed\` first — it writes the data directory the node then opens)`),
     ]),
   ].join('\n'));
@@ -268,7 +268,7 @@ function settableField(key: string) {
   if (PROTECTED_CONFIG_KEYS.includes(key)) {
     throw new CliError(key.startsWith('identity')
       ? `refusing to set ${key}: the identity is this node's only key pair — see \`${PROG} keys\``
-      : `refusing to set ${key}: the operator password is set by \`${PROG} login\``);
+      : `refusing to set ${key}: the operator password is set by \`${PROG} login --node-key\``);
   }
   const field = configField(key);
   if (!field) {
@@ -322,7 +322,7 @@ export async function configSet(ctx: CliContext, key: string, value: string): Pr
     const live = effective?.[mapped.setting === 'enabled' ? 'enabled' : mapped.setting];
     if (live !== undefined && JSON.stringify(live) !== JSON.stringify(check.data)) {
       warn(ctx, `the running node still answers ${mapped.setting} = ${JSON.stringify(live)}: that value is a console override in node.sqlite, and it outlives a restart.\n` +
-        `  ${wrote === 'unauthorised' ? `sign in and run this again to write both (\`${PROG} login\`)` : `clear it in the console's Teaching tab, or run \`${PROG} config unset ${key}\` while signed in`}`);
+        `  ${wrote === 'unauthorised' ? `sign in and run this again to write both (\`${PROG} login --node-key\`)` : `clear it in the console's Teaching tab, or run \`${PROG} config unset ${key}\` while signed in`}`);
       return cfg;
     }
   }
@@ -387,7 +387,7 @@ export async function configUnset(ctx: CliContext, key: string): Promise<NodeCon
   if (mapped && (await runningHere(ctx, cfg))) {
     const wrote = await writeTeachOverride(ctx, mapped.api, null);
     if (wrote === 'ok') ok(ctx, `the console override for ${key} was cleared too ${c.dim('(the running node is back on config.json / its built-in default)')}`);
-    else warn(ctx, `could not clear the console override for ${key}${wrote === 'unauthorised' ? ` — sign in (\`${PROG} login\`) and run this again` : ''}: until it is cleared the running node keeps using it, and a restart will not help`);
+    else warn(ctx, `could not clear the console override for ${key}${wrote === 'unauthorised' ? ` — sign in (\`${PROG} login --node-key\`) and run this again` : ''}: until it is cleared the running node keeps using it, and a restart will not help`);
   }
   return cfg;
 }

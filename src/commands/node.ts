@@ -1,6 +1,7 @@
 /**
  * `ainize start|stop|status|logs|seed` — node lifecycle.
  */
+import { startNodeHeartbeat } from '../node-link.js';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -166,8 +167,9 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     throw new CliError(`--web-dist ${webDist} has no index.html — a built web directory is expected there. Refusing to start with missing web assets.`);
   }
   const node = await startNode(cfg, { home: ctx.home, quiet: ctx.quiet, webDist });
+  const stopHeartbeat = startNodeHeartbeat(ctx.home, cfg);
   writeFileSync(pidFile(ctx.home), String(process.pid));
-  const cleanup = async () => { try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ } await node.stop(); process.exit(0); };
+  const cleanup = async () => { stopHeartbeat(); try { unlinkSync(pidFile(ctx.home)); } catch { /* ignore */ } await node.stop(); process.exit(0); };
   process.once('SIGINT', cleanup);
   process.once('SIGTERM', cleanup);
   return node;

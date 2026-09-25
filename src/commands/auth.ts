@@ -5,6 +5,8 @@ import { createInterface } from 'node:readline';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { identityFromPrivateKey, loadConfig, sameAddr, saveConfig, signMessage } from '@ainize/core';
+import { connectNode, DEFAULT_WEBSITE } from '../node-link.js';
+import { openBrowser } from '../browser.js';
 import { NodeClient } from '../client.js';
 import { defaultLabel, ensureCliKey, forgetCliKey, readCliKey } from '../cli-key.js';
 import { CliError, PROG, readState, writeState, type CliContext } from '../context.js';
@@ -66,7 +68,7 @@ export async function promptLine(question: string): Promise<string> {
   });
 }
 
-export interface LoginArgs { setupToken?: string; enroll?: boolean; as?: string; device?: boolean; nodeKey?: boolean; label?: string; open?: boolean; timeoutMs?: number }
+export interface LoginArgs { setupToken?: string; enroll?: boolean; as?: string; device?: boolean; nodeKey?: boolean; label?: string; open?: boolean; timeoutMs?: number; hub?: string }
 
 /** A device request, as the node hands it back. `poll_secret` is the half that never goes in the URL. */
 interface DeviceRequest { code: string; poll_secret: string; url: string; interval_ms: number; expires_at: number }
@@ -112,6 +114,7 @@ async function deviceLogin(ctx: CliContext, a: LoginArgs, client: NodeClient): P
     : `\n  Open this to authorise this machine:\n\n    ${c.id(req.url)}\n\n`
       + `  ${c.dim(`key  ${key.address}`)}\n  ${c.dim(`name "${label}"`)}\n\n  ${c.dim('Waiting…  (Ctrl-C to stop)')}\n`);
 
+  if (a.open !== false) openBrowser(req.url);
   const deadline = Date.now() + (a.timeoutMs ?? 10 * 60_000);
   for (;;) {
     await sleep(Math.max(500, req.interval_ms));
@@ -153,7 +156,7 @@ function localSetupToken(home: string): string | null {
  * `ainize login` — three ways in, and the one it picks when you do not say.
  *
  * ON THE NODE'S OWN MACHINE, the node's key in config.json is the obvious answer: it already owns everything this
- * node published, it is right here, and nobody needs to be asked anything. That stays the default there.
+ * node published, it is right here, and nobody needs to be asked anything. Use --node-key for that explicit operator flow.
  *
  * ANYWHERE ELSE — a laptop, a CI runner, a second machine — there is no such key, and there used to be no answer
  * at all short of editing a file on the node's machine to make your address an operator. Now the CLI has a key of
@@ -164,8 +167,10 @@ function localSetupToken(home: string): string | null {
  * `--as <key>` still signs with a key you name. It is the escape hatch for a key that is already an owner.
  */
 export async function login(ctx: CliContext, a: LoginArgs = {}): Promise<{ token: string; nodeUrl: string; address: string }> {
-  const client = new NodeClient({ ...ctx, token: null });
   const cfg = ctx.cfg ?? loadConfig(ctx.home);
+  if (cfg && !a.as && !a.nodeKey && !a.enroll && !a.device) return connectNode({ ...ctx, cfg }, a);
+  if (!cfg && ctx.nodeSource === 'default') ctx = { ...ctx, nodeUrl: a.hub ?? DEFAULT_WEBSITE, nodeSource: 'flag' };
+  const client = new NodeClient({ ...ctx, token: null });
   const me = await client.get<{ signedIn: boolean; canEnroll: boolean; name: string; address: string }>('/api/auth/me', { auth: false });
 
   // Which key, and therefore which path. A home with no config.json is somebody's laptop, and that is the case
