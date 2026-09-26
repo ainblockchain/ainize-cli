@@ -1,7 +1,7 @@
 /**
  * `ainize start|stop|status|logs|seed` — node lifecycle.
  */
-import { startNodeHeartbeat } from '../node-link.js';
+import { nodeLinkProblem, readNodeLink, startNodeHeartbeat } from '../node-link.js';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -112,6 +112,11 @@ export async function start(ctx: CliContext, a: StartArgs = {}): Promise<Running
     throw new CliError(holder.node.address.toLowerCase() === cfg.identity.address.toLowerCase()
       ? `this node is already serving on http://localhost:${cfg.port} — it was not started by \`${PROG} start -d\` (foreground, or a supervisor), so stop it where it was started before starting it here`
       : `port ${cfg.port} is already answered by "${holder.node.name}" (${shortAddr(holder.node.address, 8)}), not the node in ${ctx.home} — stop that node, or move this one: \`${PROG} config set port <1-65535>\``);
+  }
+  // Connected to a wallet on the website first, or not at all (node-link.ts says why).
+  const linkProblem = nodeLinkProblem(readNodeLink(ctx.home), cfg.identity.address);
+  if (linkProblem) {
+    throw new CliError(`${linkProblem} — run \`${PROG} login --home ${ctx.home}\`, approve it with your wallet on the website, then start again`);
   }
   if (a.detach) {
     mkdirSync(ctx.home, { recursive: true });

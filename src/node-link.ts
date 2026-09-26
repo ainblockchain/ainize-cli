@@ -16,6 +16,23 @@ function saveNodeLink(home: string, link: NodeLink): void {
   writeFileSync(statePath(home), JSON.stringify(link, null, 2) + '\n', { mode: 0o600 }); chmodSync(statePath(home), 0o600);
 }
 
+/**
+ * Why this home's node may not start, or null when it may.
+ *
+ * A node is connected to the website before it runs: that link is what puts it under a wallet's **My nodes**,
+ * and a node nobody can see there is a node nobody operates. So `start` refuses until `login` has saved a link
+ * for THIS node key that has not expired — a link copied from another home, or left over from a key that was
+ * re-initialised, names a different node and does not count.
+ */
+export function nodeLinkProblem(link: NodeLink | null, nodeAddress: string, now = Date.now()): string | null {
+  if (!link) return 'this node is not connected to a wallet on the website';
+  if (link.address.toLowerCase() !== nodeAddress.toLowerCase()) return `the saved website link is for another node key (${link.address}), not this one (${nodeAddress})`;
+  // `expires` arrives from the website; accept seconds as well as milliseconds rather than guess wrong.
+  const expiresMs = link.expires < 1e12 ? link.expires * 1000 : link.expires;
+  if (expiresMs <= now) return `the website link for this node expired on ${new Date(expiresMs).toISOString()}`;
+  return null;
+}
+
 /** Only a running node with the expected identity can report itself online. */
 export async function nodeHeartbeat(home: string, cfg: NodeConfig): Promise<boolean> {
   const link = readNodeLink(home);
