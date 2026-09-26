@@ -64,12 +64,41 @@ test('a home with a config is its own target: nodeSource "config", no refusal (i
   } finally { rmSync(h, { recursive: true, force: true }); }
 });
 
+/** A website link as `login` saves it, for tests that start a node (node-link.ts). */
+function linkForTest(home: string, address: string, expires = Date.now() + 3_600_000) {
+  writeFileSync(join(home, 'node-link.json'), JSON.stringify({ url: 'https://ainize.ai', token: 't', owner: '0xowner', address, expires }));
+}
+
+test('`start` refuses a node that is not connected to a wallet on the website — no link, another key\'s, or an expired one', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'ngram-start-unlinked-'));
+  try {
+    const cfg = defaultConfig({ home: h, name: 'unlinked', port: 1, ledger: 'local' });
+    saveConfig(cfg, h);
+    const ctx = buildContext({ home: h, quiet: true });
+    const refusal = (why: RegExp) => (e: CliError) => {
+      assert.match(e.message, why);
+      assert.match(e.message, new RegExp(`run \\\`ainize login --home ${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\\``), 'and says the one command that fixes it');
+      return true;
+    };
+    for (const detach of [true, false]) {
+      await assert.rejects(() => start(ctx, { detach }), refusal(/this node is not connected to a wallet on the website/));
+    }
+    linkForTest(h, '0x0000000000000000000000000000000000000001');
+    await assert.rejects(() => start(ctx, { detach: true }), refusal(/saved website link is for another node key/));
+    linkForTest(h, cfg.identity.address, Date.now() - 1000);
+    await assert.rejects(() => start(ctx, { detach: true }), refusal(/website link for this node expired/));
+    assert.equal(existsSync(join(h, 'node.pid')), false, 'nothing was spawned');
+  } finally { rmSync(h, { recursive: true, force: true }); }
+});
+
 test('`start -d` waits for the child to answer, and reports node.log when it dies (item 118)', async () => {
   const h = mkdtempSync(join(tmpdir(), 'ngram-start-'));
   const busy = createServer(() => undefined);
   try {
     const port = await new Promise<number>((res) => busy.listen(0, '127.0.0.1', () => res((busy.address() as { port: number }).port)));
-    saveConfig(defaultConfig({ home: h, name: 'busy', port, ledger: 'local' }), h);
+    const busyCfg = defaultConfig({ home: h, name: 'busy', port, ledger: 'local' });
+    saveConfig(busyCfg, h);
+    linkForTest(h, busyCfg.identity.address);   // linked, so the start gets as far as the port it cannot bind
     const ctx = buildContext({ home: h, quiet: true });
     process.env.AINIZE_START_TIMEOUT_MS = '15000';
     await assert.rejects(() => start(ctx, { detach: true }), (e: CliError) => {

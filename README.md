@@ -29,7 +29,7 @@ ainize start --home ~/.ainize-a -d
 
 `login` opens the website approval page. On SSH, open the printed link yourself; `--no-open` only prints it. Approve with the wallet signed in on the website. The node then appears under **My nodes**.
 
-Repeat with another home and port to connect more nodes to the same wallet. A running CLI node reports its status every minute. Disconnecting from the website removes the link, but does not stop the node process.
+`start` refuses until this node key has an unexpired website link (`node-link.json`) — run `login` first, and again when the link expires. Repeat with another home and port to connect more nodes to the same wallet. A running CLI node reports its status every minute. Disconnecting from the website removes the link, but does not stop the node process.
 
 Node links allow status reporting only. They do not authorize spending or account operations. The node's private key stays on its machine.
 
