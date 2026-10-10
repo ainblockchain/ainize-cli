@@ -17,6 +17,7 @@ import * as node from './commands/node.js';
 import * as auth from './commands/auth.js';
 import * as peers from './commands/peers.js';
 import * as agents from './commands/agents.js';
+import { agentClone, agentPulls, agentMirror } from './commands/agent-repositories.js';
 import * as patch from './commands/patch.js';
 import * as ledger from './commands/ledger.js';
 import * as branch from './commands/branch.js';
@@ -325,7 +326,22 @@ cli.command('agent', 'A2A agents this node serves: register one, see whether it 
     .positional('prompt', { type: 'string', array: true, demandOption: true })
     .example('$0 agent call donga-desk "오늘 파이프라인 상태 알려줘"', 'one JSON-RPC message/send, as a stranger would'),
     run((ctx, a: G & { id: string; prompt: string[] }) => agents.agentCall(ctx, a.id, (a.prompt ?? []).join(' ')), true))
-  .demandCommand(1, 'Subcommand is required (ls|add|rm|on|off|card|call).'), () => undefined);
+  .command('clone <id> [directory]', 'Clone a hosted agent as a Git repository', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true }).positional('directory', { type: 'string' }),
+    run((ctx, a: G & { id: string; directory?: string }) => agentClone(ctx, a.id, a.directory)))
+  .command('pulls <id>', 'Read, propose, merge or close repository changes', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true })
+    .option('state', { type: 'string', choices: ['open', 'merged', 'closed'] })
+    .option('number', { type: 'number' }).option('head', { type: 'string' }).option('head-agent', { type: 'string' })
+    .option('base', { type: 'string' }).option('title', { type: 'string' }).option('body', { type: 'string' })
+    .option('merge', { type: 'boolean' }).option('close', { type: 'boolean' }),
+    run((ctx, a: G & { id: string; state?: string; number?: number; head?: string; headAgent?: string; base?: string; title?: string; body?: string; merge?: boolean; close?: boolean }) => agentPulls(ctx, a.id, a)))
+  .command('mirror <id>', 'Read, attach, sync or detach a GitHub source', (yy: Y) => yy
+    .positional('id', { type: 'string', demandOption: true }).option('repo', { type: 'string' })
+    .option('branch', { type: 'string' }).option('folder', { type: 'string' })
+    .option('sync', { type: 'boolean' }).option('detach', { type: 'boolean' }),
+    run((ctx, a: G & { id: string; repo?: string; branch?: string; folder?: string; sync?: boolean; detach?: boolean }) => agentMirror(ctx, a.id, a)))
+  .demandCommand(1, 'Subcommand is required (ls|add|rm|on|off|card|call|clone|pulls|mirror).'), () => undefined);
 
 /**
  * `ainize publish <file>` and `ainize patch publish <file>` are ONE operation with two names (item 112). They used

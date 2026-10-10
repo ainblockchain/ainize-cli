@@ -64,3 +64,21 @@ npm ci
 npm run build
 npm test
 ```
+
+### Hosted agent repositories
+
+Use the same Git history as the ainize web console:
+
+```sh
+ainize agent clone desk --node https://ainize.ai
+ainize agent pulls desk --state open --node https://ainize.ai
+ainize agent pulls desk --head proposal --title "Improve answers" --node https://ainize.ai
+ainize agent pulls desk --number 1 --merge --node https://ainize.ai
+ainize agent mirror desk --repo https://github.com/owner/repo --folder agents/desk --node https://ainize.ai
+ainize agent mirror desk --sync --node https://ainize.ai
+```
+
+`AINIZE_TOKEN` or the saved CLI token authenticates these calls. Clone supplies it only for that Git process;
+it is never written into the remote URL or repository configuration. Later Git pushes use your credential
+helper with an ainize API key as the password. A push to `main` deploys the agent; a proposal branch can be
+reviewed before merging. Mirror detach (`--detach`) stops following the upstream and retains the current runtime.
