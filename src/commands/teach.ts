@@ -106,8 +106,8 @@ export function parseTeachTarget(target: string | undefined, defaultNode: string
   const nodeUrl = `${u.protocol}//${u.host}`;
   const lesson = u.searchParams.get('lesson');
   if (lesson && UUID_RE.test(lesson)) return { kind: 'job', nodeUrl, id: lesson.toLowerCase() };
-  const m = u.pathname.match(/^\/(?:api\/)?teach\/jobs\/([0-9a-f-]{36})(?:\/|$)/i);
-  if (m) return { kind: 'job', nodeUrl, id: m[1].toLowerCase() };
+  const m = u.pathname.match(/^\/(?:api\/)?teach\/(?:jobs|lesson)\/([0-9a-f-]{36})(?:\/|$)/i);
+  if (m && UUID_RE.test(m[1])) return { kind: 'job', nodeUrl, id: m[1].toLowerCase() };
   const tm = u.pathname.match(/^\/(?:api\/)?teacher\/(0x[0-9a-fA-F]{40})(?:\/|$)/);
   if (tm) return { kind: 'teacher', nodeUrl, address: tm[1] };
   return { kind: 'node', nodeUrl };
