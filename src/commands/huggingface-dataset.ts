@@ -14,6 +14,19 @@ const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex
 type Fetcher = typeof fetch;
 type JsonObject = Record<string, unknown>;
 
+/** AinCode uses its private gateway socket; ordinary terminals fetch the same source directly. */
+export const huggingFaceDatasetFetch: Fetcher = (input, init) => {
+  const relay = process.env.AINIZE_HF_PROXY_URL ?? (process.env.AINIZE_URL === 'http://127.0.0.1:4097' && process.env.AINIZE_API_KEY === 'held-by-the-gateway'
+    ? 'http://127.0.0.1:4097/_practice/huggingface' : undefined);
+  if (!relay) return fetch(input, init);
+  const url = new URL(relay);
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== '/_practice/huggingface') {
+    throw new CliError('AINIZE_HF_PROXY_URL must point to the local AinCode dataset gateway');
+  }
+  url.searchParams.set('url', input instanceof Request ? input.url : String(input));
+  return fetch(url, init);
+};
+
 export interface HuggingFaceOptions extends DatasetOpts, TrainOpts {
   config?: string; split?: string; revision?: string; file?: string;
   limit?: number; offset?: number; hfTokenFile?: string; train?: boolean;
@@ -115,7 +128,7 @@ export function mapHuggingFaceColumns(bytes: Buffer, format: string, columns?: s
   return Buffer.from(format === 'jsonl' ? rows.map(row => JSON.stringify(row)).join('\n') + '\n' : JSON.stringify(rows));
 }
 
-export async function readHuggingFaceDataset(input: string, opts: HuggingFaceOptions = {}, fetcher: Fetcher = fetch): Promise<{ bytes: Buffer; inputBytes: Buffer; filename: string; source: HuggingFaceSource }> {
+export async function readHuggingFaceDataset(input: string, opts: HuggingFaceOptions = {}, fetcher: Fetcher = huggingFaceDatasetFetch): Promise<{ bytes: Buffer; inputBytes: Buffer; filename: string; source: HuggingFaceSource }> {
   const target = parseHuggingFaceUrl(input);
   for (const key of ['revision', 'file', 'config', 'split'] as const) {
     if (target[key] && opts[key] && target[key] !== opts[key]) throw new CliError(`URL and --${key} disagree`);
