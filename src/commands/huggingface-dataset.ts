@@ -233,7 +233,7 @@ export async function datasetImportHuggingFace(ctx: CliContext, input: string, o
   writeFileSync(provenance, sourceFile, { flag: 'wx', mode: 0o600 });
   const importReceipt = join(folder, 'import-receipt.json');
   const submissionReceipt = opts.train ? join(folder, 'training-submission.json') : undefined;
-  const result = await datasetUpload(ctx, filename, { ...opts, columns: ['json', 'jsonl'].includes(imported.source.format) ? undefined : opts.columns, format: imported.source.format, silent: true,
+  const result = await datasetUpload(ctx, filename, { ...opts, header: opts.header ?? (['csv', 'tsv'].includes(imported.source.format) ? true : undefined), columns: ['json', 'jsonl'].includes(imported.source.format) ? undefined : opts.columns, format: imported.source.format, silent: true,
     onUploaded: accepted => {
       try { writeFileSync(importReceipt, JSON.stringify(huggingFaceImportReceipt(imported.source, sourceFile, accepted), null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
       catch { throw new CliError(`Dataset accepted, but its import receipt could not be validated or saved in ${folder}; training was not started. Inspect the existing dataset before retrying.`); }

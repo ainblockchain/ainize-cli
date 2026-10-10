@@ -685,6 +685,7 @@ cli.command('dataset', 'Import a Hugging Face dataset, or inspect the training s
     .option('limit', { type: 'number', describe: 'explicit viewer row limit (1..10000); without it, imports the whole split up to 10000 rows' })
     .option('offset', { type: 'number', describe: 'first viewer row (default 0)' })
     .option('columns', { type: 'string', describe: 'column mapping, e.g. {"prompt":"question","answer":"answer"}' })
+    .option('header', { type: 'boolean', describe: 'CSV/TSV files have a header by default; use --no-header for headerless files' })
     .option('name', { type: 'string', describe: 'name of the imported dataset on this node' })
     .option('hf-token-file', { type: 'string', describe: 'private token file for a restricted HF dataset; never sent to the Ainize node' })
     .option('train', { type: 'boolean', default: false, describe: 'also queue a lesson from the imported dataset' })

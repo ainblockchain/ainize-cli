@@ -166,6 +166,8 @@ test('HF import binds real dataset uploads and queued jobs without public listin
   let rejectStatus = false;
   let trainingRequests = 0;
   const mockedFetch = mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], options?: RequestInit) => {
+    if (String(input).startsWith('https://') && String(input).endsWith('/header.csv')) return Promise.resolve(new Response('id,review\nfirst,First answer\nsecond,Second answer\n'));
+    if (String(input).startsWith('https://') && String(input).endsWith('/headerless.csv')) return Promise.resolve(new Response('third,Third answer\nfourth,Fourth answer\n'));
     if (rejectStatus && /\/api\/teach\/jobs\/[^/?]+$/.test(String(input)) && options?.method === 'GET') {
       return Promise.resolve(new Response(JSON.stringify({ error: 'fixture status unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } }));
     }
@@ -197,6 +199,13 @@ test('HF import binds real dataset uploads and queued jobs without public listin
     assert.equal(receipt.dataset_sha256, imported.dataset.sha256);
     assert.equal(receipt.source_file_sha256, createHash('sha256').update(readFileSync(imported.provenance)).digest('hex'));
     assert.equal(receipt.job, null);
+    const csv = await datasetImportHuggingFace(client, hubUrl, { file: 'header.csv', columns: '{"prompt":"id","answer":"review"}' });
+    assert.equal(csv.dataset.has_header, true);
+    assert.equal(csv.dataset.rows, 2, 'unrecognized column names must not turn the header into a fact');
+    const headerless = await datasetImportHuggingFace(client, hubUrl, { file: 'headerless.csv', header: false, columns: '{"prompt":0,"answer":1}' });
+    assert.equal(headerless.dataset.has_header, false);
+    assert.equal(headerless.dataset.rows, 2, 'explicit no-header must preserve the first data row');
+    chunks.length = 0;
     chunks.length = 0;
     const duplicate = await datasetImportHuggingFace(client, hubUrl, { file: 'data.jsonl' });
     assert.equal(duplicate.created, false);
