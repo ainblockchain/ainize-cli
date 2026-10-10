@@ -23,6 +23,7 @@ let nodeUrl = '';
 /** What the stub node was asked for, so `call` can be checked on the wire rather than on its return value. */
 let lastCall: { path: string; body: any } | null = null;
 let reply: any = null;
+let legacyListing = false;
 
 const ctx = () => buildContext({ home, node: nodeUrl, quiet: true });
 
@@ -38,8 +39,8 @@ before(async () => {
       if (req.url === '/api/agents') {
         return res.end(JSON.stringify({ agents: [{
           id: 'donga-desk', name: 'desk', description: null,
-          skills: [{ id: 'pipeline-status', name: '현황', tags: [], examples: ['상태?'] }],
-          protocols: ['0.3.0'], extensions: ['https://a2ui.org/a2a-extension/a2ui/v0.9'],
+          skills: legacyListing ? undefined : [{ id: 'pipeline-status', name: '현황', tags: [], examples: ['상태?'] }],
+          protocols: legacyListing ? undefined : ['0.3.0'], extensions: legacyListing ? undefined : ['https://a2ui.org/a2a-extension/a2ui/v0.9'],
           provider: null, documentation_url: null,
           a2a_url: `${nodeUrl}/agents/donga-desk`, card_url: `${nodeUrl}/agents/donga-desk/.well-known/agent-card.json`,
           reachable: true, last_checked: Date.now(), error: null, calls: 0, last_call_at: null,
@@ -101,6 +102,17 @@ test('ls renders what the node computed', async () => {
   const rows = await agentLs(ctx());
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, 'donga-desk');
+});
+
+test('normal ls output tolerates metadata absent from older node responses', async () => {
+  legacyListing = true;
+  try {
+    const rows = await agentLs(buildContext({ home, node: nodeUrl }));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, 'donga-desk');
+    assert.equal(rows[0].reachable, true);
+    assert.equal(rows[0].skills, undefined, 'missing metadata must not become invented skills');
+  } finally { legacyListing = false; }
 });
 
 test('call posts JSON-RPC message/send to the public path', async () => {
