@@ -18,7 +18,9 @@ test('Drive login reuses AinCode and refuses failed actions without starting ano
     if (req.method === 'GET') { res.end(JSON.stringify({ backend: 'aincode', configured: true, running: true, files: [] })); return; }
     assert.equal(req.headers.authorization, 'Bearer fixture');
     let body = ''; req.on('data', b => body += b); req.on('end', () => {
-      assert.equal(JSON.parse(body).action, 'up');
+      const action = JSON.parse(body).action;
+      assert.ok(['up', 'sync'].includes(action));
+      if (action === 'sync') { res.end(JSON.stringify({ written: 1, saved: 1 })); return; }
       res.end(JSON.stringify(failed ? { ok: false, message: 'repository mismatch' } : { ok: true, message: 'Existing Drive connected' }));
     });
   });
@@ -29,6 +31,7 @@ test('Drive login reuses AinCode and refuses failed actions without starting ano
     assert.equal(await driveLogin(ctx), 0);
     assert.deepEqual(requests, ['GET /api/drive', 'POST /api/drive']);
     assert.equal(existsSync(join(ctx.cfg!.dataDir, 'drive')), false);
+    assert.deepEqual(await driveAction(ctx, 'sync'), { written: 1, saved: 1 });
     failed = true;
     await assert.rejects(driveAction(ctx, 'up'), /repository mismatch/);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(home, { recursive: true, force: true }); }

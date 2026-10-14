@@ -3,6 +3,8 @@
  */
 import { CliError, PROG, type CliContext } from './context.js';
 import { withProgress, type Progress } from './output.js';
+import http from 'node:http';
+import https from 'node:https';
 
 export interface RequestOptions { method?: string; body?: unknown; headers?: Record<string, string>; timeoutMs?: number; raw?: boolean; auth?: boolean; progress?: boolean; }
 
@@ -63,7 +65,18 @@ export class NodeClient {
     let res: Response;
     const t0 = Date.now();
     const method = opts.method ?? (opts.body !== undefined ? 'POST' : 'GET');
-    const send = () => fetch(url, {
+    const send = () => (opts.timeoutMs ?? 0) > 300_000 && new URL(url).pathname === '/api/drive' ? new Promise<Response>((resolve, reject) => {
+      // Global fetch's header timeout expires at five minutes even with a longer AbortSignal.
+      const request = (new URL(url).protocol === 'https:' ? https : http).request(url, { method, headers, signal: AbortSignal.timeout(opts.timeoutMs!) }, response => {
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        response.on('data', chunk => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) request.destroy(new Error('Drive response exceeds 8 MiB')); else chunks.push(chunk); });
+        response.on('error', reject);
+        response.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: response.statusCode ?? 502, headers: Object.fromEntries(Object.entries(response.headers).filter((entry): entry is [string, string | string[]] => entry[1] !== undefined).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value])) })));
+      });
+      request.on('error', reject);
+      request.end(opts.body === undefined ? undefined : JSON.stringify(opts.body));
+    }) : fetch(url, {
       method,
       headers,
       body: opts.body === undefined ? undefined : opts.body instanceof FormData ? opts.body : JSON.stringify(opts.body),
@@ -86,7 +99,8 @@ export class NodeClient {
       // later. A timeout gets its own message and its own exit code (4), and says the work may still be running.
       if (NodeClient.isTimeout(e)) {
         const waited = Math.round((Date.now() - t0) / 1000);
-        throw new CliError(`the node at ${this.ctx.nodeUrl} did not answer within ${waited}s — it is running, but this request is still waiting (the shared model lock is held by another live test or verification). The node may carry it out anyway: check \`${PROG} patch stack\` and \`${PROG} logs --kind runtime\` before retrying.`, 4);
+        if (new URL(url).pathname === '/api/drive') throw new CliError(`the node at ${this.ctx.nodeUrl} did not answer within ${waited}s. Drive saving may still be running; check the selected repository history before retrying.`, 4);
+        throw new CliError(`the node at ${this.ctx.nodeUrl} did not answer within ${waited}s. The operation may still be running; check node status and logs before retrying.`, 4);
       }
       throw new CliError(`cannot reach node at ${this.ctx.nodeUrl} (${msg}). Is it running? Try \`${PROG} start\` or pass --node <url>.`, 2);
     }
