@@ -35,7 +35,7 @@ export async function driveStatus(ctx: CliContext, a: { files?: boolean } = {}):
 }
 
 export async function driveAction(ctx: CliContext, action: 'up' | 'stop' | 'sync' | 'status'): Promise<unknown> {
-  const r = await new NodeClient(ctx).post<{ ok?: boolean; message?: string; written?: number }>('/api/drive', { action }, { timeoutMs: 120_000 });
+  const r = await new NodeClient(ctx).post<{ ok?: boolean; message?: string; written?: number }>('/api/drive', { action }, { timeoutMs: action === 'sync' ? 600_000 : 120_000 });
   if (r.ok === false) throw new CliError(r.message ?? 'Drive operation failed');
   emit(ctx, r, (x) => {
     if (action === 'sync') return c.ok('✓ ') + `drive folder synced (${x.written ?? 0} file(s) written)`;
