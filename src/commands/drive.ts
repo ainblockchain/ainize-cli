@@ -18,13 +18,13 @@ export function aindriveBin(): string {
   try { return require.resolve('aindrive/dist/aindrive.mjs'); } catch { throw new CliError('aindrive CLI not installed (npm install aindrive)'); }
 }
 
-export interface DriveStatus { configured: boolean; running: boolean; pid: number | null; folder: string; server: string | null; drive_id: string | null; url: string | null; login_hint: string; files: { path: string; size: number; mtime: number }[]; cli?: string; }
+export interface DriveStatus { configured: boolean; running: boolean; pid: number | null; folder: string; server: string | null; drive_id: string | null; url: string | null; login_hint: string; files: { path: string; size: number; mtime: number }[]; cli?: string; backend?: 'aincode'; }
 
 export async function driveStatus(ctx: CliContext, a: { files?: boolean } = {}): Promise<DriveStatus> {
   const d = await new NodeClient(ctx).get<DriveStatus>('/api/drive', { auth: false });
   emit(ctx, d, (x) => [
     kv([
-      ['folder', x.folder], ['paired', x.configured ? c.ok('yes') : c.warn(`no — run \`${PROG} drive login\``)], ['agent', x.running ? c.ok(`running (pid ${x.pid})`) : c.dim('stopped')],
+      ['folder', x.folder], ['paired', x.configured ? c.ok('yes') : c.warn(`no — run \`${PROG} drive login\``)], [x.backend === 'aincode' ? 'connection' : 'agent', x.running ? c.ok(x.backend === 'aincode' ? 'active' : `running (pid ${x.pid})`) : c.dim('stopped')],
       ['server', x.server ?? '-'], ['drive id', x.drive_id ?? '-'], ['url', x.url ? c.id(x.url) : '-'], ['files', x.files.length],
     ]),
     a.files ? '\n' + table(x.files.slice(0, 200), [
@@ -35,7 +35,8 @@ export async function driveStatus(ctx: CliContext, a: { files?: boolean } = {}):
 }
 
 export async function driveAction(ctx: CliContext, action: 'up' | 'stop' | 'sync' | 'status'): Promise<unknown> {
-  const r = await new NodeClient(ctx).post<{ ok?: boolean; message?: string; written?: number }>('/api/drive', { action }, { timeoutMs: 120_000 });
+  const r = await new NodeClient(ctx).post<{ ok?: boolean; message?: string; written?: number }>('/api/drive', { action }, { timeoutMs: action === 'sync' ? 600_000 : 120_000 });
+  if (r.ok === false) throw new CliError(r.message ?? 'Drive operation failed');
   emit(ctx, r, (x) => {
     if (action === 'sync') return c.ok('✓ ') + `drive folder synced (${x.written ?? 0} file(s) written)`;
     return (x.ok === false ? c.warn('! ') : c.ok('✓ ')) + (x.message ?? JSON.stringify(x));
@@ -46,6 +47,16 @@ export async function driveAction(ctx: CliContext, action: 'up' | 'stop' | 'sync
 /** One-time browser pairing: runs `aindrive login` interactively inside the node's drive folder. */
 export async function driveLogin(ctx: CliContext, a: { server?: string; name?: string; noOpen?: boolean } = {}): Promise<number> {
   const cfg = requireConfig(ctx);
+  const sessionConfigured = !!process.env.AINIZE_DRIVE_WORKSPACE || !!process.env.AINIZE_DRIVE_SESSION_API;
+  const status = await new NodeClient(ctx).get<DriveStatus>('/api/drive', { auth: false, timeoutMs: sessionConfigured ? 30_000 : 2_000 }).catch(error => {
+    if (sessionConfigured) throw error;
+    return null;
+  });
+  if (status?.backend === 'aincode') {
+    await driveAction(ctx, 'up');
+    return 0;
+  }
+  if (sessionConfigured) throw new CliError('This node does not support the configured AinCode Drive connection');
   const folder = join(cfg.dataDir, 'drive');
   if (!existsSync(folder)) mkdirSync(folder, { recursive: true });
   const server = a.server ?? DEFAULT_AINDRIVE_SERVER;
