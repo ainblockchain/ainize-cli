@@ -22,9 +22,9 @@ export interface AgentRow {
   id: string;
   name: string;
   description: string | null;
-  skills: { id: string; name: string; description?: string; tags: string[]; examples: string[] }[];
-  protocols: string[];
-  extensions: string[];
+  skills?: { id: string; name: string; description?: string; tags: string[]; examples: string[] }[];
+  protocols?: string[];
+  extensions?: string[];
   provider: string | null;
   documentation_url: string | null;
   a2a_url: string;
@@ -39,7 +39,7 @@ export interface AgentRow {
 
 /** The A2UI extension, by URI prefix — the version moves (v0.8 → v0.9) and the column should not. */
 const A2UI = 'a2ui.org';
-const drawsUi = (a: AgentRow) => a.extensions.some((uri) => uri.includes(A2UI));
+const drawsUi = (a: AgentRow) => (a.extensions ?? []).some((uri) => uri.includes(A2UI));
 
 const idOk = (id: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
 
@@ -91,7 +91,7 @@ export async function agentLs(ctx: CliContext): Promise<AgentRow[]> {
     table(d.agents, [
       { key: 'id', title: 'ID', get: (a: AgentRow) => a.id },
       { key: 'name', title: 'NAME', get: (a: AgentRow) => a.name },
-      { key: 'skills', title: 'SKILLS', get: (a: AgentRow) => (a.skills.length ? String(a.skills.length) : c.dim('0')) },
+      { key: 'skills', title: 'SKILLS', get: (a: AgentRow) => (a.skills?.length ? String(a.skills.length) : c.dim('0')) },
       { key: 'ui', title: 'A2UI', get: (a: AgentRow) => (drawsUi(a) ? c.ok('draws') : c.dim('-')) },
       { key: 'calls', title: 'CALLS', get: (a: AgentRow) => String(a.calls) },
       { key: 'seen', title: 'CHECKED', get: (a: AgentRow) => (a.last_checked ? fmtTime(a.last_checked) : '-') },

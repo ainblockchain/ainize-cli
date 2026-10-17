@@ -24,7 +24,7 @@
     "ainize": "./dist/bin.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node --input-type=module -e \"import { chmodSync } from 'node:fs'; chmodSync('dist/bin.js', 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/bin.ts",
     "test": "node --test --import tsx test/*.test.ts",

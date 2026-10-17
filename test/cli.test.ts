@@ -334,6 +334,7 @@ test('teach status: target parsing, node policy, lesson status with / without th
   assert.deepEqual(parseTeachTarget('http://h:1/chat?teach=1', nodeUrl), { kind: 'node', nodeUrl: 'http://h:1' });
   assert.deepEqual(parseTeachTarget('http://h:1/chat?lesson=8F0C1B2A-0000-4000-8000-000000000001', nodeUrl), { kind: 'job', nodeUrl: 'http://h:1', id: '8f0c1b2a-0000-4000-8000-000000000001' });
   assert.deepEqual(parseTeachTarget('http://h:1/api/teach/jobs/8f0c1b2a-0000-4000-8000-000000000001/', nodeUrl), { kind: 'job', nodeUrl: 'http://h:1', id: '8f0c1b2a-0000-4000-8000-000000000001' });
+  assert.deepEqual(parseTeachTarget('https://ainize.ai/teach/lesson/8F0C1B2A-0000-4000-8000-000000000001', nodeUrl), { kind: 'job', nodeUrl: 'https://ainize.ai', id: '8f0c1b2a-0000-4000-8000-000000000001' });
   assert.deepEqual(parseTeachTarget('8f0c1b2a-0000-4000-8000-000000000001', nodeUrl), { kind: 'job', nodeUrl, id: '8f0c1b2a-0000-4000-8000-000000000001' });
   assert.deepEqual(parseTeachTarget('http://h:1/teacher/0x1111111111111111111111111111111111111111', nodeUrl), { kind: 'teacher', nodeUrl: 'http://h:1', address: '0x1111111111111111111111111111111111111111' });
   assert.deepEqual(parseTeachTarget('0x1111111111111111111111111111111111111111', nodeUrl), { kind: 'teacher', nodeUrl, address: '0x1111111111111111111111111111111111111111' });
