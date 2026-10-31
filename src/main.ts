@@ -5,6 +5,7 @@
  * services; this one ainizes *knowledge*: publish verified knowledge patches, test them live against the model
  * (`chat`), trade them with automatic payment and load them into a running model in seconds.
  */
+import { walletCommands } from './wallet-cli.js';
 import yargs, { type Argv, type ArgumentsCamelCase } from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import chalk from 'chalk';
@@ -861,16 +862,7 @@ cli.command('route <context..>', 'Gateway routing: which track and which nodes s
   run((ctx, a: G & { context: string[]; partial?: boolean }) => branch.route(ctx, a.context, { partial: a.partial })));
 // Item 320: every money verb was read-only or inward — a creator who had earned could spend it only by buying
 // knowledge through this same node.
-cli.command('wallet', 'Balance, sales, royalties and pending payouts of this node', (y: Y) => fail(y)
-  .command(['show', '$0'], 'Balance, sales, royalties and pending payouts', (yy: Y) => yy, run((ctx) => branch.wallet(ctx)))
-  .command('send <address> <amount>', 'Send AIN from this node\'s wallet to another address', (yy: Y) => yy
-    .positional('address', { type: 'string', demandOption: true, describe: 'where the money goes (0x… AIN address)' })
-    .positional('amount', { type: 'number', demandOption: true, describe: 'how much, in AIN' })
-    .option('memo', { type: 'string', describe: 'a note for this node\'s own log (it does not travel with the transfer)' })
-    .option('yes', { alias: 'y', type: 'boolean', default: false, describe: 'skip the confirmation' })
-    .example('$0 wallet send 0xabc… 25', 'move 25 AIN of earnings to your own wallet'),
-    run((ctx, a: G & { address: string; amount: number; memo?: string; yes: boolean }) => branch.walletSend(ctx, a.address, a.amount, { memo: a.memo, yes: a.yes }))),
-  run((ctx) => branch.wallet(ctx)));
+cli.command('wallet', 'Node wallet balance and reviewed manual transfers', (y: Y) => walletCommands(fail(y), run), run((ctx) => branch.wallet(ctx)));
 // `patch ls --mine` is the knowledge this node REGISTERED; a buyer's own purchases had no listing anywhere (items 216, 289).
 cli.command('purchases', 'Knowledge this node bought: what, from whom, for how much, and whether it is loaded', (y: Y) => fail(y)
   .example('$0 purchases', 'every purchase with its seller, tx and file'), run((ctx) => patch.purchasesLs(ctx)));
@@ -898,7 +890,7 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
   .demandCommand(1, 'Subcommand is required (status|up|stop|sync|login).'), () => undefined);
 
 // ---------------------------------------------------------------- chain
-cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) => fail(y)
+cli.command('chain', 'AIN chain tools and reviewed node setup', (y: Y) => fail(y)
   .command('up', 'Start (or attach to) a local 1-node AIN chain on :8081', (yy: Y) => yy.option('wait', { type: 'number', default: 90, describe: 'seconds to wait for SERVING' }), run((ctx, a: G & { wait: number }) => chain.chainUp(ctx, a), false, true))
   .command('down', 'Remove the local chain container', (yy: Y) => yy, run((ctx) => chain.chainDown(ctx), false, true))
   .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to ask (default: the one in config.json)' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider), false, true))
@@ -907,8 +899,8 @@ cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) 
     .positional('amount', { type: 'number', default: 1000, describe: 'how much AIN' })
     .option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to send it through (default: the one in config.json)' }),
     run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider), false, true))
-  .command('setup', 'Register the knowledge app + market rules on-chain (funds the node identity first on a local chain)', (yy: Y) => yy.option('fund', { type: 'number', describe: 'AIN to fund the node identity with' }),
-    run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a), false, true))
+  .command('setup', 'Inspect or review knowledge app and market-rule setup on the selected running node', chain.chainSetupOptions,
+    run((ctx, a: G & { status: boolean; requestId?: string; retryOf?: string; yes: boolean; fund?: number }) => chain.chainSetup(ctx, a)))
   .demandCommand(1, 'Subcommand is required (up|down|status|fund|setup).'), () => undefined);
 
 fail(cli);
