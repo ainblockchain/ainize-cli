@@ -7,11 +7,8 @@
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
-import { AinLedger, applyEnv } from '@ainize/core';
-import { NodeClient } from '../client.js';
 import { CliError, PROG, type CliContext } from '../context.js';
 import { c, emit, kv, ok, warn } from '../output.js';
-import { requireConfig } from './init.js';
 
 const execFileP = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -77,7 +74,7 @@ export async function chainUp(ctx: CliContext, a: { wait?: number } = {}): Promi
   let h = await chainHealth();
   while (!(h.reachable && h.state === 'SERVING') && Date.now() < deadline) { await new Promise((r) => setTimeout(r, 2000)); h = await chainHealth(); }
   if (!(h.reachable && h.state === 'SERVING')) throw new CliError(`chain did not reach SERVING within ${a.wait ?? 90}s (state: ${h.state ?? 'unreachable'}) — check \`docker logs ${CHAIN_CONTAINER}\``);
-  emit(ctx, h, (x) => c.ok('✓ ') + `local AIN chain SERVING at ${x.provider}  block ${x.blockNumber ?? '?'}  validator ${x.address}\n` + c.dim('  next: \`${PROG} init --ledger ain\` (or \`${PROG} config set ledger.kind ain\`), \`${PROG} chain setup\`, \`${PROG} start\`'));
+  emit(ctx, h, (x) => c.ok('✓ ') + `local AIN chain SERVING at ${x.provider}  block ${x.blockNumber ?? '?'}  validator ${x.address}\n` + c.dim(`  next: ${PROG} init --ledger ain, ${PROG} login, ${PROG} start, ${PROG} login --node-key, then ${PROG} chain setup`));
   return h;
 }
 
@@ -131,17 +128,6 @@ function chainUnreachableHint(provider: string, local: boolean): string {
     : `nothing answered ${provider} (from ledger.ain.providerUrl) — check the URL with \`${PROG} config set ledger.ain.providerUrl <url>\`, or run the local chain instead with \`${PROG} chain up\``);
 }
 
-/**
- * The error a driver throws when the provider is not there says `connect ECONNREFUSED 127.0.0.1:9099` and names
- * neither the config key the URL came from nor the command that starts one (item 142).
- */
-function wrapProviderError(provider: string, e: unknown): Error {
-  const msg = (e as Error).message ?? String(e);
-  if (e instanceof CliError && !/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed|ETIMEDOUT|socket hang up/i.test(msg)) return e;
-  if (!/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed|ETIMEDOUT|socket hang up/i.test(msg)) return e as Error;
-  return new CliError(`cannot reach the AIN provider ${provider} (from ledger.ain.providerUrl): ${msg}\n  ${chainUnreachableHint(provider, isLocalChainUrl(provider))}`);
-}
-
 function assertLocal(provider: string) {
   let host = '';
   try { host = new URL(provider).hostname; } catch { throw new CliError(`invalid provider URL ${provider}`); }
@@ -163,27 +149,4 @@ export async function chainFund(ctx: CliContext, address: string, amount = 1000,
   return { tx_hash: res.tx_hash, balance };
 }
 
-/** Register the knowledge app + market rules (ain-js knowledge.setupApp + our /apps/knowledge/market rules). */
-export async function chainSetup(ctx: CliContext, a: { fund?: number } = {}): Promise<unknown> {
-  const cfg = applyEnv(requireConfig(ctx));
-  if (cfg.ledger.kind !== 'ain') throw new CliError(`node is not configured for the AIN ledger — \`${PROG} config set ledger.kind ain\` (and restart)`);
-  const provider = cfg.ledger.ain!.providerUrl;
-  const client = new NodeClient(ctx);
-  // fund the node identity on a local chain first (setupApp needs gas-less but non-empty accounts registered)
-  try {
-    assertLocal(provider);
-    const Ain = (require('@ainblockchain/ain-js') as { default: any }).default;
-    const ain = new Ain(provider, null, 0);
-    const bal = Number(await ain.wallet.getBalance(cfg.identity.address));
-    if (bal <= 0 || a.fund) { await chainFund({ ...ctx, quiet: true }, cfg.identity.address, a.fund ?? 1000, provider); ok(ctx, `funded node identity ${cfg.identity.address} (${a.fund ?? 1000} AIN)`); }
-  } catch (e) { if (e instanceof CliError && e.message.startsWith('refusing')) warn(ctx, 'non-local chain: make sure the node identity holds AIN before setup'); else throw wrapProviderError(provider, e); }
-  if (await client.alive()) {
-    const r = await client.post<{ created: boolean; tx?: string; admin?: string }>('/api/chain/setup', {}, { timeoutMs: 120_000 }).catch((e) => { throw wrapProviderError(provider, e); });
-    emit(ctx, r, (x) => c.ok('✓ ') + (x.created ? `knowledge app created on-chain (tx ${x.tx}); market rules set; admin ${x.admin}` : `knowledge app already exists (admin ${x.admin ?? 'unknown'}) — rules refreshed if we are admin`));
-    return r;
-  }
-  const ledger = new AinLedger({ providerUrl: provider, eventHandlerUrl: cfg.ledger.ain!.eventHandlerUrl, chainId: cfg.ledger.ain!.chainId }, cfg.identity);
-  const r = await ledger.setupApp().catch(async (e) => { await ledger.close().catch(() => undefined); throw wrapProviderError(provider, e); });
-  emit(ctx, r, (x) => c.ok('✓ ') + (x.created ? `knowledge app created on-chain (tx ${x.tx}); market rules set; admin ${x.admin}` : `knowledge app already exists (admin ${x.admin ?? 'unknown'})`));
-  return r;
-}
+export { chainSetup, chainSetupOptions } from './chain-setup.js';

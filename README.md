@@ -108,3 +108,22 @@ Amounts are decimal strings with up to six places; scientific notation, hex, zer
 History lists saved states, newest first. Use `next_cursor` unchanged with `wallet history --cursor VALUE --limit N`; inspect an exact ID to refresh its chain outcome. `status` without an ID reads the latest request. `--json` emits one structured result and takes precedence over `--quiet`; quiet mode prints full request IDs.
 
 For submit/send, exit 0 means finalized successful execution; 4 means pending or unconfirmed; 1 includes terminal rejection/cancellation. Prepare exits 0 only for a saved preparation; cancel exits 0 only for cancelled preparation. Successful status/history reads exit 0 regardless of the transaction state: scripts must inspect `operation.state`/`items`. Finalized failure may still incur fees. Full Node.js 24+ integration, node/CLI compatibility, build and package release must be validated on ainize before rollout.
+
+## Reviewed chain setup (pending release)
+
+Setup now uses the selected **running node's** reviewed API and owner session. It no longer funds a local account automatically, stakes 100 AIN by default, or switches to an offline signer when the node cannot be reached. Start/link the node and obtain its owner session before setup; `--node URL` works without a local node configuration.
+
+```bash
+ainize chain setup --status --node https://your-node.example
+ainize chain setup --node https://your-node.example
+# Read exactly the saved request, including after a lost response:
+ainize chain setup --status --request-id REQUEST_ID --node https://your-node.example
+# Only after inspecting a terminal unconfirmed attempt and deciding to try again:
+ainize chain setup --retry-of PREVIOUS_REQUEST_ID --node https://your-node.example
+```
+
+Interactive setup shows the active node wallet, provider, chain, app and prior request, and requires confirmation; `--yes` explicitly authorizes those changes in advance. Chain fees can apply. Funding a local test identity is a separate `chain fund ADDRESS AMOUNT` action; `setup --fund` is refused before any request. Setup does not perform staking. Current rule verification, app creation reported by the SDK, administrator, transaction and saved operation state are distinct facts. Verified rules do not prove transaction finality or app/runtime readiness.
+
+The server atomically checks `expected_request` (the exact latest request reviewed, or null) before admitting a new request. An explicit retry must name the current terminal unconfirmed attempt and gets a new ID. A running request is never automatically retried or expired. Same-ID replay is read-only. Lost write replies trigger only an exact-ID read, not another POST or an unrelated latest request. Unknown IDs and changed chain configurations are errors, not a fallback to another receipt.
+
+`--status` exits 0 for a valid read regardless of the saved outcome. Applying setup exits 0 only when current rules are verified and the saved request is verified (or no request is needed); pending/unconfirmed outcomes exit 4. JSON and quiet output follow the transfer conventions above; interactive review stays on stderr. These commands require `exact_request_status` and `reviewed_selection` capabilities. Legacy unreviewed setup is disabled on the new server. Published 0.4.1 and older web clients require coordinated migration; full ainize/Node 24+ validation and release remain pending.

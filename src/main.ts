@@ -890,7 +890,7 @@ cli.command('drive', 'aindrive: files & change history of this node', (y: Y) => 
   .demandCommand(1, 'Subcommand is required (status|up|stop|sync|login).'), () => undefined);
 
 // ---------------------------------------------------------------- chain
-cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) => fail(y)
+cli.command('chain', 'AIN chain tools and reviewed node setup', (y: Y) => fail(y)
   .command('up', 'Start (or attach to) a local 1-node AIN chain on :8081', (yy: Y) => yy.option('wait', { type: 'number', default: 90, describe: 'seconds to wait for SERVING' }), run((ctx, a: G & { wait: number }) => chain.chainUp(ctx, a), false, true))
   .command('down', 'Remove the local chain container', (yy: Y) => yy, run((ctx) => chain.chainDown(ctx), false, true))
   .command('status', 'Chain health and last block', (yy: Y) => yy.option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to ask (default: the one in config.json)' }), run((ctx, a: G & { provider?: string }) => chain.chainStatus(ctx, a.provider), false, true))
@@ -899,8 +899,8 @@ cli.command('chain', 'Local AIN blockchain (docker) for the ain ledger', (y: Y) 
     .positional('amount', { type: 'number', default: 1000, describe: 'how much AIN' })
     .option('provider', { type: 'string', describe: 'AIN JSON-RPC URL to send it through (default: the one in config.json)' }),
     run((ctx, a: G & { address: string; amount: number; provider?: string }) => chain.chainFund(ctx, a.address, a.amount, a.provider), false, true))
-  .command('setup', 'Register the knowledge app + market rules on-chain (funds the node identity first on a local chain)', (yy: Y) => yy.option('fund', { type: 'number', describe: 'AIN to fund the node identity with' }),
-    run((ctx, a: G & { fund?: number }) => chain.chainSetup(ctx, a), false, true))
+  .command('setup', 'Inspect or review knowledge app and market-rule setup on the selected running node', chain.chainSetupOptions,
+    run((ctx, a: G & { status: boolean; requestId?: string; retryOf?: string; yes: boolean; fund?: number }) => chain.chainSetup(ctx, a)))
   .demandCommand(1, 'Subcommand is required (up|down|status|fund|setup).'), () => undefined);
 
 fail(cli);

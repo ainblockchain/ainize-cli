@@ -111,8 +111,8 @@ export async function init(ctx: CliContext, a: InitArgs = {}): Promise<NodeConfi
     '', ...(d.ledger === 'ain' ? [
       c.dim('next, on the AIN ledger:'),
       c.dim(`  ${PROG} chain up        the local 1-node chain in docker (skip it if ${cfg.ledger.ain?.providerUrl ?? 'the provider'} is a chain you already run)`),
-      c.dim(`  ${PROG} chain setup     registers /apps/knowledge + the market rules, and funds this identity on a local chain`),
-      c.dim(`  ${PROG} start && ${PROG} login --node-key`),
+      c.dim(`  ${PROG} login && ${PROG} start && ${PROG} login --node-key`),
+      c.dim(`  ${PROG} chain setup --status   inspects this running node; use chain setup to review rule changes (no automatic funding or staking)`),
       c.dim(`  ${PROG} wallet          this node pays for every announce, attest and settle from its own AIN balance — check it`),
     ] : [
       c.dim(`next: \`${PROG} login\` to connect your wallet, then \`${PROG} start\``),
