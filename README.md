@@ -82,3 +82,29 @@ ainize agent mirror desk --sync --node https://ainize.ai
 it is never written into the remote URL or repository configuration. Later Git pushes use your credential
 helper with an ainize API key as the password. A push to `main` deploys the agent; a proposal branch can be
 reviewed before merging. Mirror detach (`--detach`) stops following the upstream and retains the current runtime.
+
+## Reviewed manual AIN transfers (pending release)
+
+These commands require the node's reviewed-transfer API. They are not yet in the published 0.4.1 package. An older node is refused; the CLI never falls back to the old immediate-send route. A node website link alone cannot authorize spending: use an owner wallet session for the selected node.
+
+```bash
+# Prepare only: saves an exact amount and recipient, prints a request ID, does not broadcast.
+ainize wallet prepare 0xRECIPIENT 0.125 --memo "Invoice 42" --node https://your-node.example
+# Replace REQUEST_ID with the full ID returned above. Review before authorizing.
+ainize wallet submit REQUEST_ID --node https://your-node.example
+# Read-only recovery after an interrupted response; never resubmits.
+ainize wallet status REQUEST_ID --node https://your-node.example
+ainize wallet history --limit 20 --node https://your-node.example
+# Cancels only a prepared request. It cannot undo a submitted transaction.
+ainize wallet cancel REQUEST_ID --node https://your-node.example
+```
+
+Replace `0xRECIPIENT` with a complete AIN address. This spends the **node wallet**, not the operator's personal wallet. The review shows the full recipient, amount, transaction hash, node and chain/RPC. `wallet send ADDRESS AMOUNT` combines prepare and explicit review/submit. `--yes` on send/submit authorizes that transfer without a prompt; use it only when the script already has authorization. Declining leaves the preparation saved for inspection or cancellation.
+
+Amounts are decimal strings with up to six places; scientific notation, hex, zero and values that would round are refused. `--memo` is a note of up to 200 characters stored on the node, never in the on-chain transaction. An optional `--request-id` on prepare/send is 32 lowercase hexadecimal characters; retain it for recovery and never reuse it for different content. Only one unresolved manual transfer is allowed per node wallet journal.
+
+`submitted` means the outcome remains unconfirmed, not success. Do not create a replacement send after a timeout. Inspect the **same ID on the same node** using the printed recovery command. Repeating submit for an already submitted/terminal request only reads its receipt. Missing chain lookup is not evidence that nothing was sent. A pending request can also reflect interruption before broadcast; it is not automatically expired or resent.
+
+History lists saved states, newest first. Use `next_cursor` unchanged with `wallet history --cursor VALUE --limit N`; inspect an exact ID to refresh its chain outcome. `status` without an ID reads the latest request. `--json` emits one structured result and takes precedence over `--quiet`; quiet mode prints full request IDs.
+
+For submit/send, exit 0 means finalized successful execution; 4 means pending or unconfirmed; 1 includes terminal rejection/cancellation. Prepare exits 0 only for a saved preparation; cancel exits 0 only for cancelled preparation. Successful status/history reads exit 0 regardless of the transaction state: scripts must inspect `operation.state`/`items`. Finalized failure may still incur fees. Full Node.js 24+ integration, node/CLI compatibility, build and package release must be validated on ainize before rollout.

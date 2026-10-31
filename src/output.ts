@@ -247,8 +247,8 @@ export function jsonError(err: { message?: string; exitCode?: number; details?: 
  * (item 173), the announce that lists what it would retire (item 150) — hung there with no output and no timeout.
  * Listening for `close` turns that into the answer the caller can act on.
  */
-async function askLine(question: string): Promise<string | null> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+async function askLine(question: string, stderr = false): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: stderr ? process.stderr : process.stdout });
   return new Promise<string | null>((res) => {
     let settled = false;
     const finish = (a: string | null) => { if (settled) return; settled = true; rl.close(); res(a); };
@@ -272,11 +272,11 @@ export async function ask(ctx: CliContext, question: string, opts: { default?: b
   return answer === 'y' || answer === 'yes';
 }
 
-export async function confirm(ctx: CliContext, question: string, opts: { yes?: boolean; flag?: string } = {}): Promise<void> {
+export async function confirm(ctx: CliContext, question: string, opts: { yes?: boolean; flag?: string; stderr?: boolean } = {}): Promise<void> {
   const flag = opts.flag ?? '--yes';
   if (opts.yes) { info(ctx, c.dim(`${question} ${flag}`)); return; }
   if (!process.stdin.isTTY) throw new CliError(`refusing to continue without an answer: stdin is not a terminal, so nobody can be asked. Pass ${flag} to answer in advance.`);
-  const answer = await askLine(question);
+  const answer = await askLine(question, opts.stderr);
   if (answer === null) throw new CliError(`refusing to continue without an answer: the terminal's input ended (Ctrl-D) before one was given. Pass ${flag} to answer in advance.`);
   if (answer !== 'y' && answer !== 'yes') throw new CliError('cancelled — nothing was bought, nothing was charged', 130);
 }
