@@ -6,8 +6,11 @@
  * AinDrive is the git host, and a push to a repository whose root has `ainize.json` is a deployment — but none of it
  * is the person's job any more:
  *
- *   • the AinDrive sign-in is collected here (and by `ainize login`), with the same three calls `aindrive login`
- *     makes, and kept where that CLI keeps it (`~/.aindrive/credentials.json`, 0600) so the two never disagree;
+ *   • `ainize login` is the only approval. The node the person signed in to asks AinDrive for a 15-minute git
+ *     credential on their behalf (`POST /api/auth/aindrive/git-token`), used for this push and never written down;
+ *   • where that is not available — a wallet session, or a node or AinDrive that predates it — the AinDrive sign-in
+ *     is collected here with the same three calls `aindrive login` makes, and kept where that CLI keeps it
+ *     (`~/.aindrive/credentials.json`, 0600) so the two never disagree;
  *   • the credential reaches git through the environment for this one push. Nothing is written to the remote URL
  *     or to any git config, and no credential helper is consulted — a stale keychain entry for the host used to
  *     win over the configured helper and fail the push with "Authentication failed";
@@ -29,8 +32,10 @@ export const DEPLOY_REMOTE = 'ainize';
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 export interface DriveCredentials { server: string; email?: string; sessionCookie: string; savedAt: number }
-export interface DriveSession { server: string; token: string; email: string | null }
-interface DriveDeps { fetch?: typeof fetch; open?: boolean; timeoutMs?: number; pollMs?: number; credentialsFile?: string }
+export interface DriveSession { server: string; token: string; email: string | null; via: 'ainize' | 'aindrive' }
+/** An account token (`aind_aat_…`) is a bearer; the CLI sign-in is AinDrive's session cookie. */
+const driveAuth = (token: string): Record<string, string> => token.startsWith('aind_') ? { authorization: `Bearer ${token}` } : { cookie: `aindrive_session=${token}` };
+interface DriveDeps { fetch?: typeof fetch; open?: boolean; timeoutMs?: number; pollMs?: number; credentialsFile?: string; hub?: string }
 
 export function driveCredentialsPath(): string {
   return process.env.AINDRIVE_CREDENTIALS ?? join(homedir(), '.aindrive', 'credentials.json');
@@ -60,13 +65,36 @@ async function driveUser(server: string, token: string, f: typeof fetch): Promis
  * The AinDrive sign-in for `server`: the stored one when AinDrive still accepts it, otherwise a browser approval.
  * The link shows what is being asked; the device secret that collects the token never leaves this process.
  */
+/** The Ainize website this session talks to: where projects are built and where the sign-in lives. */
+export function hubOf(ctx: CliContext, hub?: string): string {
+  return (hub ?? (ctx.nodeSource === 'default' || ctx.nodeSource === 'config' ? DEFAULT_WEBSITE : ctx.nodeUrl)).replace(/\/+$/, '');
+}
+
+/**
+ * The AinDrive credential the Ainize sign-in already entitles this person to, or null when there is none to be had
+ * (not signed in, a wallet session, an older node or AinDrive). Never throws: the caller falls back to asking.
+ */
+export async function delegatedDriveSession(ctx: CliContext, server = DEFAULT_AINDRIVE_SERVER, deps: { fetch?: typeof fetch; hub?: string } = {}): Promise<DriveSession | null> {
+  const hub = hubOf(ctx, deps.hub);
+  if (!ctx.token || hub !== ctx.nodeUrl.replace(/\/+$/, '')) return null;
+  try {
+    const res = await (deps.fetch ?? fetch)(`${hub}/api/auth/aindrive/git-token`, { method: 'POST', headers: { authorization: `Bearer ${ctx.token}`, 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return null;
+    const body = await res.json() as { server?: string; access_token?: string; user?: { email?: string | null } };
+    if (!body.access_token || String(body.server ?? '').replace(/\/+$/, '') !== server) return null;
+    return { server, token: body.access_token, email: body.user?.email ?? null, via: 'ainize' };
+  } catch { return null; }
+}
+
 export async function driveSession(ctx: CliContext, server = DEFAULT_AINDRIVE_SERVER, deps: DriveDeps = {}): Promise<DriveSession> {
   const f = deps.fetch ?? fetch;
+  const delegated = await delegatedDriveSession(ctx, server, { fetch: f, hub: deps.hub });
+  if (delegated) return delegated;
   const file = deps.credentialsFile ?? driveCredentialsPath();
   const stored = readCredentials(server, file);
   if (stored) {
     const user = await driveUser(server, stored.sessionCookie, f).catch(() => null);
-    if (user) return { server, token: stored.sessionCookie, email: user.email ?? stored.email ?? null };
+    if (user) return { server, token: stored.sessionCookie, email: user.email ?? stored.email ?? null, via: 'aindrive' };
   }
   const started = await f(`${server}/api/auth/cli/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(20_000) });
   if (!started.ok) throw new CliError(`AinDrive at ${server} refused to start a sign-in (HTTP ${started.status})`);
@@ -89,13 +117,13 @@ export async function driveSession(ctx: CliContext, server = DEFAULT_AINDRIVE_SE
     if (!done.token) throw new CliError('AinDrive approved the sign-in but returned no token');
     writeCredentials(file, { server, email: done.user?.email, sessionCookie: done.token, savedAt: Date.now() });
     ok(ctx, `AinDrive connected${done.user?.email ? ` as ${done.user.email}` : ''}`);
-    return { server, token: done.token, email: done.user?.email ?? null };
+    return { server, token: done.token, email: done.user?.email ?? null, via: 'aindrive' };
   }
 }
 
 /** The organizations whose drives this person can reach — the `<org>` of `…/<org>/git/<repo>`. */
 export async function driveOrgs(session: DriveSession, f: typeof fetch = fetch): Promise<string[]> {
-  const res = await f(`${session.server}/api/drives`, { headers: { cookie: `aindrive_session=${session.token}` }, signal: AbortSignal.timeout(20_000) });
+  const res = await f(`${session.server}/api/drives`, { headers: driveAuth(session.token), signal: AbortSignal.timeout(20_000) });
   if (!res.ok) return [];
   const body = await res.json().catch(() => null) as { drives?: { org?: { slug?: string } | null }[] } | null;
   return [...new Set((body?.drives ?? []).map((d) => d.org?.slug).filter((s): s is string => !!s && SLUG.test(s)))].sort();
@@ -168,7 +196,7 @@ export async function deploy(ctx: CliContext, a: DeployArgs = {}): Promise<Deplo
   const commit = head.stdout;
   if ((await git(root, ['status', '--porcelain'])).stdout) warn(ctx, 'uncommitted changes are not deployed — only what is committed is pushed');
 
-  const session = await driveSession(ctx, server, { fetch: f, open: a.open, credentialsFile: a.credentialsFile, pollMs: a.pollMs });
+  const session = await driveSession(ctx, server, { fetch: f, open: a.open, credentialsFile: a.credentialsFile, pollMs: a.pollMs, hub: a.hub });
 
   const remembered = parseDeployRemote((await git(root, ['remote', 'get-url', DEPLOY_REMOTE])).stdout, server);
   let org = a.org ?? remembered?.org ?? process.env.AINDRIVE_ORG;
@@ -177,7 +205,7 @@ export async function deploy(ctx: CliContext, a: DeployArgs = {}): Promise<Deplo
     if (orgs.length === 1) org = orgs[0];
     else throw new CliError(orgs.length
       ? `which organization? Pass one: ${orgs.map((o) => `--org ${o}`).join('  |  ')}`
-      : `you are not in an organization with a shared drive on ${server}. Ask an admin to add you, or pass --org.`);
+      : `which organization owns this repository? Pass --org <slug> (the first part of ${hubOf(ctx, a.hub)}/<org>/<repo>).`);
   }
   const name = a.repo ?? remembered?.repo ?? basename(root);
   if (!SLUG.test(org!) || !SLUG.test(name)) throw new CliError(`--org and --repo take letters, digits, dot, dash and underscore — got "${org}/${name}". Pass --repo <name>.`);
@@ -199,7 +227,7 @@ export async function deploy(ctx: CliContext, a: DeployArgs = {}): Promise<Deplo
     throw new CliError(`git push failed:\n${text}`);
   }
 
-  const hub = (a.hub ?? (ctx.nodeSource === 'default' || ctx.nodeSource === 'config' ? DEFAULT_WEBSITE : ctx.nodeUrl)).replace(/\/+$/, '');
+  const hub = hubOf(ctx, a.hub);
   const page = `${hub}/${org}/${name}`;
   const result: DeployResult = { repo, org: org!, name, branch, commit, kind, status: 'pushed', page, url: null, deployment: null };
 

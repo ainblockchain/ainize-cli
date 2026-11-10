@@ -266,11 +266,15 @@ cli.command('login', 'Connect this node to any wallet through the website', (y: 
   .option('drive', { type: 'boolean', default: true, describe: 'also connect AinDrive, where `deploy` pushes your repository; --no-drive skips it' })
   .example('$0 login --device --label "ci runner"', 'approve this machine explicitly, under a name you will recognise later'),
   run(async (ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string; open?: boolean; hub?: string; drive?: boolean }) => {
-    await auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label, open: a.open, hub: a.hub });
+    const signedIn = await auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label, open: a.open, hub: a.hub });
+    ctx = { ...ctx, token: signedIn.token, nodeUrl: signedIn.nodeUrl, nodeSource: 'state' };
     // One sign-in for everything `deploy` needs: the repositories live on AinDrive, so a person at a terminal is
     // asked for that approval here rather than by a failing `git push` later. A script is never made to wait for it.
     if (a.drive !== false && !ctx.json && !ctx.quiet && process.stdin.isTTY && process.stderr.isTTY) {
-      try { await deployCmd.driveSession(ctx, undefined, { open: a.open }); }
+      try {
+        // Usually nothing to do: the node hands out the AinDrive git credential for the account that just signed in.
+        if (!(await deployCmd.delegatedDriveSession(ctx, undefined, { hub: a.hub }))) await deployCmd.driveSession(ctx, undefined, { open: a.open, hub: a.hub });
+      }
       catch (e) { process.stderr.write(chalk.yellow('! ') + `AinDrive is not connected (${(e as Error).message}) — \`${PROG} deploy\` will ask again\n`); }
     }
   }, false, true));

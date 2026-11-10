@@ -19,6 +19,8 @@ import { deploy, gitAuthEnv, parseDeployRemote } from '../src/commands/deploy.js
 const run = promisify(execFile);
 const TOKEN = 'drive-session-token';
 const BASIC = `Basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`;
+const DELEGATED = 'aind_aat_from-the-node';
+const BASIC_DELEGATED = `Basic ${Buffer.from(`x-access-token:${DELEGATED}`).toString('base64')}`;
 
 test('a deploy remote is an AinDrive repository URL without credentials', () => {
   const s = 'https://aindrive.ainetwork.ai';
@@ -49,12 +51,18 @@ test('deploy signs in to AinDrive, pushes without leaving a credential anywhere,
   await git('-C', work, 'remote', 'add', 'origin', 'https://github.com/someone/my-app');
   const commit = (await git('-C', work, 'rev-parse', 'HEAD')).stdout.trim();
 
-  let polls = 0, statusCalls = 0, approved = false;
+  let polls = 0, statusCalls = 0, approved = false, delegate = false, minted = 0;
   const pushes: string[] = [];
   const json = (res: import('node:http').ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
   const read = (req: IncomingMessage) => new Promise<string>((done) => { let b = ''; req.on('data', (ch) => { b += ch; }); req.on('end', () => done(b)); });
   const server = createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://drive');
+    if (url.pathname === '/api/auth/aindrive/git-token') {
+      if (!delegate) return json(res, 501, { error: { code: 'not_supported' } });
+      assert.equal(req.headers.authorization, 'Bearer ainize-session');
+      minted++;
+      return json(res, 200, { server: base, access_token: DELEGATED, expires_in: 900, scope: 'drives:read drives:write', user: { email: 'dev@example.com' } });
+    }
     if (url.pathname === '/api/auth/me') return json(res, req.headers.cookie === `aindrive_session=${TOKEN}` ? 200 : 401, { user: req.headers.cookie === `aindrive_session=${TOKEN}` ? { email: 'dev@example.com' } : null });
     if (url.pathname === '/api/auth/cli/start') return json(res, 200, { linkId: 'link1', deviceSecret: 'device-secret' });
     if (url.pathname === '/api/auth/cli/poll') {
@@ -63,6 +71,7 @@ test('deploy signs in to AinDrive, pushes without leaving a credential anywhere,
       approved = true;
       return json(res, 200, { token: TOKEN, user: { email: 'dev@example.com' } });
     }
+    if (url.pathname === '/api/drives' && delegate) assert.equal(req.headers.authorization, `Bearer ${DELEGATED}`);
     if (url.pathname === '/api/drives') return json(res, 200, { drives: [{ org: null }, { org: { slug: 'comcom' } }, { org: { slug: 'comcom' } }] });
     if (url.pathname === '/api/projects/by-repo') {
       assert.equal(url.searchParams.get('repo'), `${base}/comcom/git/my-app`);
@@ -73,7 +82,7 @@ test('deploy signs in to AinDrive, pushes without leaving a credential anywhere,
     }
     const m = /^\/comcom\/git\/(my-app)(\/.*)$/.exec(url.pathname);
     if (!m) return json(res, 404, {});
-    if (req.headers.authorization !== BASIC) { res.writeHead(401, { 'www-authenticate': 'Basic realm="aindrive"' }); return res.end(); }
+    if (req.headers.authorization !== (delegate ? BASIC_DELEGATED : BASIC)) { res.writeHead(401, { 'www-authenticate': 'Basic realm="aindrive"' }); return res.end(); }
     if (url.pathname.endsWith('/git-receive-pack')) pushes.push(url.pathname);
     const child = spawn('git', ['http-backend'], { env: { ...env, GIT_PROJECT_ROOT: join(root, 'repos'), GIT_HTTP_EXPORT_ALL: '1', REMOTE_USER: 'dev', PATH_INFO: `/${m[1]}.git${m[2]}`, QUERY_STRING: url.search.slice(1), REQUEST_METHOD: req.method, CONTENT_TYPE: req.headers['content-type'] ?? '' } });
     req.pipe(child.stdin); let buffer = Buffer.alloc(0), started = false;
@@ -117,6 +126,23 @@ test('deploy signs in to AinDrive, pushes without leaving a credential anywhere,
     assert.equal(second.status, 'pushed');
     assert.equal(polls, 0);
     assert.equal((await git('-C', bare, 'rev-parse', 'refs/heads/main')).stdout.trim(), next);
+
+    // With a node that vouches for the person, the Ainize sign-in is the only one: no AinDrive approval, no stored
+    // AinDrive credential is read or written, and the 15-minute token goes nowhere but this push.
+    delegate = true; polls = 0; approved = false;
+    const fresh = join(root, 'fresh-creds', 'credentials.json');
+    writeFileSync(join(work, 'page.txt'), 'v3');
+    await git('-C', work, 'add', '.'); await git('-C', work, 'commit', '-m', 'Third');
+    const third = await deploy(ctx, { dir: work, server: base, open: false, wait: false, credentialsFile: fresh });
+    assert.equal(third.status, 'pushed');
+    assert.equal(minted, 1);
+    assert.equal(polls, 0);
+    assert.ok(!existsSync(fresh), 'nothing is stored');
+    assert.equal((await git('-C', bare, 'rev-parse', 'refs/heads/main')).stdout.trim(), third.commit);
+    assert.doesNotMatch(readFileSync(join(work, '.git', 'config'), 'utf8'), /aind_aat|extraHeader/);
+    // …and it is only asked of the node this session belongs to.
+    assert.equal(await (await import('../src/commands/deploy.js')).delegatedDriveSession({ ...ctx, token: null }, base), null);
+    delegate = false;
 
     // What cannot be deployed says what to do instead.
     const empty = join(root, 'plain'); mkdirSync(empty);
