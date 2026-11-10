@@ -267,18 +267,32 @@ export async function operators(ctx: CliContext, a: { add?: string; remove?: str
  * that stood in for them. Before the binding existed those were always the same thing; now a laptop can act as a
  * person, and "who am I here" has an answer that a `--json` field alone cannot convey.
  */
-export async function whoami(ctx: CliContext): Promise<{ signedIn: boolean; subject: string | null; via_key: string | null; isOwner: boolean; node: string; name: string }> {
+/** What `/api/auth/me` says about an AIN account session: a session whose subject is an account, not an address. */
+interface AccountSession { principal: string; sub?: string; name?: string | null; email?: string | null; orgs?: string[]; activeOrg?: string | null }
+export interface Whoami { signedIn: boolean; subject: string | null; via_key: string | null; isOwner: boolean; node: string; name: string; account: { principal: string; name: string | null; email: string | null; orgs: string[] } | null }
+
+export async function whoami(ctx: CliContext): Promise<Whoami> {
   const client = new NodeClient(ctx);
-  const me = await client.get<{ signedIn: boolean; subject: string | null; scheme: string | null; via_key?: string | null; isOwner: boolean; address: string; name: string }>('/api/auth/me');
+  const me = await client.get<{ signedIn: boolean; subject: string | null; scheme: string | null; via_key?: string | null; isOwner: boolean; address: string; name: string; sso?: AccountSession | null; site?: { principal: string } | null }>('/api/auth/me');
   const key = readCliKey(ctx.home);
-  const out = { signedIn: me.signedIn, subject: me.subject, via_key: me.via_key ?? null, isOwner: me.isOwner, node: me.address, name: me.name };
+  /**
+   * The node keeps `signedIn`/`subject` for "an address is here" and reports an AIN account session apart, in `sso`
+   * (or `site`, a Google account the website vouches for). A device login approved by someone signed in to the
+   * website with their account yields exactly that — a working session that the two address fields say nothing
+   * about — and this command used to answer "not signed in" for it. Whoever the session acts as is the answer.
+   */
+  const session = me.sso ?? me.site ?? null;
+  const account = session ? { principal: session.principal, name: me.sso?.name ?? null, email: me.sso?.email ?? null, orgs: me.sso?.orgs ?? [] } : null;
+  const out: Whoami = { signedIn: me.signedIn || !!account, subject: me.subject ?? account?.principal ?? null, via_key: me.via_key ?? null, isOwner: me.isOwner, node: me.address, name: me.name, account };
   emit(ctx, out, (d) => {
     if (!d.signedIn) return `not signed in to ${ctx.nodeUrl} — run \`${PROG} login\``;
+    const who = d.account && !me.signedIn ? [d.account.email ?? d.account.name, c.dim(d.account.principal)].filter(Boolean).join('  ') : c.id(d.subject ?? '');
     return [
-      `${c.id(d.subject ?? '')}${d.isOwner ? c.dim('   owns this node') : ''}`,
+      `${who}${d.isOwner ? c.dim('   owns this node') : ''}`,
       `  at    ${d.name} ${c.dim(shortAddr(d.node, 8))}`,
-      d.via_key ? `  via   ${c.dim(`${d.via_key}  (this machine's key)`)}` : `  via   ${c.dim('its own signature')}`,
-      key && !d.via_key ? `  ${c.dim(`this machine also holds ${shortAddr(key.address, 6)}, which nobody has authorised here`)}` : '',
+      d.account && !me.signedIn ? `  as    ${c.dim(`an AIN account${d.account.orgs.length ? ` in ${d.account.orgs.length} organization(s)` : ''}`)}` : '',
+      d.via_key ? `  via   ${c.dim(`${d.via_key}  (this machine's key)`)}` : d.account && !me.signedIn ? (key ? `  via   ${c.dim(`${key.address}  (this machine's key)`)}` : '') : `  via   ${c.dim('its own signature')}`,
+      key && !d.via_key && me.signedIn ? `  ${c.dim(`this machine also holds ${shortAddr(key.address, 6)}, which nobody has authorised here`)}` : '',
     ].filter(Boolean).join('\n');
   });
   return out;
