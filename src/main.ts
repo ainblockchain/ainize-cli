@@ -22,6 +22,7 @@ import * as patch from './commands/patch.js';
 import * as ledger from './commands/ledger.js';
 import * as branch from './commands/branch.js';
 import * as drive from './commands/drive.js';
+import * as deployCmd from './commands/deploy.js';
 import * as chain from './commands/chain.js';
 import * as chat from './commands/chat.js';
 import * as teach from './commands/teach.js';
@@ -262,9 +263,17 @@ cli.command('login', 'Connect this node to any wallet through the website', (y: 
   .option('setup-token', { type: 'string', describe: 'with --enroll from another machine: the one-time token in the node\'s AINIZE_HOME/setup-token (or AINIZE_SETUP_TOKEN)' })
   .example('$0 login', "open the website and connect this node to your wallet")
   .example('$0 login --node https://ainize.ai', 'sign in to somebody else\'s node as yourself')
+  .option('drive', { type: 'boolean', default: true, describe: 'also connect AinDrive, where `deploy` pushes your repository; --no-drive skips it' })
   .example('$0 login --device --label "ci runner"', 'approve this machine explicitly, under a name you will recognise later'),
-  run((ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string; open?: boolean; hub?: string }) =>
-    auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label, open: a.open, hub: a.hub }), false, true));
+  run(async (ctx, a: G & { as?: string; enroll?: boolean; 'setup-token'?: string; device?: boolean; 'node-key'?: boolean; label?: string; open?: boolean; hub?: string; drive?: boolean }) => {
+    await auth.login(ctx, { as: a.as, enroll: a.enroll, setupToken: a['setup-token'], device: a.device, nodeKey: a['node-key'], label: a.label, open: a.open, hub: a.hub });
+    // One sign-in for everything `deploy` needs: the repositories live on AinDrive, so a person at a terminal is
+    // asked for that approval here rather than by a failing `git push` later. A script is never made to wait for it.
+    if (a.drive !== false && !ctx.json && !ctx.quiet && process.stdin.isTTY && process.stderr.isTTY) {
+      try { await deployCmd.driveSession(ctx, undefined, { open: a.open }); }
+      catch (e) { process.stderr.write(chalk.yellow('! ') + `AinDrive is not connected (${(e as Error).message}) — \`${PROG} deploy\` will ask again\n`); }
+    }
+  }, false, true));
 cli.command('whoami', 'Which address this session acts as, and which key is doing the acting', (y: Y) => fail(y)
   .example('$0 whoami', 'and whether that address owns this node'),
   run((ctx) => auth.whoami(ctx)));
@@ -284,6 +293,23 @@ cli.command('logout', 'End this session', (y: Y) => fail(y)
   .example('$0 logout', 'end the session, keep the key')
   .example('$0 logout --forget', 'and leave nothing behind on this machine'),
   run((ctx, a: G & { forget?: boolean }) => auth.logout(ctx, { forget: a.forget }), false, true));
+
+// ---------------------------------------------------------------- deploy
+cli.command('deploy [dir]', 'Deploy the repository in this directory: push it to AinDrive and follow the build', (y: Y) => fail(y)
+  .positional('dir', { type: 'string', describe: 'a directory inside the git repository (default: here)' })
+  .option('org', { type: 'string', describe: 'the organization that owns the repository (default: the one you are in, or the last one used here)' })
+  .option('repo', { type: 'string', describe: 'repository name on AinDrive (default: the directory name, or the last one used here)' })
+  .option('branch', { type: 'string', default: 'main', describe: 'the branch the project deploys' })
+  .option('wait', { type: 'boolean', default: true, describe: 'follow the build until it is ready or fails; --no-wait returns after the push' })
+  .option('force', { type: 'boolean', default: false, describe: 'replace the history on AinDrive with this one' })
+  .option('open', { type: 'boolean', default: true, describe: 'open the browser if AinDrive needs connecting; --no-open prints the link only' })
+  .option('server', { type: 'string', describe: `AinDrive server (default ${deployCmd.DEFAULT_AINDRIVE_SERVER})` })
+  .option('hub', { type: 'string', describe: 'the Ainize website that builds it (default https://ainize.ai)' })
+  .example('$0 login && $0 deploy', 'sign in once, then deploy what is committed here')
+  .example('$0 deploy --org comcom --repo my-app', 'name the organization and the repository the first time')
+  .example('$0 deploy --no-wait --json', 'push from CI and read the result as JSON'),
+  run((ctx, a: G & { dir?: string; org?: string; repo?: string; branch?: string; wait?: boolean; force?: boolean; open?: boolean; server?: string; hub?: string }) =>
+    deployCmd.deploy(ctx, { dir: a.dir, org: a.org, repo: a.repo, branch: a.branch, wait: a.wait, force: a.force, open: a.open, server: a.server, hub: a.hub }), true, true));
 
 // ---------------------------------------------------------------- peers
 cli.command('peers', 'Manage peers', (y: Y) => fail(y)
